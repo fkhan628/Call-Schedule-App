@@ -810,6 +810,14 @@ const auth = {
     }
   },
 
+  // A refresh REFUSED by the auth server: its own JSON answer to a 400 / 401 /
+  // 403 — GoTrue's error / error_code / msg, or its gateway's message (review
+  // fix 2026-10-20) — naming something. _refresh clears the stored session on
+  // it; refreshKeep says "refused" on it, and only on it (2026-10-25).
+  _isRefusal(body) {
+    return !!body && typeof body === "object" && ["error", "error_code", "msg", "message"].some((k) => typeof body[k] === "string" && body[k].trim() !== "");
+  },
+
   // Refresh token. The stored sign-in is cleared ONLY when the auth server
   // refuses the refresh token itself (owner 2026-10-20, "getting signed out on
   // a network blip"): GoTrue answers 400 for a refresh token it no longer
@@ -834,13 +842,12 @@ const auth = {
       });
     } catch(e) { return { user: null, error: "network" }; }
     if (res.status === 400 || res.status === 401 || res.status === 403) {
-      // A refusal is the auth server's own JSON answer: GoTrue's error /
-      // error_code / msg, or its gateway's message (review fix 2026-10-20). The
-      // same status on anything else — an edge or firewall HTML page, an empty
+      // A refusal is the auth server's own JSON answer (_isRefusal). The same
+      // status on anything else — an edge or firewall HTML page, an empty
       // body, a body that never arrived — refuses nothing: kept, as above.
       let body = null;
       try { body = await res.json(); } catch(e) { body = null; }
-      const refused = !!body && typeof body === "object" && ["error", "error_code", "msg", "message"].some((k) => typeof body[k] === "string" && body[k].trim() !== "");
+      const refused = auth._isRefusal(body);
       if (!refused) return { user: null, error: "network" };
       auth._clearSession(); return { user: null };
     }
@@ -857,25 +864,36 @@ const auth = {
   // a network error never clears the stored session: the app keeps the
   // user's unsaved work on screen and offers a password sign-in instead.
   // Returns { ok: true, user, session } or
-  // { ok: false, error: "no-session" | "refused" | "network" }.
+  // { ok: false, error: "no-session" | "refused" | "network" }. "refused" is
+  // what _refresh clears on — the auth server's own JSON on a 400 / 401 / 403;
+  // anything else that didn't renew it (no answer, a 5xx, a 429, an edge page,
+  // a 200 that isn't a session) is "network" (2026-10-25: a 5xx read as
+  // refused, so the password sheet opened without its "Couldn't reach the
+  // server" line).
   async refreshKeep() {
     // The STORED session, whoever's: renewed, it lands as its own account —
     // another tab's sign-in (review r4 branch-4) lands as "another account",
     // and the app's session boundary runs.
     const session = auth._storedSession();
     if (!session || !session.refresh_token) return { ok: false, error: "no-session" };
+    let res;
     try {
-      const res = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, {
+      res = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, {
         method: "POST",
         headers: { apikey: SUPABASE_ANON_KEY, "Content-Type": "application/json" },
         body: JSON.stringify({ refresh_token: session.refresh_token }),
       });
-      if (!res.ok) return { ok: false, error: "refused" };
-      const data = await res.json();
-      if (!data || !data.access_token) return { ok: false, error: "refused" };
-      auth._saveSession(data);
-      return { ok: true, user: data.user || null, session: data };
     } catch(e) { return { ok: false, error: "network" }; }
+    if ([400, 401, 403].includes(res.status)) {
+      const body = await res.json().catch(() => null);
+      const refused = auth._isRefusal(body);
+      return { ok: false, error: refused ? "refused" : "network" };
+    }
+    if (!res.ok) return { ok: false, error: "network" };
+    const data = await res.json().catch(() => null);
+    if (!data || !data.access_token) return { ok: false, error: "network" };
+    auth._saveSession(data);
+    return { ok: true, user: data.user || null, session: data };
   },
 
   // Sign out. Only THIS tab's session (review r4 branch-4): another account's

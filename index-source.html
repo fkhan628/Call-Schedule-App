@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.10.25a";
+    var APP_VERSION = "2026.10.25b";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -465,6 +465,11 @@ function CallSchedule() {
 
   // ─── Undo History ───
   const [scheduleHistory, setScheduleHistory] = useState([]);
+  // How many publish steps ↩ Undo has taken back (2026-10-25): a publish that
+  // lands after its deadline raises its 📣 banner only if none was since —
+  // Undo is last-in-first-out, so one after the publish took it back
+  // (runPublish's late()).
+  const publishUndoneRef = useRef(0);
   // Each step is { sched, epoch, counts }: the schedule MIRROR when it was
   // taken and the sync engine's epoch then (sync v2, R15) — Undo is
   // all-or-nothing: if restoring the snapshot would also revert a week
@@ -495,7 +500,7 @@ function CallSchedule() {
     if (step.counts) { setPriorCounts(step.counts.prior || {}); setYear1Counts(step.counts.y1 || {}); }
     // …and the Calendar's "✓ Published" banner (justPublished — review R1): the publish is taken back, and its 📣
     // would announce a schedule that was undone. (Any other step leaves it.)
-    if (step.counts) setJustPublished(null);
+    if (step.counts) { setJustPublished(null); publishUndoneRef.current++; }
     setScheduleHistory(h => h.slice(0, -1));
   };
 
@@ -1146,16 +1151,19 @@ function CallSchedule() {
         let profile;
         try { profile = await dbAuth.getProfile(user.id); }
         catch (e) {
-          // The profile read never reached the server — the signal dropped
-          // after getUser answered (owner 2026-10-20): it threw, and the button
-          // stayed on "Verifying…" for good. Undo the half-done unlock (nothing
-          // was bound or signed in on this screen), so Unlock and "Use email &
+          // The profile read failed after getUser answered: it threw, and the
+          // button stayed on "Verifying…" for good (owner 2026-10-20 — no
+          // signal; 2026-10-25 — any other error, which was thrown on, out of
+          // this onClick, still stuck). Undo the half-done unlock (nothing was
+          // bound or signed in on this screen), so Unlock and "Use email &
           // password instead" work as before the tap; the stored session is
-          // untouched. Say what a no-signal unlock says. Any other error is
-          // thrown on, as before (an old cached helpers.js: thrown on, as before).
-          if (!(typeof isNoConnectionError === "function" && isNoConnectionError(e))) throw e;
+          // untouched. No signal says what a no-signal unlock says; anything
+          // else — a reply that isn't JSON (a Wi-Fi sign-in page), a code
+          // error, any error on an old cached helpers.js — that the profile
+          // didn't load.
+          const noSignal = typeof isNoConnectionError === "function" && isNoConnectionError(e);
           auth.bindUser(null); setAuthUser(null);
-          setAuthError("No connection — you're still signed in. Check your signal and tap Unlock again.");
+          setAuthError(noSignal ? "No connection — you're still signed in. Check your signal and tap Unlock again." : "Couldn't load your profile — tap Unlock to try again, or use email & password.");
           setAuthBusy(false);
           return;
         }
@@ -2473,7 +2481,22 @@ function CallSchedule() {
   // weeks push defers to it. Resolves ok only when EVERY period week landed;
   // a week that didn't stays on screen and pending, and the follow-up push
   // keeps retrying it.
-  const runPublish = (weeks) => schedSyncRef.current.authoritative(weeks, false, "publish", Object.keys(weeks));
+  // A job still running at its deadline (A5(f)) answers "still running …
+  // Nobody was notified", and when it then landed the engine said only "has
+  // finished" — the Calendar's 📣 banner never came (2026-10-25). Its late()
+  // (E8) raises it: every week landed, in the session it was published in,
+  // and not taken back by ↩ Undo meanwhile (Undo works while the job runs) →
+  // the "✓ Published" banner for those weeks, as one that lands in time.
+  const runPublish = (weeks) => {
+    const ep = sessionEpochRef.current, undone0 = publishUndoneRef.current, ms = Object.keys(weeks).sort();
+    const label = typeof periodLabel === "function" ? periodLabel(ms[0], ms[ms.length - 1]) : `weeks of ${ms[0]} – ${ms[ms.length - 1]}`;
+    const late = (r) => {
+      if (!r || !r.ok || sessionEpochRef.current !== ep || publishUndoneRef.current !== undone0) return null; // the engine's own words
+      setJustPublished({ label, ep });
+      return `Publishing the new weeks has finished — every week is saved.${r.notice ? " " + r.notice : ""} Nobody has been notified yet: 📣 Notify everyone is on the Calendar.`;
+    };
+    return schedSyncRef.current.authoritative(weeks, false, "publish", Object.keys(weeks), { late });
+  };
   // What a publish that didn't fully land tells the scheduler (nobody is
   // notified) — ONE message, with the engine's own detail (pr.notice: which
   // weeks, and why) in it; the engine doesn't toast it beside this.
@@ -4460,9 +4483,15 @@ function CallSchedule() {
       const params = new URLSearchParams(window.location.search);
       const tab = params.get("tab");
       const week = params.get("week"); // YYYY-MM-DD (a Monday)
-      const validTabs = ["calendar", "mine", "requests", "stats", "settings", "setup", "totals"];
-      if (tab && validTabs.includes(tab)) {
-        setView(tab);
+      // A link's tab → the view it opens (2026-10-25). The Mine tab's view is
+      // "myschedule": ?tab=mine set the view to "mine", which nothing renders —
+      // a blank page. Both names open Mine now. A tab the person can't see still
+      // falls back to the Calendar (the restricted-tab redirect above), and
+      // ?public=1 (the read-only calendar, and the OR board) has only the Calendar.
+      const TAB_VIEWS = { calendar: "calendar", mine: "myschedule", myschedule: "myschedule", requests: "requests", stats: "stats", settings: "settings", setup: "setup", totals: "totals" };
+      const toView = tab && Object.prototype.hasOwnProperty.call(TAB_VIEWS, tab) ? TAB_VIEWS[tab] : null;
+      if (toView && (!isPublicMode || toView === "calendar")) {
+        setView(toView);
       }
       if (week && /^\d{4}-\d{2}-\d{2}$/.test(week)) {
         const [y, m] = week.split("-").map(Number);
@@ -12126,7 +12155,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             });
             // The My Shifts list shows only shifts not yet done, and offers Find Swap only before a
             // shift starts (the helper owns both rules). The full list stays for the Next call card.
-            const myShiftsView = mineUpcoming(myShifts, myToday);
+            // The clock ("HH:MM") is for a service week whose Saturday 24h runs to Sun 7a (2026-10-25).
+            const myShiftsView = mineUpcoming(myShifts, myToday, new Date().toTimeString().slice(0, 5));
             // An APP (UX audit 2026-10-19; two of the seven users) holds no surgeon shift: their Mine shows
             // their APP call days (appShifts, the Calendar's source) in place of the surgeon Next call card
             // and My Shifts. Guarded like the dates below, against an old cached helpers.js.

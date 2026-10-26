@@ -799,7 +799,9 @@ check("the engine's wipe guard: a wipe-shaped push WITHOUT the request's grant i
   count("if ((wipingAll || wipingMost) && !job.grant) {") === 1);
 check("authoritative jobs start at exactly 2 sites — runAuthoritativeSchedule (the grant holders: clear, factory reset, restore) and runPublish (the period's weeks, no grant, no delete: Generate & Publish, Accept & Publish — A14) — a new caller needs this census updated",
   count(".authoritative(") === 2 && count("runAuthoritativeSchedule(") === 3
-    && count('const runPublish = (weeks) => schedSyncRef.current.authoritative(weeks, false, "publish", Object.keys(weeks));') === 1 && count("runPublish(") === 2 && count("const job = runPublish(") === 2
+    // (CO, 2026-10-25, on purpose: runPublish is a block now — it hands the engine its late(), the 📣 banner for a publish
+    // that lands after its deadline — still ONE authoritative call, still no grant, still the period's keys)
+    && count("const runPublish = (weeks) => {") === 1 && count('return schedSyncRef.current.authoritative(weeks, false, "publish", Object.keys(weeks), { late });') === 1 && count("runPublish(") === 2 && count("const job = runPublish(") === 2
     // (clear and restore hand it their Undo step, taken back when the job wrote nothing — executed in SE-G; all three
     // hand it `before`, the screen as it was before their commit, which a refused job puts back — 17/n P2, executed in SE-X10)
     // (19/n P8: the factory reset and the restore also hand it their words for an outcome after the deadline — late(r), executed in SE-X16)
@@ -3380,8 +3382,9 @@ console.log("\nBF. toasts stack (up to 3), errors stay longer, no doubled ⚠");
   // executed by BE1. The other eleven are each called, each behind its typeof, as before.)
   // (2026-10-24, on purpose — owner decision, sync-guards CJ: periodLabel ×5 — Stats' "This Period" says the made
   // period with its own guarded call, madePeriodText.)
-  check("BF7 (review fix) every call of the batch's twelve helpers in index-source.html sits behind its own `typeof … === \"function\"` (the app's convention for a newer helper), each of them called somewhere — toastAdd / toastMs / toastText, periodLabel ×5 (periodText, the office prefill, both publish audit lines, Stats' made period — CJ), periodSeam, periodHolidayGaps ×2, authErrorText ×6, tradeSlotHolder ×2, tradePickNotes, calMonthWeekMondays, calendarFeedUrls ×2 — except rangeSummary, called nowhere since the range field replaced its line (moved by BK; it stays in helpers.js, BE1 runs it)",
-    unguarded.length === 0 && BATCH4_HELPERS.every((n) => (n === "rangeSummary" ? callsOf[n] === 0 : callsOf[n] > 0)) && callsOf.authErrorText === 6 && callsOf.periodLabel === 5 && callsOf.periodHolidayGaps === 2 && callsOf.tradeSlotHolder === 2 && callsOf.calendarFeedUrls === 2,
+  // (2026-10-25, on purpose — CO: ×6 — runPublish's late() labels the weeks it raises the 📣 banner for)
+  check("BF7 (review fix) every call of the batch's twelve helpers in index-source.html sits behind its own `typeof … === \"function\"` (the app's convention for a newer helper), each of them called somewhere — toastAdd / toastMs / toastText, periodLabel ×6 (periodText, the office prefill, both publish audit lines, Stats' made period — CJ, runPublish's late banner — CO), periodSeam, periodHolidayGaps ×2, authErrorText ×6, tradeSlotHolder ×2, tradePickNotes, calMonthWeekMondays, calendarFeedUrls ×2 — except rangeSummary, called nowhere since the range field replaced its line (moved by BK; it stays in helpers.js, BE1 runs it)",
+    unguarded.length === 0 && BATCH4_HELPERS.every((n) => (n === "rangeSummary" ? callsOf[n] === 0 : callsOf[n] > 0)) && callsOf.authErrorText === 6 && callsOf.periodLabel === 6 && callsOf.periodHolidayGaps === 2 && callsOf.tradeSlotHolder === 2 && callsOf.calendarFeedUrls === 2,
     JSON.stringify({ unguarded, callsOf }));
 }
 
@@ -4348,9 +4351,9 @@ console.log("\nBL. Schedule Warnings: anyone can hide a warning on this phone");
 //       expired…"; renewed → signed in)
 //   CI4 Face ID's profile read with no signal → the no-signal line, busy back to false, the screen still up and
 //       usable (the half-done unlock undone; a second tap signs in); any other error, and an old cached helpers.js
-//       (no isNoConnectionError), thrown on exactly as before
+//       (no isNoConnectionError), thrown on exactly as before — until CN (2026-10-25): undone the same way and said
 //   CI5 no storm: _refresh is called once, from getUser; getUser twice (the mount, the Face ID tap); no timer calls
-//       either; refreshKeep ("Sign in again") unchanged — it never clears
+//       either; refreshKeep ("Sign in again") unchanged — it never clears (its 5xx / 429 "network" since CM, 2026-10-25)
 //   CI-M the mutant battery (config.js and index-source.html): each mutant turns a CI check red, and every CI check is
 //       turned red by at least one mutant
 // Review fixes (2026-10-20):
@@ -4614,17 +4617,20 @@ await (async () => {
       ck("CI4b", "…the Face ID screen still usable after it: never left (biometricPending untouched), Unlock enabled again (busy false); a second tap, with signal, signs in (bound, the profile, the data reload) and leaves the screen",
         after1.pending === true && after1.busy === false && !t1.log.includes("biometricPending:false") && !!t2 && J(t2.log) === SIGNED_IN && auth.boundUser() === "auth-c" && st.pending === false,
         { t1: t1.log, after1, t2: t2 && t2.log });
-      const TODAY = J(["error:", "busy:true", "authUser:auth-c", "getProfile:auth-c"]);   // main's: the rejection goes on, nothing else
+      // (CN, 2026-10-25, on purpose: CI4c / CI4d pinned "thrown on exactly as before" — which left "Verifying…" stuck for
+      // these too. Any other error, and any error on an old cached helpers.js, is now undone the same way and said.)
+      const PROFILE_LINE = "Couldn't load your profile — tap Unlock to try again, or use email & password.";
+      const UNDONE = J(["error:", "busy:true", "authUser:auth-c", "getProfile:auth-c", "authUser:null", "error:" + PROFILE_LINE, "busy:false"]);
       const others = [];
       for (const err of [new TypeError("Cannot read properties of undefined (reading 'person_id')"), new SyntaxError("Unexpected token '<', \"<html>\" is not valid JSON")]) {
         at(NEW, server(RF.ok)); const r = await runBio({ profileThrows: err });
-        others.push({ log: r.log, same: r.threw === err, bound: auth.boundUser(), kept: holds(NEW) });
+        others.push({ log: r.log, threw: r.threw && String(r.threw), bound: auth.boundUser(), kept: holds(NEW) });
       }
-      ck("CI4c", "…any other error from the profile read (a code error, a reply that isn't JSON) is thrown on exactly as before — the same error, nothing said, nothing undone",
-        others.every((x) => J(x.log) === TODAY && x.same && x.bound === "auth-c" && x.kept), others);
+      ck("CI4c", "…any other error from the profile read (a code error, a reply that isn't JSON) is undone the same way — no throw, busy false, the user null again, nothing bound — and says \"" + PROFILE_LINE + "\"; the stored session kept (CN)",
+        others.every((x) => J(x.log) === UNDONE && !x.threw && x.bound === null && x.kept), others);
       at(NEW, server(RF.ok)); const errOld = new TypeError("Load failed"), old = await runBio({ profileThrows: errOld, oldHelpers: true });
-      ck("CI4d", "…with an OLD cached helpers.js (no isNoConnectionError): thrown on as before — the same error (never a ReferenceError from the helper), nothing said",
-        J(old.log) === TODAY && old.threw === errOld, { log: old.log, threw: old.threw && String(old.threw) });
+      ck("CI4d", "…with an OLD cached helpers.js (no isNoConnectionError): no throw (never a ReferenceError from the helper), undone, the profile line (CN)",
+        J(old.log) === UNDONE && !old.threw && auth.boundUser() === null, { log: old.log, threw: old.threw && String(old.threw) });
 
       // (review fix F3) the password sign-in's profile read: the REAL handleAuthSubmit (sliced, BG3's names) on this auth
       if (!mkSubmit) throw new Error("handleAuthSubmit not found or not compiling");
@@ -4659,8 +4665,10 @@ await (async () => {
         getUserCalls === 2 && /\bauth\.getUser\(\)/.test(code(mountSrc)) && /\bauth\.getUser\(\)/.test(code(bioSrc)) && J(timed) === J([0, 0]), { getUserCalls, timed });
       const rk = [];
       for (const k of ["noSignal", "s503", "s429", "invalidGrant", "s401"]) { at(OLD, server(RF[k])); const r = await auth.refreshKeep(); rk.push({ k, r: J(r), kept: holds(OLD), calls: calls.length }); }
-      const RK_WANT = [{ ok: false, error: "network" }, { ok: false, error: "refused" }, { ok: false, error: "refused" }, { ok: false, error: "refused" }, { ok: false, error: "refused" }].map(J);
-      ck("CI5c", "\"Sign in again\" (refreshKeep) unchanged: it never clears — no answer → network; 503 / 429 / 400 / 401 → refused; the stored session kept every time, one request",
+      // (CM, 2026-10-25, on purpose: a 503 / 429 was "refused" here — the password sheet then opened with no "Couldn't
+      // reach the server" line. refreshKeep now says "refused" only where _refresh clears.)
+      const RK_WANT = [{ ok: false, error: "network" }, { ok: false, error: "network" }, { ok: false, error: "network" }, { ok: false, error: "refused" }, { ok: false, error: "refused" }].map(J);
+      ck("CI5c", "\"Sign in again\" (refreshKeep): it never clears — no answer / 503 / 429 → network (CM); 400 / 401 → refused; the stored session kept every time, one request",
         J(rk.map((x) => x.r)) === J(RK_WANT) && rk.every((x) => x.kept && x.calls === 1), rk);
     });
 
@@ -4708,12 +4716,15 @@ await (async () => {
   const STATUS_R = "    if (res.status === 400 || res.status === 401 || res.status === 403) {";
   const REFUSE_R = "      if (!refused) return { user: null, error: \"network\" };\n      auth._clearSession(); return { user: null };\n";
   const FIELDS_R = "[\"error\", \"error_code\", \"msg\", \"message\"]", BLANK_R = "typeof body[k] === \"string\" && body[k].trim() !== \"\"";
-  const REFUSED_R = "const refused = !!body && typeof body === \"object\" && " + FIELDS_R + ".some((k) => " + BLANK_R + ");";
+  // (CM, 2026-10-25: the refusal test is auth._isRefusal now — _refresh's and refreshKeep's one copy)
+  const REFUSED_R = "return !!body && typeof body === \"object\" && " + FIELDS_R + ".some((k) => " + BLANK_R + ");";
   const NETG = "        if (refreshed?.error === \"network\") return { user: null, error: \"network\" };\n";
   const DEAD_G = "token is dead.\n      auth._clearSession();\n      return { user: null };\n";
   // (UNDO_B and GUARD_B's Face ID anchors start at their line's own indent: the mount's copies are indented deeper)
   const UNDO_B = "\n          auth.bindUser(null); setAuthUser(null);\n", END_B = "          setAuthBusy(false);\n          return;\n        }\n";
   const GUARD_B = "if (!(typeof isNoConnectionError === \"function\" && isNoConnectionError(e))) throw e;";
+  // (CN, 2026-10-25: Face ID's catch no longer throws — it decides the line; B2 / B8 / B9 re-anchored on it, B10 added)
+  const NOSIG_B = "          const noSignal = typeof isNoConnectionError === \"function\" && isNoConnectionError(e);\n";
   const MOUNT_TRY = (() => { const a = "            let profile;\n            try { profile = await dbAuth.getProfile(user.id); }\n", i = idxLF.indexOf(a), e = i < 0 ? -1 : idxLF.indexOf("            if (profile) { setUserProfile(profile); setMySurgeon(profile.person_id); }\n", i); return e < 0 ? null : idxLF.slice(i, e); })();
   const UNDO_M = "\n              auth.bindUser(null); setAuthUser(null);\n              setAuthNetErr(true);\n              setAuthLoading(false);\n              return;\n";
   const PW_TRY = (() => { const a = "        // Load profile\n", i = idxLF.indexOf(a), e = i < 0 ? -1 : idxLF.indexOf("        if (profile) {\n", i); return e < 0 ? null : idxLF.slice(i + a.length, e); })();
@@ -4732,7 +4743,7 @@ await (async () => {
     { id: "R9", file: "cfg", what: "a refusal not cleared by _refresh", from: REFUSE_R, to: "      if (!refused) return { user: null, error: \"network\" };\n      return { user: null };\n" },
     { id: "R10", file: "cfg", what: "a refusal said as no connection (the note over a dead session)", from: REFUSE_R, to: "      if (!refused) return { user: null, error: \"network\" };\n      auth._clearSession(); return { user: null, error: \"network\" };\n" },
     { id: "R15", file: "cfg", what: "(F2) the status alone refuses: an edge / firewall HTML 400 / 401 / 403 clears", from: REFUSE_R, to: "      auth._clearSession(); return { user: null };\n" },
-    { id: "R16", file: "cfg", what: "(F2) any JSON body refuses, whatever it names", from: REFUSED_R, to: "const refused = !!body && typeof body === \"object\";" },
+    { id: "R16", file: "cfg", what: "(F2) any JSON body refuses, whatever it names", from: REFUSED_R, to: "return !!body && typeof body === \"object\";" },
     { id: "R17", file: "cfg", what: "(F2) the gateway's / GoTrue 2024's message not counted (their refusals kept for good)", from: FIELDS_R, to: "[\"error\", \"error_code\", \"msg\"]" },
     { id: "R18", file: "cfg", what: "(F2) a blank error field counts as a refusal", from: BLANK_R, to: "typeof body[k] === \"string\"" },
     { id: "R19", file: "cfg", what: "(F2) a refusal's body that isn't JSON throws out of _refresh", from: "      try { body = await res.json(); } catch(e) { body = null; }\n", to: "      body = await res.json();\n" },
@@ -4746,16 +4757,19 @@ await (async () => {
     { id: "G4", file: "cfg", what: "getUser's own no-signal catch clears", from: "    } catch (e) {\n      // Network error (offline, transient blip). Do NOT clear the session —", to: "    } catch (e) {\n      auth._clearSession();\n      // Network error (offline, transient blip). Do NOT clear the session —" },
     { id: "G5", file: "cfg", what: "(F4) getUser's own clear dropped: a refused session with no refresh token kept for good", from: DEAD_G, to: "token is dead.\n      return { user: null };\n" },
     { id: "S1", file: "cfg", what: "signOut no longer clears", from: "    if (!stored || session) auth._clearSession();", to: "" },
-    { id: "K1", file: "cfg", what: "refreshKeep clears on a refusal", from: "      if (!res.ok) return { ok: false, error: \"refused\" };", to: "      if (!res.ok) { auth._clearSession(); return { ok: false, error: \"refused\" }; }" },
+    // (CM, 2026-10-25: K1 re-anchored on refreshKeep's new refusal line; K2 added)
+    { id: "K1", file: "cfg", what: "refreshKeep clears on a refusal", from: "      return { ok: false, error: refused ? \"refused\" : \"network\" };", to: "      if (refused) auth._clearSession();\n      return { ok: false, error: refused ? \"refused\" : \"network\" };" },
+    { id: "K2", file: "cfg", what: "(CM) refreshKeep calls a 5xx / 429 \"refused\" again (the sheet loses its \"Couldn't reach the server\" line)", from: "    if (!res.ok) return { ok: false, error: \"network\" };", to: "    if (!res.ok) return { ok: false, error: \"refused\" };" },
     { id: "B1", file: "idx", what: "main's Face ID profile read, unguarded (throws offline: \"Verifying…\" for good)", from: BIO_TRY, to: "        const profile = await dbAuth.getProfile(user.id);\n" },
-    { id: "B2", file: "idx", what: "every profile-read error taken as no signal (a code error swallowed)", from: "\n          " + GUARD_B + "\n", to: "\n" },
+    { id: "B2", file: "idx", what: "every profile-read error taken as no signal (a code error said as no connection)", from: NOSIG_B, to: "          const noSignal = true;\n" },
     { id: "B3", file: "idx", what: "the half-done unlock not undone (signed in with no profile behind the Face ID screen)", from: UNDO_B, to: "\n" },
     { id: "B4", file: "idx", what: "only the user undone — the tab left bound", from: UNDO_B, to: "\n          setAuthUser(null);\n" },
     { id: "B5", file: "idx", what: "the Face ID screen left", from: UNDO_B, to: "\n          auth.bindUser(null); setAuthUser(null); setBiometricPending(false);\n" },
     { id: "B6", file: "idx", what: "busy left on (\"Verifying…\")", from: END_B, to: "          return;\n        }\n" },
     { id: "B7", file: "idx", what: "no return: falls through to the profile screen", from: END_B, to: "          setAuthBusy(false);\n        }\n" },
-    { id: "B8", file: "idx", what: "says \"Session expired\" instead", from: "          setAuthError(\"" + NET_FACE + "\");\n", to: "          setAuthError(\"" + EXPIRED + "\");\n" },
-    { id: "B9", file: "idx", what: "the helper called bare (an old cached helpers.js: a ReferenceError)", from: "\n          " + GUARD_B, to: "\n          if (!isNoConnectionError(e)) throw e;" },
+    { id: "B8", file: "idx", what: "says \"Session expired\" instead", from: "setAuthError(noSignal ? \"" + NET_FACE + "\"", to: "setAuthError(noSignal ? \"" + EXPIRED + "\"" },
+    { id: "B9", file: "idx", what: "the helper called bare (an old cached helpers.js: a ReferenceError)", from: NOSIG_B, to: "          const noSignal = isNoConnectionError(e);\n" },
+    { id: "B10", file: "idx", what: "(CN) any other profile-read error thrown on again (10/20's code: \"Verifying…\" for good)", from: NOSIG_B, to: "          " + GUARD_B + "\n          const noSignal = true;\n" },
     { id: "M1", file: "idx", what: "(F2, 2nd review) main's mount profile read, unguarded (signed in with no profile offline)", from: MOUNT_TRY, to: "            const profile = await dbAuth.getProfile(user.id);\n" },
     { id: "M2", file: "idx", what: "(F2, 2nd review) the mount's half-done auto-login not undone", from: UNDO_M, to: "\n              setAuthNetErr(true);\n              setAuthLoading(false);\n              return;\n" },
     { id: "M3", file: "idx", what: "(F2, 2nd review) the mount: only the user undone — the tab left bound", from: UNDO_M, to: "\n              setAuthUser(null);\n              setAuthNetErr(true);\n              setAuthLoading(false);\n              return;\n" },
@@ -5153,6 +5167,165 @@ await (async () => {
       && count("auth.bindUser(user.id); // this tab is this account's (review r4 branch-4: another tab's sign-in is no session here)") === 1 && count("auth.bindUser(user.id); // (review r4 branch-4)") === 1,
     J({ iErr, iBusy, iDecl, iMount, iSS, iCard }));
 })().catch(ex => check("CE harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
+
+// ─── CM. "Sign in again" says when the server couldn't be reached — a 5xx no longer reads as refused (2026-10-25) ───
+// "Sign in again" (reauthForSync) renews the session in place with auth.refreshKeep; when that can't, it opens the
+// password sheet — with "Couldn't reach the server to renew your sign-in …" when refreshKeep answered "network". But
+// refreshKeep called ANY non-OK answer "refused": a 5xx (an outage), a 429, an edge page, a 200 that is no session —
+// so those opened the sheet with no line, as if the sign-in had been turned down. It now uses _refresh's rule (CI1):
+// "refused" only for the auth server's own JSON on a 400 / 401 / 403; anything else that didn't renew it is
+// "network". It still never clears the stored session (CI5c). The REAL config.js (its own context, a stubbed fetch)
+// and the REAL reauthForSync (sliced, run in a fresh context):
+//   CM1 refreshKeep: no answer, 500 / 502 / 503 / 504, 429, 408 / 404, a 400 / 401 / 403 that isn't the auth server's
+//       JSON, a 200 that is no session → { ok: false, error: "network" }; the refresh token refused (400 invalid_grant /
+//       refresh_token_not_found / refresh_token_already_used / session_expired; 401 / 403 with their JSON) →
+//       "refused"; a 200 with a session → ok, the new session stored. One request each; nothing ever cleared
+//   CM2 …"refused" exactly when _refresh (the app-open refresh) clears the session, on every one of those answers
+//   CM3 the REAL reauthForSync: a 503, a 429, no answer → the sheet opens WITH the "Couldn't reach the server" line; a
+//       refusal → the sheet without it; renewed → no sheet, the session landed (reauthLanded, its user)
+//   the section runs inside its own catch (a throw fails one named check, never the run)
+console.log("\nCM. \"Sign in again\" says when the server couldn't be reached");
+await (async () => {
+  const J = JSON.stringify;
+  const ls = new Map(), calls = []; let route = () => { throw new Error("no route"); };
+  const g = { console: { error() {}, warn() {}, log() {}, info() {} }, window: {}, document: undefined, navigator: { userAgent: "node-test" }, setTimeout, clearTimeout, AbortController,
+    atob: (s) => Buffer.from(String(s), "base64").toString("binary"),
+    localStorage: { getItem: (k) => (ls.has(k) ? ls.get(k) : null), setItem: (k, v) => { ls.set(k, String(v)); }, removeItem: (k) => { ls.delete(k); } },
+    fetch: async (url, init) => { calls.push(((init && init.method) || "GET") + " " + String(url).replace(/^https?:\/\/[^/]+/, "")); return route(); } };
+  g.globalThis = g; vm.createContext(g);
+  vm.runInContext(fs.readFileSync(path.join(ROOT, "helpers.js"), "utf8"), g, { filename: "helpers.js" });
+  vm.runInContext(fs.readFileSync(path.join(ROOT, "config.js"), "utf8"), g, { filename: "config.js" });
+  const auth = vm.runInContext("auth", g);
+  // (a string body is raw text: res.json() parses it, so "<html>" and "" throw as a browser's does)
+  const resp = (status, body) => ({ ok: status >= 200 && status < 300, status, json: async () => (typeof body === "string" ? JSON.parse(body) : body), text: async () => (typeof body === "string" ? body : J(body)) });
+  const OLD = { "dsg-auth-token": "TOK_OLD", "dsg-auth-refresh": "REF_OLD" }, NEW = { "dsg-auth-token": "TOK_NEW", "dsg-auth-refresh": "REF_NEW" };
+  const UM = { id: "auth-m", email: "m@dsg.test" };
+  const NETWORK = {
+    noSignal: () => { throw new TypeError("Load failed"); }, chromeOffline: () => { throw new TypeError("Failed to fetch"); },
+    s500: () => resp(500, { code: 500, msg: "Internal Server Error" }), s502: () => resp(502, "<html>"), s503: () => resp(503, { message: "Service Unavailable" }), s504: () => resp(504, "<html>"),
+    s429: () => resp(429, { code: 429, error_code: "over_request_rate_limit", msg: "Request rate limit reached" }), s408: () => resp(408, "<html>"), s404: () => resp(404, { message: "no Route matched with those values" }),
+    html400: () => resp(400, "<html>"), html401: () => resp(401, "<html>"), html403: () => resp(403, "<html>"), empty401: () => resp(401, ""), bare403: () => resp(403, { ok: false }), blank400: () => resp(400, { error: " ", msg: "" }),
+    portal: () => resp(200, "<html>"), noToken: () => resp(200, { message: "ok" }),
+  };
+  const REFUSED = {
+    invalidGrant: () => resp(400, { error: "invalid_grant", error_description: "Invalid Refresh Token: Already Used" }),
+    notFound: () => resp(400, { code: 400, error_code: "refresh_token_not_found", msg: "Invalid Refresh Token: Refresh Token Not Found" }),
+    alreadyUsed: () => resp(400, { code: 400, error_code: "refresh_token_already_used", msg: "Invalid Refresh Token: Already Used" }),
+    expired: () => resp(400, { code: "session_expired", message: "Invalid Refresh Token: Session Expired" }),
+    s401: () => resp(401, { message: "Invalid API key", hint: "Double check your Supabase `anon` or `service_role` API key." }),
+    s401gt: () => resp(401, { code: 401, error_code: "no_authorization", msg: "This endpoint requires a valid Bearer token" }),
+    s403: () => resp(403, { code: 403, error_code: "session_not_found", msg: "Session from session_id claim in JWT does not exist" }),
+  };
+  const OK = () => resp(200, { access_token: "TOK_NEW", refresh_token: "REF_NEW", token_type: "bearer", expires_in: 3600, user: UM });
+  const at = (store, r) => { ls.clear(); for (const [k, v] of Object.entries(store)) ls.set(k, v); calls.length = 0; route = r; auth.bindUser(null); };
+  const holds = (store) => J([...ls].sort()) === J(Object.entries(store).sort());
+  const keep = async (r) => { at(OLD, r); const out = await auth.refreshKeep(); return { r: J(out), kept: holds(OLD), n: calls.length }; };
+
+  // CM1 — refreshKeep's answer
+  const net = {}, ref = {};
+  for (const [k, f] of Object.entries(NETWORK)) net[k] = await keep(f);
+  for (const [k, f] of Object.entries(REFUSED)) ref[k] = await keep(f);
+  at(OLD, OK); const okR = await auth.refreshKeep(), okStored = holds(NEW), okN = calls.length;
+  const NET = J({ ok: false, error: "network" }), REF = J({ ok: false, error: "refused" });
+  check("CM1 refreshKeep (\"Sign in again\"): no answer, a 5xx (500 / 502 / 503 / 504), 429, 408 / 404, a 400 / 401 / 403 that isn't the auth server's JSON, a 200 that is no session → \"network\" (a 5xx / 429 read as \"refused\"); the refresh token refused (400 invalid_grant / not found / already used / session_expired, 401 / 403 with their JSON) → \"refused\"; a session → ok and stored; one request each, the stored session never cleared",
+    Object.values(net).every((x) => x.r === NET && x.kept && x.n === 1) && Object.values(ref).every((x) => x.r === REF && x.kept && x.n === 1)
+      && !!okR && okR.ok === true && okR.user && okR.user.id === "auth-m" && okR.session && okR.session.access_token === "TOK_NEW" && okStored && okN === 1,
+    J({ net: Object.fromEntries(Object.entries(net).filter(([, x]) => !(x.r === NET && x.kept && x.n === 1))), ref: Object.fromEntries(Object.entries(ref).filter(([, x]) => !(x.r === REF && x.kept && x.n === 1))), okR, okStored }));
+
+  // CM2 — the same verdict as _refresh's
+  const differ = [];
+  for (const [k, f] of Object.entries(Object.assign({}, NETWORK, REFUSED, { ok: OK }))) {
+    at(OLD, f); const kr = await auth.refreshKeep();
+    at(OLD, f); await auth._refresh("REF_OLD"); const cleared = ls.size === 0;
+    if ((kr.error === "refused") !== cleared) differ.push(`${k}: refreshKeep ${J(kr.error || "ok")}, _refresh ${cleared ? "cleared" : "kept"}`);
+  }
+  check("CM2 refreshKeep says \"refused\" exactly when _refresh (the refresh every app open does) would clear the stored session — on every one of those answers",
+    differ.length === 0, differ.slice(0, 6).join(" | "));
+
+  // CM3 — what "Sign in again" then shows
+  const nsrcCM = src.replace(/\r\n/g, "\n"), RA = "  const reauthForSync = ", ra = nsrcCM.indexOf(RA), rb = ra < 0 || nsrcCM.indexOf(RA, ra + 1) !== -1 ? -1 : nsrcCM.indexOf("\n  };\n", ra);
+  const raF = (() => { try { return rb > ra && ra > 0 ? vm.runInContext(`(function (env) { const { reauthBusy, setReauthBusy, auth, reauthLanded, authUser, setReauthPassword, setReauthError, setReauthSheet } = env; return (${nsrcCM.slice(ra + RA.length, rb + 4)}); })`, vm.createContext({})) : null; } catch (ex) { return null; } })();
+  const LINE = "Couldn't reach the server to renew your sign-in — check the connection, then sign in here.";
+  const sheet = async (r) => {
+    at(OLD, r); const st = { sheet: false, error: null, landed: null, busy: [] };
+    try { await raF({ reauthBusy: false, setReauthBusy: (v) => st.busy.push(v), auth, authUser: { id: "auth-m", email: UM.email }, reauthLanded: async (u) => { st.landed = u && u.id; },
+      setReauthPassword: () => {}, setReauthError: (v) => { st.error = v; }, setReauthSheet: (v) => { st.sheet = v; } })(); } catch (ex) { st.threw = String(ex).slice(0, 120); }
+    return st;
+  };
+  const sh = raF ? { s503: await sheet(NETWORK.s503), s502: await sheet(NETWORK.s502), s429: await sheet(NETWORK.s429), noSignal: await sheet(NETWORK.noSignal),
+    refused: await sheet(REFUSED.invalidGrant), refused401: await sheet(REFUSED.s401), ok: await sheet(OK) } : null;
+  check("CM3 the REAL \"Sign in again\" (reauthForSync): a 503, a 502 page, a 429 and no answer open the password sheet WITH \"" + LINE + "\" (a 5xx / 429 opened it with none); a refusal (400, 401) opens it without; renewed → no sheet, the renewed session landed; busy set and cleared each time",
+    !!sh && ["s503", "s502", "s429", "noSignal"].every((k) => sh[k].sheet === true && sh[k].error === LINE && !sh[k].landed) && ["refused", "refused401"].every((k) => sh[k].sheet === true && sh[k].error === "" && !sh[k].landed)
+      && sh.ok.sheet === false && sh.ok.landed === "auth-m" && Object.values(sh).every((x) => !x.threw && J(x.busy) === J([true, false])),
+    J(sh));
+})().catch(ex => check("CM harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
+
+// ─── CN. Face ID never sticks on "Verifying…": any error from its profile read is undone and said (2026-10-25) ───
+// CI4 fixed the no-signal case: the profile read after getUser threw "Load failed" and the Unlock button stayed on
+// "Verifying…" for good. Any OTHER error still did — thrown on, out of handleBiometricUnlock (an onClick: nothing
+// catches it), busy never set back: a Wi-Fi sign-in page answering the read with 200 (res.json() throws a
+// SyntaxError), a code error, and every error at all on an old cached helpers.js (no isNoConnectionError). Now any
+// error from that read undoes the half-done unlock the same way (no user, the tab unbound, the stored session left
+// alone) and says so: the no-signal line for no signal, otherwise "Couldn't load your profile — tap Unlock to try
+// again, or use email & password." The REAL handleBiometricUnlock (sliced, run in a fresh context: a new free name
+// throws) on a stubbed auth and profile read:
+//   CN1 a reply that isn't JSON, a code error, a rejection that isn't an Error (a string, nothing): no throw, busy back
+//       to false, the user null again and the tab unbound, the profile line; the Face ID screen kept (biometricPending
+//       untouched); no profile, no reload
+//   CN2 an old cached helpers.js (no isNoConnectionError): no signal and any other error alike — no throw (never a
+//       ReferenceError from the helper), busy false, undone, the profile line
+//   CN3 no signal still says the no-signal line; after any of them a second tap, the read answering, signs in (bound,
+//       the profile, the data reload, the screen left)
+//   the section runs inside its own catch (a throw fails one named check, never the run)
+console.log("\nCN. Face ID never sticks on \"Verifying…\" (any profile-read error)");
+await (async () => {
+  const J = JSON.stringify;
+  const nsrcCN = src.replace(/\r\n/g, "\n"), BA = "  const handleBiometricUnlock = ", ba = nsrcCN.indexOf(BA), bb = ba < 0 || nsrcCN.indexOf(BA, ba + 1) !== -1 ? -1 : nsrcCN.indexOf("\n  };\n", ba);
+  const NAMES = "setAuthError, setAuthBusy, biometric, auth, setAuthUser, dbAuth, setUserProfile, setMySurgeon, setNeedsProfile, setBiometricPending, setReloadTrigger, isNoConnectionError";
+  const bioF = (() => { try { return bb > ba && ba > 0 ? vm.runInContext(`(function (env) { const { ${NAMES} } = env; return (${nsrcCN.slice(ba + BA.length, bb + 4)}); })`, vm.createContext({})) : null; } catch (ex) { return null; } })();
+  const nceCN = vm.runInContext("typeof isNoConnectionError === 'function' ? isNoConnectionError : undefined", sandbox);
+  const NET_FACE = "No connection — you're still signed in. Check your signal and tap Unlock again.";
+  const PROFILE = "Couldn't load your profile — tap Unlock to try again, or use email & password.";
+  const U = { id: "u-cn", email: "cn@dsg.test" };
+  const tap = async (o = {}) => {
+    const log = [], st = o.st || { busy: false, pending: true, bound: null };
+    const env = { isNoConnectionError: o.oldHelpers ? undefined : nceCN,
+      auth: { getUser: async () => ({ user: U }), bindUser: (id) => { st.bound = id || null; } },
+      biometric: { authenticate: async () => ({ success: true }) },
+      dbAuth: { getProfile: async (id) => { log.push("getProfile:" + id); if ("throws" in o) throw o.throws; return { person_id: "s6", display_name: "FAK", role: "scheduler" }; } },
+      setAuthError: (v) => log.push("error:" + v), setAuthBusy: (v) => { st.busy = v; log.push("busy:" + v); }, setAuthUser: (u) => log.push("authUser:" + (u ? u.id : null)),
+      setUserProfile: () => log.push("profile"), setMySurgeon: () => {}, setNeedsProfile: (v) => log.push("needsProfile:" + v),
+      setBiometricPending: (v) => { st.pending = v; log.push("biometricPending:" + v); }, setReloadTrigger: () => log.push("reloadTrigger") };
+    let threw = null;
+    try { await bioF(env)(); } catch (ex) { threw = String(ex).slice(0, 120) || "(thrown)"; }
+    return { log, threw, st };
+  };
+  if (!bioF || !nceCN) { check("CN handleBiometricUnlock is extractable and compiles in a fresh context", false, J({ bio: !!bioF, helper: !!nceCN })); return; }
+  const UNDONE = (line) => J(["error:", "busy:true", "authUser:u-cn", "getProfile:u-cn", "authUser:null", "error:" + line, "busy:false"]);
+  const SIGNED_IN = J(["error:", "busy:true", "authUser:u-cn", "getProfile:u-cn", "profile", "biometricPending:false", "reloadTrigger", "busy:false"]);
+  const fine = (x, line) => J(x.log) === UNDONE(line) && x.threw === null && x.st.busy === false && x.st.bound === null && x.st.pending === true;
+
+  // CN1 — not no signal
+  const others = {};
+  for (const [k, err] of [["notJson", new SyntaxError("Unexpected token '<', \"<html>\" is not valid JSON")], ["codeError", new TypeError("Cannot read properties of undefined (reading 'person_id')")], ["aString", "boom"], ["nothing", undefined]])
+    others[k] = await tap({ throws: err });
+  check("CN1 Face ID, getUser answered, then the profile read fails with something other than no signal — a reply that isn't JSON (a Wi-Fi sign-in page), a code error, a string, nothing: no throw (it was thrown on, \"Verifying…\" for good), busy back to false, the half-done unlock undone (no user, the tab unbound), \"" + PROFILE + "\", the Face ID screen kept; no profile, no reload",
+    Object.values(others).every((x) => fine(x, PROFILE)), J(others));
+
+  // CN2 — an old cached helpers.js
+  const old = { noSignal: await tap({ throws: new TypeError("Load failed"), oldHelpers: true }), codeError: await tap({ throws: new TypeError("x is not a function"), oldHelpers: true }) };
+  check("CN2 …with an OLD cached helpers.js (no isNoConnectionError): no signal and a code error alike — no throw (never a ReferenceError from the helper), busy false, undone, the profile line",
+    Object.values(old).every((x) => fine(x, PROFILE)), J(old));
+
+  // CN3 — no signal unchanged; a second tap signs in
+  const ns = [await tap({ throws: new TypeError("Load failed") }), await tap({ throws: new TypeError("Failed to fetch") })];
+  const st = { busy: false, pending: true, bound: null };
+  const first = await tap({ st, throws: new SyntaxError("Unexpected token '<'") }), after1 = Object.assign({}, st);
+  const second = after1.busy === false && after1.pending === true ? await tap({ st }) : null;
+  check("CN3 no signal still says \"" + NET_FACE + "\" (CI4a's words, undone the same way); after a failed read the screen is usable — a second tap, the read answering, signs in (bound, the profile, the data reload, the screen left)",
+    ns.every((x) => fine(x, NET_FACE)) && fine(Object.assign({}, first, { st: after1 }), PROFILE) && !!second && J(second.log) === SIGNED_IN && second.threw === null && st.bound === "u-cn" && st.pending === false && st.busy === false,
+    J({ ns, first: first.log, after1, second: second && second.log }));
+})().catch(ex => check("CN harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
 
 // ─── BG. Sign-in: iPhone autofill hints, plain network errors, no stuck "Sending…" offline (UX audit 2026-10-19) ───
 // The sign-in, sign-up and reset forms gave the iPhone no autofill hints (its saved passwords and account
@@ -6819,7 +6992,7 @@ console.log("\nBI. Manual Adjustments weeks, dark mode title + secondary buttons
     && ["type", "icon", "detail", "color", "shiftKey"].every((f) => w0.roles[0][f] === src25.roles[2][f]), JSON.stringify(w0));
 
   check("U4 My Shifts renders mineUpcoming's output; the unfiltered map is gone",
-    count("const myShiftsView = mineUpcoming(myShifts, myToday);") === 1 && count("{myShiftsView.map(wk => (") === 1 && count("{myShifts.map(wk => (") === 0);
+    count("const myShiftsView = mineUpcoming(myShifts, myToday, new Date().toTimeString().slice(0, 5));") === 1 && count("{myShiftsView.map(wk => (") === 1 && count("{myShifts.map(wk => (") === 0);
   check("U4 Find Swap renders only when canSwap; a started role shows the in-progress tag instead",
     count("{r.canSwap ? (") === 1 && count("findSwapSuggestions(wk.mStr, r.shiftKey, myId); setView(\"calendar\");") === 1 && count(") : r.shiftKey ? (") === 1 && count(">in progress</span>") === 1);
   {
@@ -7700,7 +7873,7 @@ console.log("\nAO. On Call Today banner on a covered holiday");
     JSON.stringify(fullRPC));
 
   // X3 — the Mine roles from the REAL builder (sliced) + mineUpcoming
-  const MA = "            const myShifts = [];", MB = "            const myShiftsView = mineUpcoming(myShifts, myToday);";
+  const MA = "            const myShifts = [];", MB = "            const myShiftsView = mineUpcoming(myShifts, myToday, new Date().toTimeString().slice(0, 5));";
   const ma = src.indexOf(MA), mb = ma < 0 ? -1 : src.indexOf(MB, ma);
   const ha = src.indexOf("const holidayEmoji = (label) => {"), hb = ha < 0 ? -1 : src.indexOf("\n  };", ha);
   const holidayEmoji = ha > 0 && hb > 0 ? vm.runInContext(`(function () { ${src.slice(ha, hb + 4)}\n return holidayEmoji; })()`, sandbox) : null;
@@ -8621,7 +8794,11 @@ console.log("\nAR. Requests tab copy + the APP trade note");
       const lineOfAt = (i) => n.slice(n.lastIndexOf("\n", i) + 1, n.indexOf("\n", i)).trim();
       const every = at("has been notified"), everyone = at("Everyone has been notified."), nobody = at("Nobody has been notified yet.");
       const lines = nobody.map(lineOfAt);
-      const ok = every.length === 3 && everyone.length === 1 && nobody.length === 2 && nj >= 0 && everyone[0] > nj && everyone[0] < njEnd
+      // (CO, 2026-10-25, on purpose: a fourth "has been notified" — runPublish's late toast, "Nobody has been notified
+      // yet: 📣 …", for a publish that lands after its deadline; it claims nothing was sent)
+      const rp = n.indexOf("  const runPublish = (weeks) => {"), rpEnd = rp < 0 ? -1 : n.indexOf("\n  };\n", rp);
+      const inRp = every.filter((i) => i > rp && i < rpEnd).map(lineOfAt);
+      const ok = every.length === 4 && inRp.length === 1 && /Nobody has been notified yet: 📣 Notify everyone is on the Calendar\./.test(inRp[0]) && everyone.length === 1 && nobody.length === 2 && nj >= 0 && everyone[0] > nj && everyone[0] < njEnd
         && lines.filter((l) => l === "✓ Published {justPublished.label}. Nobody has been notified yet.").length === 1 && lines.filter((l) => l.startsWith("//")).length === 1;
       return { ok, every: every.length, everyone: everyone.length, nobody: lines };
     })();
@@ -9177,7 +9354,7 @@ await (async () => {
   // _whenTxt (sliced, as X8 does); the card's date line, as the page writes it (twice: {_range(e)} since the review
   // fixes — the runs, PH-6). The builder now also reads the clock (_now: a Saturday's 24h ends Sun 7a — NC-1 / F3);
   // `at` below is that clock, the day's midnight unless a check gives an hour.
-  const MA = "            const myShifts = [];", MB = "            const myShiftsView = mineUpcoming(myShifts, myToday);";
+  const MA = "            const myShifts = [];", MB = "            const myShiftsView = mineUpcoming(myShifts, myToday, new Date().toTimeString().slice(0, 5));";
   const ma = src.indexOf(MA), mb = ma < 0 ? -1 : src.indexOf(MB, ma);
   const ha = src.indexOf("const holidayEmoji = (label) => {"), hb = ha < 0 ? -1 : src.indexOf("\n  };", ha);
   const NA = "            const _nextUp = [];", NB = "_nextUp.sort((a, b) => a.start - b.start);";
@@ -9376,14 +9553,16 @@ await (async () => {
       if (!r.shiftKey && !r.date) continue; // OFF: never on the card
       const one = [{ ...w, roles: [r] }], onCard = raw(cardB, one, today).length === 1, onMine = upFn(JSON.parse(J(one)), today).length === 1;
       if (onCard) cb5In++; else cb5Out++;
-      // (review fix 2026-10-20, on purpose — CF7: a service week whose last held day is a weekday leaves the card the day after it)
+      // (review fix 2026-10-20 — CF7: a service week whose last held day is a weekday leaves the card the day after it.
+      // My Shifts kept it to the week's Sunday — the one exception this check allowed — until CL (2026-10-25, on purpose):
+      // it now ends there too, so no exception is left: `early` must never be true)
       const early = onMine && endedEarly(r, today);
       if (early) cb5Early++;
-      if (onCard !== (onMine && !early)) cb5Bad.push(`${s.name} ${w.mStr} ${r.type} on ${today}: card ${onCard}, My Shifts ${onMine}`);
+      if (onCard !== onMine) cb5Bad.push(`${s.name} ${w.mStr} ${r.type} on ${today}: card ${onCard}, My Shifts ${onMine}`);
     }
   }
-  check(`CF5 every role of every surgeon on the synthetic weeks is on the card exactly while My Shifts (mineUpcoming) keeps it — but a service week whose last held day is a weekday, gone the day after it (CF7) — every day 10/25–12/6 at midnight (${cb5In} on, ${cb5Out} off, ${cb5Early} ended early)`,
-    READY && !!upFn && cb5Bad.length === 0 && cb5In >= 200 && cb5Out >= 200 && cb5Early >= 2, NOT_READY || cb5Bad.slice(0, 3).join(" | ") || J({ cb5In, cb5Out, cb5Early }));
+  check(`CF5 every role of every surgeon on the synthetic weeks is on the card exactly while My Shifts (mineUpcoming) keeps it — a service week whose last held day is a weekday gone from both the day after it (CF7; My Shifts since CL) — every day 10/25–12/6 at midnight (${cb5In} on, ${cb5Out} off, ${cb5Early} kept by My Shifts past their end)`,
+    READY && !!upFn && cb5Bad.length === 0 && cb5In >= 200 && cb5Out >= 200 && cb5Early === 0, NOT_READY || cb5Bad.slice(0, 3).join(" | ") || J({ cb5In, cb5Out, cb5Early }));
 
   // CF7 — a service week leaves the card when its held shifts end (review fix 2026-10-20 — NC-1; PH-7 / F3)
   const X27 = { // Christmas 2027 (the finding's own case): Fri 12/24 + Sat 12/25 are the holiday pair's — s1 holds Mon–Thu; his next call is the Tue night 12/28
@@ -9436,6 +9615,89 @@ await (async () => {
         && Array.isArray(out.monday) && !out.monday.some((x) => x.startsWith("dayCall 2026-10-26")) && has(out.wknd, "wknd 2026-10-30 2026-11-01 true 10 in 10 days")
         && has(out.wkndSun700, "wknd 2026-10-30 2026-11-01 true -2 in progress"),
       NOT_READY || J(out).slice(0, 600));
+  }
+
+  // ─── CL. My Shifts ends a service week where the Next call card does (2026-10-25) ───
+  // CF7 took a service week off the card when its held shifts end — Sun 7a for one held through its Saturday (that
+  // day's 24h runs to Sun 7a), the day after its last held day otherwise — but My Shifts (helpers.js mineUpcoming)
+  // kept it to the week's Sunday: its row said "in progress" all that Sunday, and all of Saturday and Sunday for one
+  // whose Saturday was someone else's. mineUpcoming now ends it on the card's day, and takes the device's clock
+  // ("HH:MM", a third argument) for the Sun 7a edge; without one (an old cached index.html) that Sunday is kept all
+  // day, as before. Here, on CF's slices (the REAL Mine builder, the REAL card builder) and the REAL helpers.js:
+  //   CL1 worked examples (the row's state: "swap" = Find Swap, "in progress" = started, "dated", or not listed): a whole
+  //       week (s1, 11/2) in progress on Sat 11/7 and Sun 11/8 until 06:59, gone from 07:00 (its weekend, s6, still
+  //       listed that Sunday); no clock → kept that Sunday, as before; gone Mon 11/9; one whose Saturday is someone
+  //       else's (s3, 11/9) in progress on Fri 11/13 23:59, gone Sat 11/14 (s4's dated Service Day listed that day); one
+  //       held on its Saturday only (s5, 11/21) and Thanksgiving's (s1, 11/23–11/28, its last run the Saturday) kept to
+  //       Sun 06:59, gone at 07:00; a role with no held list ends with its Saturday; a night, an OFF week and a dated
+  //       holiday 24h exactly as before
+  //   CL2 every role of every surgeon, every day 10/25–12/6 of the synthetic weeks and the 10 days around each of the 46
+  //       live weeks, at 00:00, 06:59, 07:00, 12:00 and 23:59: listed in My Shifts exactly while it is on the card
+  //   CL3 the page hands My Shifts the device's clock as "HH:MM" (the REAL line — toTimeString's first five
+  //       characters, zero-padded); its rows and their "in progress" tag still come from mineUpcoming's output
+  {
+    const up = (shifts, today, at) => (upFn ? upFn(JSON.parse(J(shifts)), today, at) : null);
+    // a role's row in My Shifts on `today` at `at`: "swap" (Find Swap), "in progress", "dated" (a holiday / single day:
+    // no tag), "off" — or null when it isn't listed. key: the role's shiftKey, its date, or "OFF"
+    const rowState = (shifts, mStr, key, today, at) => {
+      const v = up(shifts, today, at); if (!Array.isArray(v)) return "no helper";
+      const w = v.find((x) => x.mStr === mStr), r = w && w.roles.find((x) => (key === "OFF" ? !x.shiftKey && !x.date : x.shiftKey === key || x.date === key));
+      return !r ? null : r.date ? "dated" : !r.shiftKey ? "off" : r.canSwap ? "swap" : "in progress";
+    };
+    const row = (sid, mStr, key, today, at) => (READY ? rowState(mineB(SYN, sid), mStr, key, today, at) : "not ready");
+    const OFFW = { "2026-11-02": { dayCall: "s1", off: "s7", nights: { mon: "s2", tue: "s3", wed: "s4", thu: "s5", wknd: "s6" } } };
+    const noHeldShifts = [{ mStr: "2026-11-02", roles: [{ type: "Service Week (incl. Sat)", shiftKey: "dayCall" }] }];
+    const l1 = READY ? {
+      fullFri: row("s1", "2026-11-02", "dayCall", "2026-10-30", "12:00"), fullSat: row("s1", "2026-11-02", "dayCall", "2026-11-07", "23:59"),
+      fullSun0: row("s1", "2026-11-02", "dayCall", "2026-11-08", "00:00"), fullSun659: row("s1", "2026-11-02", "dayCall", "2026-11-08", "06:59"),
+      fullSun700: row("s1", "2026-11-02", "dayCall", "2026-11-08", "07:00"), fullSun23: row("s1", "2026-11-02", "dayCall", "2026-11-08", "23:59"),
+      fullSunNoClock: row("s1", "2026-11-02", "dayCall", "2026-11-08"), fullMon: row("s1", "2026-11-02", "dayCall", "2026-11-09", "00:00"),
+      wkndSun700: row("s6", "2026-11-02", "wknd", "2026-11-08", "07:00"), wkndMon: row("s6", "2026-11-02", "wknd", "2026-11-09", "00:00"),
+      satOtherFri: row("s3", "2026-11-09", "dayCall", "2026-11-13", "23:59"), satOtherSat: row("s3", "2026-11-09", "dayCall", "2026-11-14", "00:00"),
+      satOtherSun: row("s3", "2026-11-09", "dayCall", "2026-11-15", "06:59"), satDay: row("s4", "2026-11-09", "2026-11-14", "2026-11-14", "12:00"),
+      satOnlySat: row("s5", "2026-11-16", "dayCall", "2026-11-21", "12:00"), satOnly659: row("s5", "2026-11-16", "dayCall", "2026-11-22", "06:59"), satOnly700: row("s5", "2026-11-16", "dayCall", "2026-11-22", "07:00"),
+      thanksSun659: row("s1", "2026-11-23", "dayCall", "2026-11-29", "06:59"), thanksSun700: row("s1", "2026-11-23", "dayCall", "2026-11-29", "07:00"),
+      thanks24: row("s1", "2026-11-23", "2026-11-26", "2026-11-26", "12:00"), thanks24After: row("s1", "2026-11-23", "2026-11-26", "2026-11-27", "00:00"),
+      noHeldSun659: rowState(noHeldShifts, "2026-11-02", "dayCall", "2026-11-08", "06:59"), noHeldSun700: rowState(noHeldShifts, "2026-11-02", "dayCall", "2026-11-08", "07:00"),
+      night: row("s2", "2026-11-02", "mon", "2026-11-02", "23:59"), nightAfter: row("s2", "2026-11-02", "mon", "2026-11-03", "00:00"),
+      offSun: rowState(mineB(OFFW, "s7"), "2026-11-02", "OFF", "2026-11-08", "23:59"), offMon: rowState(mineB(OFFW, "s7"), "2026-11-02", "OFF", "2026-11-09", "00:00"),
+    } : null;
+    check("CL1 My Shifts (the REAL mineUpcoming on the REAL Mine roles): a whole service week is in progress Sat 11/7 and Sun 11/8 until 06:59, gone from 07:00 (it said \"in progress\" all Sunday) — its weekend still listed then; no clock given (an old caller) → kept that Sunday as before; gone Monday; one whose Saturday is someone else's is gone that Saturday (s4's dated Service Day listed); one held on its Saturday only and Thanksgiving's are kept to Sun 06:59, gone at 07:00; a role with no held list ends with its Saturday; a night, an OFF week and a holiday 24h as before",
+      !!l1 && J(l1) === J({ fullFri: "swap", fullSat: "in progress", fullSun0: "in progress", fullSun659: "in progress", fullSun700: null, fullSun23: null, fullSunNoClock: "in progress", fullMon: null,
+        wkndSun700: "in progress", wkndMon: null, satOtherFri: "in progress", satOtherSat: null, satOtherSun: null, satDay: "dated",
+        satOnlySat: "in progress", satOnly659: "in progress", satOnly700: null, thanksSun659: "in progress", thanksSun700: null, thanks24: "dated", thanks24After: null,
+        noHeldSun659: "in progress", noHeldSun700: null, night: "swap", nightAfter: null, offSun: "off", offMon: null }),
+      NOT_READY || J(l1));
+
+    // CL2 — the list and the card agree at every hour that matters
+    const TIMES = ["00:00", "06:59", "07:00", "12:00", "23:59"];
+    const l2Bad = []; let l2On = 0, l2Off = 0;
+    const agree = (who, shifts, w, r, today) => {
+      for (const at of TIMES) {
+        const one = [{ ...w, roles: [r] }], onCard = raw(cardB, one, today, at).length === 1, onMine = up(one, today, at).length === 1;
+        if (onCard) l2On++; else l2Off++;
+        if (onCard !== onMine) l2Bad.push(`${who} ${w.mStr} ${r.type} on ${today} ${at}: card ${onCard}, My Shifts ${onMine}`);
+      }
+    };
+    if (READY && upFn) for (const s of SURG) {
+      const syn = mineB(SYN, s.id);
+      for (let today = "2026-10-25"; today <= "2026-12-06"; today = nextDay(today)) for (const w of syn) for (const r of w.roles) if (r.shiftKey || r.date) agree(s.name, syn, w, r, today);
+      const live = mineB(LIVE, s.id);
+      for (const w of live) for (const r of w.roles) {
+        if (!r.shiftKey && !r.date) continue;
+        for (let today = fmtD(addDs(P(w.mStr), -1)), i = 0; i < 10; i++, today = nextDay(today)) agree(s.name + " (live)", live, w, r, today);
+      }
+    }
+    check(`CL2 every role of every surgeon — the synthetic weeks every day 10/25–12/6, and the 10 days around each of the 46 live weeks — at 00:00, 06:59, 07:00, 12:00 and 23:59: listed in My Shifts exactly while it is on the Next call card (${l2On} on, ${l2Off} off)`,
+      READY && !!upFn && l2Bad.length === 0 && l2On >= 2000 && l2Off >= 2000, NOT_READY || l2Bad.slice(0, 3).join(" | ") || J({ l2On, l2Off }));
+
+    // CL3 — the page's line
+    const LINE_CL = "            const myShiftsView = mineUpcoming(myShifts, myToday, new Date().toTimeString().slice(0, 5));";
+    const hm = new Date(2026, 10, 8, 6, 59).toTimeString().slice(0, 5), hm7 = new Date(2026, 10, 8, 7, 0).toTimeString().slice(0, 5);
+    check("CL3 My Shifts is handed the device's clock: the REAL line passes toTimeString's first five characters (\"06:59\", \"07:00\" — zero-padded HH:MM, as mineUpcoming compares them); the rows still come from its output, the \"in progress\" tag on a started role",
+      count(LINE_CL.trim()) === 1 && count("mineUpcoming(") === 1 && hm === "06:59" && hm7 === "07:00" && count("{myShiftsView.map(wk => (") === 1
+        && count(") : r.shiftKey ? (\r\n                          <span style={{marginLeft:\"auto\",background:\"#e8f5ec\",border:\"1px solid #b0d8bc\",color:\"#1a8040\",borderRadius:5,padding:\"2px 8px\",fontSize:10,fontWeight:600,fontFamily:font}}>in progress</span>") + count(") : r.shiftKey ? (\n                          <span style={{marginLeft:\"auto\",background:\"#e8f5ec\",border:\"1px solid #b0d8bc\",color:\"#1a8040\",borderRadius:5,padding:\"2px 8px\",fontSize:10,fontWeight:600,fontFamily:font}}>in progress</span>") === 1,
+      J({ line: count(LINE_CL.trim()), calls: count("mineUpcoming("), hm, hm7 }));
   }
 })().catch(ex => check("CF harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
 
@@ -9557,7 +9819,7 @@ console.log("\nAU. Mine: readable dates, Published through, empty states by role
   // AU2 — the REAL Mine builder's roles (sliced, as X3 does)
   const SURG = ["DJA", "MCC", "RPC", "KJH", "REH", "FAK", "ARW"].map((name, i) => ({ id: "s" + (i + 1), name }));
   const nameOf = (id) => (SURG.find((s) => s.id === id) || {}).name || id || "?";
-  const MA = "            const myShifts = [];", MB = "            const myShiftsView = mineUpcoming(myShifts, myToday);";
+  const MA = "            const myShifts = [];", MB = "            const myShiftsView = mineUpcoming(myShifts, myToday, new Date().toTimeString().slice(0, 5));";
   const ma = src.indexOf(MA), mb = ma < 0 ? -1 : src.indexOf(MB, ma);
   const ha = src.indexOf("const holidayEmoji = (label) => {"), hb = ha < 0 ? -1 : src.indexOf("\n  };", ha);
   let mineRun = null;
@@ -10260,22 +10522,23 @@ await (async () => {
     ["refused", "bug", "cancelled"].every((k) => !ch5[k].threw && ch5[k].jp.length === 0 && ch5[k].hist === "OTHER") && !ch5.signOut.threw && ch5.signOut.jp.length === 0 && ch5.signOut.hist === "OTHER,STEP", J(ch5));
   // the REAL undoLastChange with the banner up: o.step — the step undone; o.blocked — a week of it changed by someone else since
   const unBody = bodyCH("  const undoLastChange = () => {", "\n  };\n");
-  const unMk = fnCH("scheduleHistory, schedEditable, schedSyncRef, showToast, commitSchedule, setPriorCounts, setYear1Counts, setScheduleHistory, setJustPublished", unBody === null ? null : "() => {" + unBody + "\n  }");
+  // (2026-10-25: it also counts the publish it took back in publishUndoneRef — runPublish's late() reads it, CO4)
+  const unMk = fnCH("scheduleHistory, schedEditable, schedSyncRef, showToast, commitSchedule, setPriorCounts, setYear1Counts, setScheduleHistory, setJustPublished, publishUndoneRef", unBody === null ? null : "() => {" + unBody + "\n  }");
   const un5 = (step, o = {}) => {
-    const rec = { jp: [], commits: 0, toasts: [], counts: 0 };
+    const rec = { jp: [], commits: 0, toasts: [], counts: 0, undone: { current: 0 } };
     if (!unMk) return { threw: "undoLastChange not extractable" };
     try {
       unMk({ scheduleHistory: step ? [step] : [], schedEditable: () => true, schedSyncRef: { current: { undoPlan: (s) => ({ next: s, touched: [], blocked: o.blocked ? ["2026-11-16"] : [] }) } }, showToast: (m) => rec.toasts.push(String(m)),
-        commitSchedule: () => { rec.commits++; }, setPriorCounts: () => { rec.counts++; }, setYear1Counts: () => { rec.counts++; }, setScheduleHistory: () => {}, setJustPublished: (v) => rec.jp.push(v) })();
+        commitSchedule: () => { rec.commits++; }, setPriorCounts: () => { rec.counts++; }, setYear1Counts: () => { rec.counts++; }, setScheduleHistory: () => {}, setJustPublished: (v) => rec.jp.push(v), publishUndoneRef: rec.undone })();
     } catch (ex) { rec.threw = String(ex).slice(0, 160); }
     return rec;
   };
   const PUB_STEP = { sched: { "2026-11-09": { dayCall: "s5" } }, epoch: 3, counts: { prior: {}, y1: {} } }, EDIT_STEP = { sched: { "2026-11-09": { dayCall: "s5" } }, epoch: 3, counts: null };
   const un = { pub: un5(PUB_STEP), edit: un5(EDIT_STEP), blocked: un5(PUB_STEP, { blocked: true }), none: un5(null) };
   check("CH5 R1 the REAL ↩ Undo of a PUBLISH step (it carries the counts) takes the banner down with the schedule and the counts — its 📣 would announce a schedule that was undone; another kind of step, an Undo refused (a week changed by someone else since) or nothing to undo leaves it",
-    !un.pub.threw && J(un.pub.jp) === J([null]) && un.pub.commits === 1 && un.pub.counts === 2
-      && !un.edit.threw && un.edit.jp.length === 0 && un.edit.commits === 1 && !un.blocked.threw && un.blocked.jp.length === 0 && un.blocked.commits === 0 && /Can't undo/.test(un.blocked.toasts.join(" "))
-      && !un.none.threw && un.none.jp.length === 0 && un.none.commits === 0, J(un));
+    !un.pub.threw && J(un.pub.jp) === J([null]) && un.pub.commits === 1 && un.pub.counts === 2 && un.pub.undone.current === 1
+      && !un.edit.threw && un.edit.jp.length === 0 && un.edit.commits === 1 && un.edit.undone.current === 0 && !un.blocked.threw && un.blocked.jp.length === 0 && un.blocked.commits === 0 && un.blocked.undone.current === 0 && /Can't undo/.test(un.blocked.toasts.join(" "))
+      && !un.none.threw && un.none.jp.length === 0 && un.none.commits === 0 && un.none.undone.current === 0, J(un));
   // the REAL ✕ Clear end to end, over the REAL runAuthoritativeSchedule, from Regenerate's banner (raised by the REAL
   // doRegenerate): o.cancel — "Cancel" at its question; o.job — the engine job's answer
   const clBody = bodyCH("  const clearSchedule = async () => {", "\n  };\n\n  // ─── Snapshot restore");
@@ -10651,13 +10914,120 @@ await (async () => {
   const rgBodyCD = afterCD("  const doRegenerate = async (e) => {", "\n  };\n");
   const raBodyCD = afterCD("  const runAuthoritativeSchedule = async (target, what, undoStep, before, late) => {", "\n  };\n");
   const unBodyCD = afterCD("  const undoLastChange = () => {", "\n  };\n");
+  // (CO, 2026-10-25, on purpose: a NINTH place — runPublish's late(), the one raise for a publish that lands after its
+  // deadline, whichever button started it; executed in CO)
+  const rpBodyCD = afterCD("  const runPublish = (weeks) => {", "\n  };\n");
   const setSites = []; for (let i = nsrcCD.indexOf("setJustPublished("); i >= 0; i = nsrcCD.indexOf("setJustPublished(", i + 1)) setSites.push(nsrcCD.slice(i, i + 32));
-  check("CD6 only eight places set it: raised TWICE, each where its publish landed (acceptPreview, and ↻ Regenerate's doRegenerate — CH), closed by the 📣 tap, Not now, the session boundary, the sender (notifyPublished — any notice to the group), a clear / reset / restore that stands (runAuthoritativeSchedule) and ↩ Undo of a publish (undoLastChange) — CH5",
-    count("setJustPublished(") === 8 && count("setJustPublished({ label: pubPeriod, ep });") === 1 && count("setJustPublished({ label: period, ep });") === 1 && count("setJustPublished(null)") === 6
+  check("CD6 only nine places set it: raised THREE times, each where its publish landed (acceptPreview, ↻ Regenerate's doRegenerate — CH — and runPublish's late() for one that landed after its deadline — CO), closed by the 📣 tap, Not now, the session boundary, the sender (notifyPublished — any notice to the group), a clear / reset / restore that stands (runAuthoritativeSchedule) and ↩ Undo of a publish (undoLastChange) — CH5",
+    count("setJustPublished(") === 9 && count("setJustPublished({ label: pubPeriod, ep });") === 1 && count("setJustPublished({ label: period, ep });") === 1 && count("setJustPublished(null)") === 6
+      && count("setJustPublished({ label, ep });") === 1 && !!rpBodyCD && rpBodyCD.includes("setJustPublished({ label, ep });")
       && !!apBody && apBody.includes("setJustPublished({ label: pubPeriod, ep });") && !!rgBodyCD && rgBodyCD.includes("setJustPublished({ label: period, ep });")
       && !!njBody && njBody.includes("setJustPublished(null)") && !!sbBody && sbBody.includes("setJustPublished(null)")
       && !!npBody && npBody.includes("setJustPublished(null)") && !!raBodyCD && raBodyCD.includes("setJustPublished(null)") && !!unBodyCD && unBodyCD.includes("setJustPublished(null)"), J(setSites));
 })().catch(ex => check("CD harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
+
+// ─── CO. A publish that lands after its deadline still offers 📣 (2026-10-25) ───
+// A publish job still writing at its deadline (90 s) answers its caller "still running … Nobody was notified" (A5(f));
+// when it then landed, the engine toasted "Publishing the new weeks has finished — every week is saved." and nothing
+// more: the Calendar's "✓ Published … 📣 Notify everyone" banner (justPublished) was raised only by a caller that got
+// ok in time, so a slow publish could never be announced from the app. runPublish now hands the engine a late() (E8):
+// when the job ends ok, in the session it was published in, it raises the banner for the weeks it published and says
+// nobody has been told yet. The REAL runPublish (sliced) on the REAL engine (createSchedSync) over the emulated
+// schedule_weeks table, one week's write held past a short deadline:
+//   CO1 held past the deadline, then landed: the caller's answer is "still running" (as before); when it lands, ONE
+//       toast — "… every week is saved. Nobody has been notified yet: 📣 …" — and the banner raised once, for the
+//       weeks published ("Nov 2 – Nov 22, 2026"), in the tap's session; the weeks are in the table
+//   CO2 …landed after a session change (the epoch moved) → no banner, the engine's own words; landed with a week not
+//       saved → no banner, the engine's "not every week is saved"
+//   CO3 a publish that lands in time: runPublish raises nothing itself (its caller does — CD / CH hold that), no late
+//       toast; runPublish is still the one publish job (the census at the top, updated)
+//   CO4 (review fix) one ↩ Undone while it still ran (undoLastChange counts it in publishUndoneRef — CH5) raises
+//       nothing when it lands: its 📣 would announce a schedule that was taken back
+//   the section runs inside its own catch (a throw fails one named check, never the run)
+console.log("\nCO. A publish that lands after its deadline still offers 📣");
+await (async () => {
+  const J = JSON.stringify;
+  const seCO = require("./sync-engine-se.js"), { createFakeWeeksTable } = require("./fake-weeks-table.js");
+  let createSchedSync = null; try { createSchedSync = seCO.compileEngine(seCO.extractEngine(src)); } catch (ex) { createSchedSync = null; }
+  // the REAL runPublish: a one-line arrow (main's) or a block
+  const nsrcCO = src.replace(/\r\n/g, "\n"), RP = "  const runPublish = ", rp = nsrcCO.indexOf(RP);
+  const rpCode = (() => {
+    if (rp < 0 || nsrcCO.indexOf(RP, rp + 1) !== -1) return null;
+    const line = nsrcCO.slice(rp + RP.length, nsrcCO.indexOf("\n", rp));
+    if (!line.trim().endsWith("{")) return line.trim().replace(/;$/, "");
+    const e = nsrcCO.indexOf("\n  };\n", rp); return e < 0 ? null : nsrcCO.slice(rp + RP.length, e + 4);
+  })();
+  const rpF = (() => { try { return rpCode && vm.runInContext(`(function (env) { const { schedSyncRef, sessionEpochRef, setJustPublished, periodLabel, publishUndoneRef } = env; return (${rpCode}); })`, vm.createContext({})); } catch (ex) { return null; } })();
+  const periodLabelCO = vm.runInContext("periodLabel", sandbox);
+  if (!createSchedSync || !rpF) { check("CO the engine and runPublish are extractable", false, J({ engine: !!createSchedSync, runPublish: !!rpF })); return; }
+  const sleep = (n) => new Promise((r) => setTimeout(r, n));
+  const internalCO = [];
+  let msCO = Date.UTC(2026, 9, 25, 12, 0, 0);
+  const clock = () => new Date(msCO += 1000).toISOString();
+  const WK = ["2026-11-02", "2026-11-09", "2026-11-16"];
+  const wkO = (dc) => ({ dayCall: dc, nights: { mon: "s2", tue: "s3", wed: "s4", thu: "s5", wknd: "s6" }, off: "s7", isBackup: false, isFierceBackup: false, holidayCoverage: {} });
+  const mk = () => {
+    const t = createFakeWeeksTable({ baseUrl: "https://x.supabase.co", anonKey: "ANON", users: { TOK_A: "user-a" }, clock,
+      rows: WK.map((k, i) => ({ week_monday: k, data: wkO("s" + (i + 1)), version: 2, updated_by: "user-a", updated_at: "2026-10-01T08:00:00.000Z" })) });
+    const s = { t, mirror: {}, toasts: [], banners: [], ep: { current: 7 }, undone: { current: 0 } };
+    const h = () => ({ apikey: "ANON", Authorization: "Bearer TOK_A" });
+    s.engine = createSchedSync({ getState: () => s.mirror, commit: (n) => { s.mirror = n; }, fetch: (u, i) => t.fetch(u, i), url: "https://x.supabase.co",
+      writeHeaders: h, readHeaders: h, anonHeaders: () => ({ apikey: "ANON", Authorization: "Bearer ANON" }), canWrite: () => true, token: () => "TOK_A", userId: () => "user-a",
+      now: clock, nowMs: () => msCO, onStatus: () => {}, onToast: (m) => s.toasts.push(String(m)), onWipeBlocked: () => {}, onInternalError: (e) => internalCO.push(String(e && e.message || e)), log: () => {},
+      timeouts: { read: 60000, write: 60000, stall: 15, deadline: 60 } });
+    s.runPublish = rpF({ schedSyncRef: { current: s.engine }, sessionEpochRef: s.ep, setJustPublished: (v) => s.banners.push(v), periodLabel: periodLabelCO, publishUndoneRef: s.undone });
+    return s;
+  };
+  // a publish as the app runs one: its weeks committed to the screen, then the job (publishWeeks → runPublish);
+  // o.hold: one week's write held until released; o.failWeek: that week's writes refused (5xx); o.moveEpoch: the session changes before it lands
+  const publish = async (o = {}) => {
+    const s = mk(); await s.engine.load();
+    const weeks = {}; WK.forEach((k, i) => { weeks[k] = wkO("p" + (i + 1)); });
+    const before = JSON.parse(J(s.mirror));
+    s.mirror = Object.assign({}, s.mirror, JSON.parse(J(weeks)));
+    const hold = o.hold ? s.t.control.pause({ method: "PATCH", week: WK[1], count: 1 }) : null;
+    if (o.failWeek) s.t.control.fail({ method: "PATCH", week: WK[2], kind: "5xx-before", count: 5 });
+    const job = s.runPublish(weeks);
+    if (hold) await hold.arrived;
+    const answer = await Promise.race([job, sleep(1500).then(() => "no answer")]);
+    const atAnswer = { toasts: s.toasts.slice(), banners: s.banners.slice() };
+    if (o.moveEpoch) s.ep.current++;
+    // o.undo: ↩ Undo of this publish while it still runs — undoLastChange puts the screen back and counts it
+    if (o.undo) { s.mirror = JSON.parse(J(before)); s.undone.current++; }
+    if (hold) hold.release();
+    await s.engine.idle(); await sleep(5); await s.engine.idle(); await s.engine.idle();
+    const table = WK.map((k) => { const r = s.t.get(k); return r && r.data ? r.data.dayCall : null; });
+    return { answer: answer && typeof answer === "object" ? { ok: answer.ok, running: !!answer.running } : answer, atAnswer, toasts: s.toasts, banners: s.banners, table };
+  };
+  const LABEL = periodLabelCO(WK[0], WK[2]);
+  const OWN_OK = "Publishing the new weeks has finished — every week is saved.";
+
+  // CO1 — late, landed: the banner
+  const c1 = await publish({ hold: true });
+  check(`CO1 a publish held past its deadline answers its caller "still running" (as before), and when it lands: ONE toast — "${OWN_OK} Nobody has been notified yet: 📣 Notify everyone is on the Calendar." — and the 📣 banner raised once, for the weeks it published ("${LABEL}"), in the tap's session (it was never raised); every week in the table`,
+    J(c1.answer) === J({ ok: false, running: true }) && c1.atAnswer.toasts.length === 0 && c1.atAnswer.banners.length === 0
+      && J(c1.toasts) === J([OWN_OK + " Nobody has been notified yet: 📣 Notify everyone is on the Calendar."]) && J(c1.banners) === J([{ label: LABEL, ep: 7 }]) && LABEL === "Nov 2 – Nov 22, 2026"
+      && J(c1.table) === J(["p1", "p2", "p3"]), J(c1));
+
+  // CO2 — late, but another session now / not every week saved: no banner
+  const c2a = await publish({ hold: true, moveEpoch: true }), c2b = await publish({ hold: true, failWeek: true });
+  check("CO2 …one that lands after the session changed (a sign-out / another account meanwhile) raises nothing and says the engine's own words; one that ends with a week not saved raises nothing and says the engine's \"not every week is saved\"",
+    J(c2a.answer) === J({ ok: false, running: true }) && J(c2a.banners) === "[]" && J(c2a.toasts) === J([OWN_OK])
+      && J(c2b.answer) === J({ ok: false, running: true }) && J(c2b.banners) === "[]" && c2b.toasts.length === 1 && c2b.toasts[0].startsWith("Publishing the new weeks has finished, but not every week is saved."),
+    J({ c2a, c2b }));
+
+  // CO4 — (review fix 2026-10-25) ↩ Undo of that publish while it still runs: Undo works during a job, and the job still
+  // writes its own weeks (then the follow-up push sends the undo) — so it ends ok; its 📣 would announce what was taken back
+  const c4 = await publish({ hold: true, undo: true });
+  check("CO4 (review fix) a late publish ↩ Undone while it still ran raises NO banner when it lands (it would announce a schedule that was taken back) and says the engine's own words; the table ends with the undone weeks (the follow-up push)",
+    J(c4.answer) === J({ ok: false, running: true }) && J(c4.banners) === "[]" && J(c4.toasts) === J([OWN_OK]) && J(c4.table) === J(["s1", "s2", "s3"]), J(c4));
+
+  // CO3 — in time: runPublish itself raises nothing
+  const c3 = await publish({});
+  check("CO3 a publish that lands in time answers ok and runPublish raises nothing itself (its caller raises the banner — CD / CH), no late toast; the engine hit no internal error in any run",
+    J(c3.answer) === J({ ok: true, running: false }) && J(c3.banners) === "[]" && J(c3.toasts) === "[]" && J(c3.table) === J(["p1", "p2", "p3"]) && internalCO.length === 0,
+    J({ c3, internalCO }));
+})().catch(ex => check("CO harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
 
 // ─── AE. Generator: "Needs your OK" before publish + Setup holiday text (2026-10-11) ───
 // Owner decisions 2026-10-11: time off is a hard stop, card eves are night
@@ -11491,7 +11861,7 @@ await (async () => {
     if ([iU, eU, iC, kC, eC, iP, eP].every(x => x >= 0)) {
       try {
         factory = vm.runInContext(`(function (env) {
-          const { surgeons, parse, useCallback, scheduleRef, commitSchedule, schedSyncRef, schedEditable, showToast, priorCounts, year1Counts, setPriorCounts, setYear1Counts, scheduleHistory, setScheduleHistory, logAudit, setJustPublished } = env;
+          const { surgeons, parse, useCallback, scheduleRef, commitSchedule, schedSyncRef, schedEditable, showToast, priorCounts, year1Counts, setPriorCounts, setYear1Counts, scheduleHistory, setScheduleHistory, logAudit, setJustPublished, publishUndoneRef } = env;
           ${nsrc.slice(iU, eU)}
           ${nsrc.slice(iC, eC) + "\n  });"}
           ${nsrc.slice(iP, eP)}
@@ -11510,7 +11880,7 @@ await (async () => {
         commitSchedule: (v) => { st.schedule = v; ref.current = v; }, schedEditable: () => true, showToast: (m) => st.toasts.push(String(m)),
         schedSyncRef: { current: { epochNow: () => eng.epoch, undoPlan: (snap) => ({ next: JSON.parse(JSON.stringify(snap)), touched: [], blocked: eng.blocked.slice() }) } }, priorCounts: st.prior, year1Counts: st.y1,
         setPriorCounts: upd("prior"), setYear1Counts: upd("y1"), scheduleHistory: st.history, setScheduleHistory: upd("history"),
-        logAudit: (a, msg, meta) => st.audits.push({ a, msg, meta }), setJustPublished: () => {} }); // (↩ Undo of a publish takes the "nobody notified yet" banner down — 2026-10-20, review R1; run in CH5)
+        logAudit: (a, msg, meta) => st.audits.push({ a, msg, meta }), setJustPublished: () => {}, publishUndoneRef: { current: 0 } }); // (↩ Undo of a publish takes the "nobody notified yet" banner down — 2026-10-20, review R1; run in CH5 — and, 2026-10-25, counts in publishUndoneRef: CO4)
       const wk = (dc, n) => ({ dayCall: dc, nights: { wknd: n[4], mon: n[0], tue: n[1], wed: n[2], thu: n[3] }, off: "s7", isBackup: false, isFierceBackup: false, holidayCoverage: null });
       const OLD = { "2026-11-09": wk("s5", ["s1", "s2", "s3", "s4", "s6"]) };
       const P = { "2026-11-16": wk("s1", ["s2", "s3", "s4", "s5", "s6"]), "2026-11-23": wk("s2", ["s1", "s4", "s3", "s6", "s5"]) };
@@ -13667,7 +14037,7 @@ console.log("\nAZ. Mine works for an APP");
     USES.every((u) => cardSrc.split(u).length === 2) && count("const [showAllMyApp, setShowAllMyApp] = useState(false);") === 1, USES.filter((u) => cardSrc.split(u).length !== 2).join(" | "));
 
   // AZ4 — source order and gates
-  const MBz = "            const myShiftsView = mineUpcoming(myShifts, myToday);";
+  const MBz = "            const myShiftsView = mineUpcoming(myShifts, myToday, new Date().toTimeString().slice(0, 5));";
   const iX3 = nsrcZ.indexOf(MBz), iApp = nsrcZ.indexOf("const mineApp = !!aMap[myId];"), iDays = nsrcZ.indexOf("appUpcoming(appShifts, myId, myToday)");
   const iChip = nsrcZ.indexOf("const mineDateChip = {"), iRet = iChip < 0 ? -1 : nsrcZ.indexOf("return (", iChip);
   const x3a = nsrcZ.indexOf("            const myShifts = [];"), x3slice = x3a >= 0 && iX3 > x3a ? nsrcZ.slice(x3a, iX3 + MBz.length) : "";
@@ -14849,6 +15219,83 @@ console.log("\nBB. Setup time-off deletes ask first; backup pickers snap to Mond
       && count('toRemove(sid,"vacation",') === 1 && count('toRemove(sid,"nocall",') === 1,
     JSON.stringify({ pickers: count(picker), blur: count("onBlur={snapBkMonday}") }));
 }
+
+// ─── CK. A ?tab=mine link opens Mine, not a blank page (2026-10-25) ───
+// A push or a shared link lands on the app with ?tab=X (the deep-link effect). The Mine tab's view is
+// "myschedule", but the effect's list named it "mine" and set the view to that — which no {view==="…"} block
+// renders: a blank page under the tab bar. The effect now maps a link's tab to its view (mine and myschedule
+// both open Mine), and ?public=1 (the read-only calendar and the OR board: the calendar only) takes no other tab. The REAL effect (sliced,
+// run in a fresh context: a new free name throws) and the REAL restricted-tab redirect and tab list (CC's slices),
+// for every role:
+//   CK1 each link tab → the view it sets: mine / myschedule → myschedule; calendar, requests, stats, settings,
+//       setup, totals → themselves; anything else (generate, MINE, an empty or unknown tab) → nothing set
+//   CK2 every view a link can set is one the page renders (a {view==="k"} block), and for every role the link then
+//       lands on a tab that role's bar shows (the redirect sends a restricted one to the Calendar) — never a blank page
+//   CK3 ?public=1 takes only ?tab=calendar; the tab and the week are still cleared from the URL (other params kept),
+//       and the week still moves the calendar
+//   the section runs inside its own catch (a throw fails one named check, never the run)
+console.log("\nCK. A ?tab=mine link opens Mine, not a blank page");
+await (async () => {
+  const nsrcCK = src.replace(/\r\n/g, "\n");
+  const J = JSON.stringify;
+  const HEAD = "  // ─── Deep-link handler for push notification clicks ───\n", OPEN = "  useEffect(() => {\n", CLOSE = "\n  }, [loaded]);";
+  const h0 = nsrcCK.indexOf(HEAD), o0 = h0 < 0 || nsrcCK.indexOf(HEAD, h0 + 1) !== -1 ? -1 : nsrcCK.indexOf(OPEN, h0), c0 = o0 < 0 ? -1 : nsrcCK.indexOf(CLOSE, o0);
+  const dlBody = c0 > o0 && o0 > 0 ? nsrcCK.slice(o0 + OPEN.length, c0) : null;
+  const dlF = (() => { try { return dlBody && vm.runInContext(`(function (env) { const { loaded, window, URLSearchParams, setView, setCalMonth, setCalYear, console, isPublicMode } = env;\n${dlBody}\n })`, vm.createContext({})); } catch (ex) { return null; } })();
+  const runDL = (search, pub) => {
+    const r = { views: [], month: null, year: null, url: null, errs: [] };
+    try {
+      dlF({ loaded: true, isPublicMode: !!pub, URLSearchParams, window: { location: { search, pathname: "/", hash: "" }, history: { replaceState: (a, b, u) => { r.url = u; } } },
+        setView: (v) => r.views.push(v), setCalMonth: (m) => { r.month = m; }, setCalYear: (y) => { r.year = y; }, console: { error: (...a) => r.errs.push(a.map(String).join(" ")) } });
+    } catch (ex) { r.threw = String(ex && ex.message || ex).slice(0, 160); }
+    return r;
+  };
+  // CC's slices: the tab list (per role) and the restricted-tab redirect
+  const DECL = "const allTabs = [", MAP = "return tabs.map(([k,l]) =>";
+  const t0 = nsrcCK.indexOf(DECL), t1 = t0 === -1 ? -1 : nsrcCK.indexOf(MAP, t0);
+  const tabF = (() => { try { return t1 > t0 && t0 > 0 ? vm.runInContext(`(function (env) { const { userProfile, isScheduler } = env;\n${nsrcCK.slice(t0, t1)}\nreturn tabs.map(([k]) => k); })`, vm.createContext({})) : null; } catch (ex) { return null; } })();
+  const RD = "  // If non-scheduler ends up on a restricted tab, redirect them\n  useEffect(() => {", r0 = nsrcCK.indexOf(RD), r1 = r0 < 0 ? -1 : nsrcCK.indexOf("\n  }, [isScheduler, view, userProfile]);", r0);
+  const rdF = (() => { try { return r1 > r0 && r0 > 0 ? vm.runInContext(`(function (env) { const { isScheduler, view, userProfile, setView } = env;\n${nsrcCK.slice(r0 + RD.length, r1)}\n })`, vm.createContext({})) : null; } catch (ex) { return null; } })();
+  if (!dlF || !tabF || !rdF) { check("CK the deep-link effect, the tab list and the redirect are extractable", false, J({ deepLink: !!dlF, tabs: !!tabF, redirect: !!rdF })); return; }
+
+  // CK1 — the link's tab → the view it sets
+  const WANT1 = { mine: "myschedule", myschedule: "myschedule", calendar: "calendar", requests: "requests", stats: "stats", settings: "settings", setup: "setup", totals: "totals",
+    generate: null, MINE: null, "": null, bogus: null, "mine ": null, constructor: null, hasOwnProperty: null };
+  const got1 = {}; for (const t of Object.keys(WANT1)) got1[t] = runDL("?tab=" + encodeURIComponent(t));
+  check("CK1 the REAL deep-link effect: ?tab=mine and ?tab=myschedule open Mine (view \"myschedule\" — it set \"mine\", which nothing renders); calendar / requests / stats / settings / setup / totals open themselves; generate, MINE, an empty, unknown or prototype tab name sets nothing; nothing thrown or logged",
+    Object.keys(WANT1).every((t) => J(got1[t].views) === J(WANT1[t] ? [WANT1[t]] : []) && !got1[t].threw && got1[t].errs.length === 0),
+    J(Object.fromEntries(Object.entries(got1).map(([t, r]) => [t, r.threw || r.views]))));
+
+  // CK2 — every link lands on a rendered view the role's bar shows
+  const ROLES = {
+    scheduler: { userProfile: { role: "scheduler", person_id: "s6" }, isScheduler: true },
+    admin: { userProfile: { role: "admin", person_id: "s1" }, isScheduler: true },
+    member: { userProfile: { role: "member", person_id: "s3" }, isScheduler: false },
+    app: { userProfile: { role: "member", person_id: "a1" }, isScheduler: false },
+    appAssign: { userProfile: { role: "member", person_id: "a2", can_assign_apps: true }, isScheduler: false },
+  };
+  const views = [...new Set(Object.values(got1).flatMap((r) => r.views))];
+  const unrendered = views.filter((v) => !nsrcCK.includes(`{view==="${v}"`));
+  const blank = [];
+  for (const [role, env] of Object.entries(ROLES)) {
+    const bar = tabF(env);
+    for (const t of Object.keys(WANT1)) for (const v of got1[t].views) {
+      const sets = []; rdF(Object.assign({ view: v, setView: (x) => sets.push(x) }, env));
+      const lands = sets.length ? sets[sets.length - 1] : v;
+      if (!bar.includes(lands) || !nsrcCK.includes(`{view==="${lands}"`)) blank.push(`${role} ?tab=${t} → ${v} → ${lands}`);
+    }
+  }
+  check("CK2 every view a link can set has a {view===\"k\"} block, and for every role (scheduler, admin, member, APP, APP-assign member) each link lands on a tab that role's bar shows — Mine for a member / APP / scheduler, the Calendar for an admin (no Mine) and for a restricted tab — never a blank page",
+    views.length >= 7 && unrendered.length === 0 && blank.length === 0 && got1.mine.views[0] === "myschedule", J({ views, unrendered, blank: blank.slice(0, 6) }));
+
+  // CK3 — ?public=1 and the URL cleanup
+  const p1 = runDL("?public=1&tab=requests&week=2026-11-16", true), p2 = runDL("?public=1&tab=calendar", true), p3 = runDL("?public=1&tab=mine", true);
+  const m1 = runDL("?tab=mine&week=2026-11-16&_v=3");
+  check("CK3 ?public=1 (the read-only calendar / OR board) takes only ?tab=calendar — requests / mine set nothing; the tab and the week are cleared from the URL either way (other params kept: \"?public=1\", \"?_v=3\"), and the week still moves the calendar (Nov 2026)",
+    J(p1.views) === "[]" && J(p3.views) === "[]" && J(p2.views) === J(["calendar"]) && p1.url === "/?public=1" && p2.url === "/?public=1" && p1.month === 10 && p1.year === 2026
+      && J(m1.views) === J(["myschedule"]) && m1.url === "/?_v=3" && m1.month === 10 && m1.year === 2026,
+    J({ p1, p2, p3, m1 }));
+})().catch(ex => check("CK harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
 
 // ─── CC. Calendar is the first tab (owner decision 2026-10-20) ───
 // "Calendar should be first open item" — the owner chose Calendar as the
