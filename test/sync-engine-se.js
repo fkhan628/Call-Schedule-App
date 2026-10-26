@@ -4907,6 +4907,7 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
     resetBusyRef: env.resetBusyRef || { current: false }, forgetDayOffs: env.forgetDayOffs || (() => {}), // (23/n: the reset's hold on the setup autosave — review r6 broke-1; the boundary's day-off forget — r6 fix-3)
     pendingSaveRef: env.pendingSaveRef || { current: null }, setSetupSaveNudge: env.setSetupSaveNudge || (() => {}), // (the reset's unarm() nudges a held setup change — review r7 broke-2)
     setJustPublished: env.setJustPublished || (() => {}), // (2026-10-20: Accept & Publish's landed publish raises the Calendar's "nobody notified yet" banner; the boundary clears it — sync-guards CD runs both)
+    publishUndoneRef: env.publishUndoneRef || { current: 0 }, // (2026-10-25: ↩ Undo of a publish counts it; a late publish's banner checks it — sync-guards CO4)
     timeOffLoadSeqRef: env.timeOffLoadSeqRef || { current: { read: 0, del: 0, shown: 0 } } })) : mk); // (deleteTimeOff counts its answers for the time-off reads — review r7 fix-2)
   const HX = appHelpers();
   const F = {
@@ -4917,7 +4918,7 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
     update: fnX("scheduleRef, commitSchedule", wrap("(fn) => {", after("  const updateSchedule = useCallback((fn) => {", "\n  }, [commitSchedule]);"), "\n  }")),
     // (2026-10-20, review R1: ↩ Undo of a publish takes the Calendar's "nobody notified yet" banner down — sess() gives
     // setJustPublished its no-op; sync-guards CH5 runs it)
-    undo: sess(fnX("scheduleHistory, schedEditable, schedSyncRef, showToast, commitSchedule, setPriorCounts, setYear1Counts, setScheduleHistory, setJustPublished", wrap("() => {", after("  const undoLastChange = () => {", "\n  };\n"), "\n  }"))),
+    undo: sess(fnX("scheduleHistory, schedEditable, schedSyncRef, showToast, commitSchedule, setPriorCounts, setYear1Counts, setScheduleHistory, setJustPublished, publishUndoneRef", wrap("() => {", after("  const undoLastChange = () => {", "\n  };\n"), "\n  }"))),
     unload: fnX("isPublicMode, dayOffDirtyRef, dayOffSaveTimerRef, clearTimeout, dayOffEnqueueRef, console, schedSyncRef, fetch, document, window",
       wrap("() => {\n    // (The blob keepalive is gone", after("  useEffect(() => {\n    // (The blob keepalive is gone", "\n  }, []);"), "\n  }")),
     load: fnX("loadFailedRef, supabase, lastSyncRef, setupReadRef, setSurgeons, setApps, USE_TIME_OFF, setVacations, setNoCallDays, setBackupMondaySet, setFierceBackupSet, setAppShifts, setPriorCounts, setYear1Counts, setStartMonth, setStartYear, setNumWeeks, setStartMondayOverride, setHolidayAssignments, setPendingLocks, setSilvisRule, sfRule, setDismissedWarnings, everHadRealDataRef, setEdgeFunctionUrl, console, setAppShiftsLoaded, appOffVisible, adoptDayOffRow, db, setVacRequests, setTradeRequests, setNotifications, showToast, schedSyncRef, scheduleRef, loadTimeOff, loadSilvisFeed, refreshSilvisFeed, setLoaded, loadedAtRef, getSupabaseRT, window, setTimeout, setInterval, clearInterval",
@@ -4935,7 +4936,9 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
     acceptPreview: sess(fnX("publishSearchRunning, showToast, cancelSearch, previewSchedule, previewNeedsOk, previewAck, publishingRef, schedEditable, schedSyncRef, previewEpochRef, previewOrigin, startMonth, startYear, numWeeks, setPublishing, setSaveStatus, snapshots, previewSchedRef, publishWeeks, MO, runPublish, setPreviewSchedule, setShowPreview, setCalMonth, setCalYear, setView, setTimeout, publishNotLanded, sessionEpochRef, setJustPublished",
       wrap("async () => {", after("  const acceptPreview = async () => {", "\n  };\n"), "\n  }"))),
     notLanded: fnX("showToast", wrap("(pr, what) => {", after("  const publishNotLanded = (pr, what) => {", "\n  };\n"), "\n  }")),
-    runPublish: fnX("schedSyncRef", after("  const runPublish = ", ";\n")),
+    // (2026-10-25: runPublish hands the engine a late() — the Calendar's 📣 banner for a publish that lands after its
+    // deadline — so it reads the session and the banner's setter too: sess() gives both; sync-guards CO runs it)
+    runPublish: sess(fnX("schedSyncRef, sessionEpochRef, setJustPublished, periodLabel, publishUndoneRef", wrap("(weeks) => {", after("  const runPublish = (weeks) => {", "\n  };\n"), "\n  }"))),
   };
   const missing = Object.keys(F).filter(k => typeof F[k] !== "function");
   check("SE-X the component slices are extractable by their anchors and compile in a fresh context", missing.length === 0, missing.join(", "));
