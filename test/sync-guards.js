@@ -3390,8 +3390,9 @@ console.log("\nBF. toasts stack (up to 3), errors stay longer, no doubled ⚠");
   // (2026-10-24, on purpose — owner decision, sync-guards CJ: periodLabel ×5 — Stats' "This Period" says the made
   // period with its own guarded call, madePeriodText.)
   // (2026-10-25, on purpose — CO: ×6 — runPublish's late() labels the weeks it raises the 📣 banner for)
-  check("BF7 (review fix) every call of the batch's twelve helpers in index-source.html sits behind its own `typeof … === \"function\"` (the app's convention for a newer helper), each of them called somewhere — toastAdd / toastMs / toastText, periodLabel ×6 (periodText, the office prefill, both publish audit lines, Stats' made period — CJ, runPublish's late banner — CO), periodSeam, periodHolidayGaps ×2, authErrorText ×6, tradeSlotHolder ×2, tradePickNotes, calMonthWeekMondays, calendarFeedUrls ×2 — except rangeSummary, called nowhere since the range field replaced its line (moved by BK; it stays in helpers.js, BE1 runs it)",
-    unguarded.length === 0 && BATCH4_HELPERS.every((n) => (n === "rangeSummary" ? callsOf[n] === 0 : callsOf[n] > 0)) && callsOf.authErrorText === 6 && callsOf.periodLabel === 6 && callsOf.periodHolidayGaps === 2 && callsOf.tradeSlotHolder === 2 && callsOf.calendarFeedUrls === 2,
+  // (2026-10-26, on purpose — CV: ×7 — findSwapSuggestions says the made period it counted, taken with its counts)
+  check("BF7 (review fix) every call of the batch's twelve helpers in index-source.html sits behind its own `typeof … === \"function\"` (the app's convention for a newer helper), each of them called somewhere — toastAdd / toastMs / toastText, periodLabel ×7 (periodText, the office prefill, both publish audit lines, Stats' made period — CJ, runPublish's late banner — CO, the swap options' period — CV), periodSeam, periodHolidayGaps ×2, authErrorText ×6, tradeSlotHolder ×2, tradePickNotes, calMonthWeekMondays, calendarFeedUrls ×2 — except rangeSummary, called nowhere since the range field replaced its line (moved by BK; it stays in helpers.js, BE1 runs it)",
+    unguarded.length === 0 && BATCH4_HELPERS.every((n) => (n === "rangeSummary" ? callsOf[n] === 0 : callsOf[n] > 0)) && callsOf.authErrorText === 6 && callsOf.periodLabel === 7 && callsOf.periodHolidayGaps === 2 && callsOf.tradeSlotHolder === 2 && callsOf.calendarFeedUrls === 2,
     JSON.stringify({ unguarded, callsOf }));
 }
 
@@ -6635,6 +6636,105 @@ ${rollSrc}
         && countCU('Running Totals <span style={{fontWeight:400,fontSize:11,color:"#7a8a98"}}>— counted at each publish</span>') === 1,
       J({ prior: countCU("Prior + This Period") }));
   }
+}
+
+// ─── CV. The swap suggestions count a published week once; "this period" is the made period (2026-10-26) ───
+// findSwapSuggestions (🔄 Find Swap / Find Swap Options) ranked and explained each candidate with two tallies:
+// "this period" — which tallied EVERY stored week (since the historical import, years of them) — and "overall" =
+// priorCounts PLUS that same tally. rollForwardCounts already adds every published week to priorCounts at its
+// publish, so the overall difference counted each week twice (CU's bug, #101), and "this period" was no period at
+// all. Owner request (Faraz, 2026-10-26: "Fix"). Now "this period" is the made period — the one Stats → Counts →
+// This Period shows (madePeriodMondays, owner decision 2026-10-24) — and "overall" is priorCounts alone, both 1st +
+// 2nd call (the old tally held both, and a published backup week sits in priorCounts' dcB / nightsB / wkndB). SYNTHETIC
+// data: 5 surgeons, 6 history weeks then a 6-week made period (its last week a backup week), a night in the middle of
+// it to swap, the clock at Oct 26, 2026.
+//   CV1 the REAL findSwapSuggestions (with the REAL madePeriodMondays), the Generate tab on the next, unpublished
+//       period: per candidate, the "this period" difference is the made period's (hand-tallied), the "overall" one
+//       priorCounts' alone (1st + 2nd call), their reasons say so ("1 fewer night", singular), the ranking follows, and
+//       the options carry the period they counted ("Nov 2 – Dec 13, 2026") (main: the whole schedule's tally, and
+//       priorCounts + that tally — another order); swapping the night of the one with the fewest → "N more … this
+//       period — less ideal" (review fix: the scope said there too)
+//   CV2 the same with the Generate tab on the made period itself; and the history weeks never move it (changing
+//       them changes nothing)
+//   CV3 pins: its deps list mondays, and mondays / madePeriodMondays are declared above it (§P, TDZ)
+//   CV4 the swap options say what they count — one line under their header, from the period the options counted
+//       (swapTarget.periodSaid, review fix: not the live one): "This period" = … (This Period on Stats) · "overall" =
+//       the multi-year Running Totals · both count 1st + 2nd call — at 4.5:1+ on the swap tool's box, which is the
+//       same light gradient in both modes
+console.log("\nCV. The swap suggestions count a published week once; \"this period\" is the made period");
+{
+  const nsrcCV = src.replace(/\r\n/g, "\n"), J = JSON.stringify;
+  const spanCV = (a, b) => { const i = nsrcCV.indexOf(a); if (i < 0 || nsrcCV.indexOf(a, i + 1) !== -1) return null; const j = nsrcCV.indexOf(b, i + a.length); return j < 0 ? null : nsrcCV.slice(i, j); };
+  const afterCV = (a, b) => { const s = spanCV(a, b); return s === null ? null : s.slice(a.length); };
+  const tryCV = (fn) => { try { return fn(); } catch (ex) { return "threw: " + String((ex && ex.message) || ex).slice(0, 160); } };
+  const H = vm.runInContext("({ parse, fmt, addD })", sandbox);
+  const Oct26 = class extends Date { constructor(...a) { if (a.length) super(...a); else super(2026, 9, 26, 12, 0, 0); } };
+  const fssSrc = spanCV("  const findSwapSuggestions = useCallback(", "\n\n  // ─── Execute a two-way swap ───");
+  const mpmSrcCV = afterCV("  const madePeriodMondays = ", "\n  const openPublishDialog = ");
+  let fssOf = null;
+  try {
+    fssOf = fssSrc && mpmSrcCV ? vm.runInContext(`(function (env) { const { schedule, mondays, surgeons, sMap, vacations, priorCounts, silvisActive, silvisFakId, silvisDays, sfConflict, Date } = env;
+  const useCallback = (f) => f; const out = {};
+  const setSwapTarget = (x) => { out.target = x; }; const setSwapSuggestions = (x) => { out.list = x; };
+  const madePeriodMondays = ${mpmSrcCV}
+${fssSrc}
+  return (m, sh, who) => { findSwapSuggestions(m, sh, who); return out; };
+})`, sandbox, { filename: "cv-swap.js" }) : null;
+  } catch (ex) { fssOf = null; }
+  check("CV0 the real findSwapSuggestions and madePeriodMondays slice and compile", !!fssOf, J({ fss: !!fssSrc, mpm: !!mpmSrcCV }));
+  if (fssOf) {
+    const SURG = ["s1", "s2", "s3", "s4", "s5"].map((id) => ({ id, name: id.toUpperCase() }));
+    const sMap = Object.fromEntries(SURG.map((s) => [s.id, s]));
+    const weeksFrom = (m, n) => Array.from({ length: n }, (_, i) => H.fmt(H.addD(H.parse(m), 7 * i)));
+    // each week's Mon–Thu nights (surgeon numbers); service week and weekend s5 throughout (so s5 is never a candidate)
+    const wk = (n) => ({ dayCall: "s5", nights: { mon: "s" + n[0], tue: "s" + n[1], wed: "s" + n[2], thu: "s" + n[3], wknd: "s5" } });
+    const HIST = weeksFrom("2026-09-21", 6), MADE = weeksFrom("2026-11-02", 6), NEXT = weeksFrom("2026-12-14", 6);
+    // history nights: s1 3, s2 10, s3 1, s4 4 — the made period's: s1 6, s2 3, s3 5, s4 4 (s1 holds Nov 17, the Tuesday)
+    const HN = [[2, 2, 1, 5], [2, 2, 4, 5], [2, 2, 4, 5], [2, 1, 3, 5], [2, 2, 4, 5], [1, 2, 4, 5]];
+    const MN = [[1, 2, 3, 5], [1, 3, 4, 5], [2, 1, 3, 5], [1, 4, 3, 5], [1, 2, 4, 5], [1, 3, 4, 5]];
+    const schedOf = (hn) => Object.assign(Object.fromEntries(HIST.map((m, i) => [m, wk(hn[i])])), Object.fromEntries(MADE.map((m, i) => [m, i === 5 ? Object.assign(wk(MN[i]), { isBackup: true }) : wk(MN[i])])));
+    // the Multi-Year counts (synthetic): they already hold every published week, as rollForwardCounts leaves them —
+    // 1st call and 2nd call (nightsB) apart, as the counts keep them
+    const PRIOR = { s1: { nights: 100, nightsB: 4 }, s2: { nights: 95, nightsB: 2 }, s3: { nights: 98, nightsB: 3 }, s4: { nights: 101, nightsB: 4 }, s5: { nights: 90, nightsB: 1 } };
+    const run = (gen, hn, sh, who) => tryCV(() => fssOf({ schedule: schedOf(hn || HN), mondays: gen.map(H.parse), surgeons: SURG, sMap, vacations: {}, priorCounts: PRIOR, silvisActive: false, silvisFakId: null, silvisDays: { primary: new Set() }, sfConflict: () => false, Date: Oct26 })("2026-11-16", sh || "tue", who || "s1"));
+    const view = (o) => (o && typeof o === "object" && Array.isArray(o.list) ? { period: o.target && o.target.periodSaid, list: o.list.map((c) => ({ id: c.candidateId, countDiff: c.countDiff, totalDiff: c.totalDiff, score: c.score, reasons: c.reasons.filter((r) => !/^Already assigned: /.test(r)), assigned: c.reasons.some((r) => /^Already assigned: /.test(r)) })) } : o);
+    // hand-tallied: this period (1st + 2nd call) s1 6 vs s2 3 / s3 5 / s4 4; overall (nights + nightsB) s1 104 vs 97 /
+    // 101 / 105; every candidate has an upcoming night to give back (+20); s2 (Mon) and s3 (Wed) already work that week
+    // (−5), s4 does not (+10)
+    const PERIOD = "Nov 2 – Dec 13, 2026";
+    const WANT = { period: PERIOD, list: [
+      { id: "s2", countDiff: 3, totalDiff: 7, score: 80, reasons: ["S2 has 3 fewer nights this period", "7 fewer overall (good for balance)"], assigned: true },
+      { id: "s4", countDiff: 2, totalDiff: -1, score: 45, reasons: ["S4 has 2 fewer nights this period"], assigned: false },
+      { id: "s3", countDiff: 1, totalDiff: 3, score: 40, reasons: ["S3 has 1 fewer night this period", "3 fewer overall (good for balance)"], assigned: true },
+    ] };
+    // s2's Monday night that week instead (s2 has the fewest: 3, overall 97): s4 4 / 105, s3 5 / 101 (Wed), s1 6 / 104 (Tue)
+    const WANT_MORE = { period: PERIOD, list: [
+      { id: "s4", countDiff: -1, totalDiff: -8, score: -20, reasons: ["S4 has 1 more night this period — less ideal"], assigned: false },
+      { id: "s3", countDiff: -2, totalDiff: -4, score: -25, reasons: ["S3 has 2 more nights this period — less ideal"], assigned: true },
+      { id: "s1", countDiff: -3, totalDiff: -7, score: -50, reasons: ["S1 has 3 more nights this period — less ideal"], assigned: true },
+    ] };
+    const v1 = view(run(NEXT)), v1m = view(run(NEXT, null, "mon", "s2"));
+    check("CV1 the REAL findSwapSuggestions, the Generate tab on the next, unpublished period: \"this period\" is the made period, 1st + 2nd call (S2 3 fewer, S4 2, S3 1 — hand-tallied), \"overall\" is priorCounts alone, 1st + 2nd call (7, −1, 3), the reasons say so (\"1 fewer night\") and the order is S2, S4, S3, the options carrying \"Nov 2 – Dec 13, 2026\" (main tallied every stored week and added it to priorCounts' 1st call: S2 \"4 more — less ideal\", another order); swapping S2's own night → \"S4 has 1 more night this period — less ideal\" …, the scope said",
+      J(v1) === J(WANT) && J(v1m) === J(WANT_MORE), J({ v1, v1m }).slice(0, 900));
+    const v2 = view(run(MADE));
+    const v3 = view(run(NEXT, [[1, 1, 1, 1], [1, 1, 1, 5], [3, 3, 3, 3], [4, 4, 4, 4], [3, 4, 3, 4], [5, 5, 5, 5]]));
+    check("CV2 the same answer with the Generate tab on the made period itself, and with the history weeks re-dealt (they never enter \"this period\" or \"overall\")",
+      J(v2) === J(WANT) && J(v3) === J(WANT), J({ v2, v3 }).slice(0, 700));
+  }
+  const iMon = nsrcCV.indexOf("  const mondays = useMemo(() => {"), iMpm = nsrcCV.indexOf("  const madePeriodMondays = (sched, gen) => {"), iFss = nsrcCV.indexOf("  const findSwapSuggestions = useCallback(");
+  check("CV3 findSwapSuggestions lists mondays in its deps (the made period moves with the Generate tab's length), and the mondays memo and madePeriodMondays are declared above it (§P, the TDZ class)",
+    nsrcCV.split("  }, [schedule, mondays, surgeons, sMap, vacations, priorCounts, silvisActive, silvisFakId, silvisDays]);").length - 1 === 1 && iMon > 0 && iMpm > iMon && iFss > iMpm,
+    J({ iMon, iMpm, iFss }));
+  // CV4 — the basis line, inside the swap options block, right under its header; its colour evaluated in both modes
+  const basisM = nsrcCV.match(/Swap options for <Badge id=\{swapTarget\.surgeonId\}\/> — \{slotLabel\(swapTarget\.mondayStr, swapTarget\.shift\)\}\n\s*<\/div>\n(?:\s*\{\/\*[\s\S]*?\*\/\}\n)?\s*\{swapSuggestions\.length > 0 && swapTarget\.periodSaid && \(\n\s*<div data-swap-basis="1" style=\{(\{[^\n]*\})\}>\n\s*“This period” = \{swapTarget\.periodSaid\} \(This Period on Stats\) · “overall” = the multi-year Running Totals · both count 1st \+ 2nd call\n/);
+  let basisF = null; try { basisF = basisM ? vm.runInContext(`(function (dk) { return (${basisM[1]}); })`, vm.createContext({})) : null; } catch (ex) { basisF = null; }
+  // it sits on the swap tool's own box — the same light gradient in both modes (no dark rule reaches a gradient), so
+  // the line is read against both of its stops, with dk false and true
+  const boxCV = nsrcCV.match(/<div data-swap-tool="1" style=\{\{[^\n]*background:"linear-gradient\(135deg,(#[0-9a-fA-F]{6}),(#[0-9a-fA-F]{6})\)"/);
+  const stops = boxCV ? [boxCV[1], boxCV[2]] : [];
+  const crs = basisF && stops.length ? [false, true].flatMap((dk) => stops.map((bg) => DARK_SHEET.cr(basisF(dk).color, bg))) : [];
+  check("CV4 the swap options say what they count: one line right under their header, from the period the options counted (swapTarget.periodSaid) — \"This period\" = … (This Period on Stats) · \"overall\" = the multi-year Running Totals · both count 1st + 2nd call — shown only with options and a period, at 4.5:1+ on the swap tool's box (its light gradient, in both modes)",
+    !!basisF && crs.length === 4 && crs.every((c) => c >= 4.5) && nsrcCV.split('data-swap-basis="1"').length - 1 === 1, J({ found: !!basisM, stops, crs }));
 }
 
 // ─── BC. Generate & Publish asks once; Stats → Billing opens on the newest months (UX audit 2026-10-19) ───
