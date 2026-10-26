@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.10.25c";
+    var APP_VERSION = "2026.10.26a";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -779,7 +779,7 @@ function CallSchedule() {
             try {
               profile = await dbAuth.getProfile(user.id);
             } catch (e) {
-              if (!(typeof isNoConnectionError === "function" && isNoConnectionError(e))) throw e;
+              if (!(typeof isNoConnectionError === "function" && isNoConnectionError(e))) console.error("Auth check error:", e);
               auth.bindUser(null);
               setAuthUser(null);
               setAuthNetErr(true);
@@ -975,10 +975,8 @@ function CallSchedule() {
         try {
           profile = await dbAuth.getProfile(user.id);
         } catch (e) {
-          if (typeof isNoConnectionError === "function" && isNoConnectionError(e)) {
-            auth.bindUser(null);
-            setAuthUser(null);
-          }
+          auth.bindUser(null);
+          setAuthUser(null);
           throw e;
         }
         if (profile) {
@@ -2040,10 +2038,16 @@ function CallSchedule() {
     };
     return schedSyncRef.current.authoritative(weeks, false, "publish", Object.keys(weeks), {
       late
-    });
+    }).then(r => r && publishUndoneRef.current !== undone0 ? Object.assign({}, r, {
+      undone: true
+    }) : r);
   };
   const publishNotLanded = (pr, what) => {
     if (pr && (pr.skipped === "reset" || pr.skipped === "cancelled")) return;
+    if (pr && pr.undone && !pr.running) {
+      showToast(`${what}, then undone — nothing to announce.`, "info");
+      return;
+    }
     const n = (pr && pr.results || []).filter(x => x.outcome !== "saved").length;
     showToast(pr && pr.error ? `${what}: ${pr.error}${pr.running ? " Nobody was notified." : ""}` : pr && pr.notice ? `${what}: ${pr.notice} Nobody was notified.` : `${what} — ${n ? n + " week" + (n === 1 ? " isn't" : "s aren't") : "the new weeks aren't"} saved yet; retrying automatically. Nobody was notified.`, pr && pr.running ? "info" : "error");
   };
@@ -4991,7 +4995,7 @@ function CallSchedule() {
           return "moved";
         }
         const out = await genCommitRef.current(result, via);
-        return out && out.ok ? "published" : "not-published";
+        return out && out.ok ? out.undone ? "undone" : "published" : "not-published";
       } finally {
         publishingRef.current = false;
         setPublishing(false);
@@ -5015,6 +5019,7 @@ function CallSchedule() {
         origin: "generated"
       }
     });
+    const undone0 = publishUndoneRef.current;
     const job = runPublish(result);
     setPreviewSchedule(null);
     setShowPreview(false);
@@ -5042,15 +5047,21 @@ function CallSchedule() {
       console.error("Immediate save failed:", e);
       if (sessionEpochRef.current === ep) showToast("Couldn't save the regenerated schedule — check your connection.", "error");
     }
-    const pr = await job;
+    const prJob = await job;
+    const pr = prJob && !prJob.undone && publishUndoneRef.current !== undone0 ? Object.assign({}, prJob, {
+      undone: true
+    }) : prJob;
     if (sessionEpochRef.current !== ep) return {
       ok: false
     };
     if (pr && pr.ok) {
-      setSaveStatus("Regenerated!");
+      setSaveStatus(pr.undone ? "Regenerated, then undone" : "Regenerated!");
       setTimeout(() => setSaveStatus(""), 2000);
       if (pr.notice) showToast(pr.notice, "error");
-      return {
+      return pr.undone ? {
+        ok: true,
+        undone: true
+      } : {
         ok: true
       };
     }
@@ -5481,20 +5492,22 @@ function CallSchedule() {
         const pr = await job;
         if (sessionEpochRef.current !== ep) return;
         if (pr && pr.ok) {
-          setSaveStatus("Published — totals updated");
+          setSaveStatus(pr.undone ? "Published, then undone — nothing to announce" : "Published — totals updated");
           setTimeout(() => setSaveStatus(""), 3000);
           if (pr.notice) showToast(pr.notice, "error");
-          setJustPublished({
-            label: pubPeriod,
-            ep
-          });
-          setTimeout(() => {
-            const el = document.querySelector('[data-just-published="1"]');
-            if (el && el.scrollIntoView) el.scrollIntoView({
-              behavior: "smooth",
-              block: "nearest"
+          if (!pr.undone) {
+            setJustPublished({
+              label: pubPeriod,
+              ep
             });
-          }, 60);
+            setTimeout(() => {
+              const el = document.querySelector('[data-just-published="1"]');
+              if (el && el.scrollIntoView) el.scrollIntoView({
+                behavior: "smooth",
+                block: "nearest"
+              });
+            }, 60);
+          }
         } else {
           setSaveStatus("");
           publishNotLanded(pr, "Published on this screen");
@@ -15993,8 +16006,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         gap: 8,
         marginBottom: 10,
         padding: "8px 12px",
-        background: tOk ? "#e8f8e8" : "#fef8e8",
-        border: `1px solid ${tOk ? "#b0d8b0" : "#302810"}`,
+        background: dk ? tOk ? "#1a2a1a" : "#2a2820" : tOk ? "#e8f8e8" : "#fef8e8",
+        border: `1px solid ${dk ? tOk ? "#2a4a2a" : "#4a4030" : tOk ? "#b0d8b0" : "#e0c080"}`,
         borderRadius: 7
       }
     }, React.createElement("span", {
@@ -16005,7 +16018,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       style: {
         fontSize: 13,
         fontWeight: 700,
-        color: tOk ? "#60e0a0" : "#e0a060"
+        color: dk ? tOk ? "#60e0a0" : "#e0a060" : tOk ? "#1a6030" : "#8a5a10"
       }
     }, "Total Call Days (1yr): spread ", tSp, " (min ", Math.min(...totalArr), ", max ", Math.max(...totalArr), ") — ", tOk ? "Fair" : "Review recommended")), [["Service Wk (reg)", v(s => s.dc || 0)], ["Nights (reg)", v(s => s.nights || 0)], ["Weekends (reg)", v(s => s.wknd || 0)], ["Service Wk (backup)", v(s => s.dcB || 0)], ["Nights (backup)", v(s => s.nightsB || 0)], ["Weekends (backup)", v(s => s.wkndB || 0)]].map(([label, arr]) => {
       const s = sp(arr);
@@ -16025,7 +16038,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       }, ok ? "✅" : "⚠️"), React.createElement("span", {
         style: {
           fontSize: 12,
-          color: ok ? "#50b070" : "#b09040"
+          color: dk ? ok ? "#50b070" : "#b09040" : ok ? "#2a7a40" : "#8a6a10"
         }
       }, label, ": spread ", s, " (min ", Math.min(...arr), ", max ", Math.max(...arr), ") — ", ok ? "Fair" : "Review"));
     }));
