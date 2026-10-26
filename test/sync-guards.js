@@ -1859,14 +1859,15 @@ console.log("\nBD. Generate: one period label, the period's seam, holidays with 
 // one of its weeks is published; otherwise the latest published run, at most as many weeks as the Generate period has.
 // That rule is now ONE pure function, madePeriodMondays, which the prefill labels; the Counts card reads madePeriodText
 // / statsMade, and the Vacation Days card's vacDaysPeriod is windowed on madeMondays (first Monday → last Sunday).
-// `stats` (the Generate period) is left as it was on purpose: buildCum and exportYearlySummary add it to the
-// rolled-forward priorCounts / year1Counts. Known limit, kept on purpose (the prefill has it too): the run takes the
+// `stats` (the Generate period) was left as it was on purpose: buildCum and exportYearlySummary added it to the
+// rolled-forward priorCounts / year1Counts. (Changed ON PURPOSE 2026-10-26, section CU: that counted a published
+// period twice — `stats` is gone and they read the counts alone.) Known limit, kept on purpose (the prefill has it too): the run takes the
 // Generate period's LENGTH (Feb 22 × 10 → Dec 14 – Feb 21; × 16 → Nov 2 – Feb 21).
 // Fixture: test/fixtures/stats-made-period-live-weeks-2026-10-24.json — the live slot data 2026-11-02 → 2027-02-15
 // (holiday coverage omitted: tallySchedule ignores it; wk 2026-11-09 is a backup week). Vacations: SYNTHETIC only.
 //   CJ1 madePeriodMondays (sliced) and the REAL computePeriodLabel on BD2's table: the prefill is the label of the
 //       Mondays the rule returns, exact; those Mondays exact; neither input changed
-//   CJ2 the REAL Stats memos (stats, madeMondays, madePeriodText, statsMade, statsYTD, ytdRange — sliced and run with
+//   CJ2 the REAL Stats memos (madeMondays, madePeriodText, statsMade, statsYTD, ytdRange — sliced and run with
 //       the real tallySchedule and the Generate tab's real mondays memo) and the REAL Counts card (its JSX, lightly
 //       compiled to h() calls) on the fixture: Generate = Feb 22 × 14 (live), Feb 1 × 14, Nov 16 × 14 and the selects
 //       (February 2027) → "This Period — Nov 16, 2026 – Feb 21, 2027" and its table; Nov 2 × 14 (every week published:
@@ -1877,7 +1878,7 @@ console.log("\nBD. Generate: one period label, the period's seam, holidays with 
 //       Generate tab on Feb 22 × 14: the window is the made period's first Monday → its last Sunday (2026-11-16 →
 //       2027-02-21); a range inside counts, one across each edge is clamped, one only in Feb 22 – May 30 counts 0
 //   CJ4 pins: the Counts and Vacation Days period branches read the made memos; buildCum, exportYearlySummary and the
-//       Fairness Check / Running Totals gates still read `stats`; periodText still feeds the e-mail, the ↻ Regenerate
+//       Fairness Check / Running Totals gates read no made memo (and, since CU, no `stats`); periodText still feeds the e-mail, the ↻ Regenerate
 //       banner, the Generate panel and the HTML export (the audit lines: their own Mondays); declaration order (TDZ);
 //       BD7's "This Period — {periodText}" pin is replaced on purpose (BD7 cites this decision)
 console.log("\nCJ. Stats' \"This Period\" is the made (published) period, whatever the Generate tab says");
@@ -1929,8 +1930,10 @@ console.log("\nCJ. Stats' \"This Period\" is the made (published) period, whatev
   const Oct24 = class extends Date { constructor(...a) { if (a.length) super(...a); else super(2026, 9, 24, 12, 0, 0); } };
   const memoBody = after("  const mondays = useMemo(() => {", "\n  }, [startYear, startMonth, numWeeks, startMondayOverride]);");
   const runMemo = mk(memoBody && `(function (env) { const { startMondayOverride, numWeeks, startYear, startMonth } = env; return (() => {${memoBody}\n  })(); })`, "cj-mondays.js");
-  const tallySrc = after("  const tallySchedule = ", "\n  const stats = useMemo(");
-  const chainSrc = span("  const stats = useMemo(() => {", "\n\n  // APP stats");
+  // (changed on purpose 2026-10-26, section CU: the Generate period's `stats` memo is gone — so tallySchedule ends at
+  // its own close and the chain starts at the made memos' comment; main still slices the same way)
+  const tallySrc = (() => { const s = after("  const tallySchedule = ", "\n  };\n"); return s === null ? null : s + "\n  };"; })();
+  const chainSrc = span("  // Stats' \"This Period\" is the MADE period (owner decision 2026-10-24): the", "\n\n  // APP stats");
   const rawSrc = after("  const calcRawCount = ", "\n");
   // (each made memo read by typeof: main has none of them, so its chain still runs and its own card renders below)
   const chain = mk(tallySrc && chainSrc && rawSrc && `(function (env) { const { schedule, surgeons, mondays, useMemo, periodLabel, Date } = env;
@@ -1938,7 +1941,7 @@ console.log("\nCJ. Stats' \"This Period\" is the made (published) period, whatev
   const tallySchedule = ${tallySrc}
 ${chainSrc}
   const calcRawCount = ${rawSrc}
-  return { stats, statsYTD, ytdRange, calcRawCount, madeMondays: typeof madeMondays === "undefined" ? null : madeMondays, madePeriodText: typeof madePeriodText === "undefined" ? null : madePeriodText, statsMade: typeof statsMade === "undefined" ? null : statsMade };
+  return { stats: typeof stats === "undefined" ? null : stats, statsYTD, ytdRange, calcRawCount, madeMondays: typeof madeMondays === "undefined" ? null : madeMondays, madePeriodText: typeof madePeriodText === "undefined" ? null : madePeriodText, statsMade: typeof statsMade === "undefined" ? null : statsMade };
 })`, "cj-stats-memos.js");
   const ptReal = periodTextIn(sandbox);
   // the card's real JSX, lightly compiled to h() calls (CE3's compiler, plus fragments <>…</> as tag "#frag")
@@ -2012,7 +2015,7 @@ ${chainSrc}
   const CSS = { card: { k: "card" }, cardT: { k: "cardT" } };
   const counts = compile(countsSrc, "h, css, statsScope, ytdRange, periodText, madePeriodText, stats, statsMade, statsYTD, thS, thS2, tdS, showBackupStats, surgeons, isScheduler, mySurgeon, calcRawCount", "cj-counts-card.js");
   const MEMOS = ["  const madeMondays = useMemo(", "  const madePeriodText = useMemo(", "  const statsMade = useMemo("];
-  check("CJ2 the REAL Stats memos — stats, the made ones (madeMondays, madePeriodText, statsMade, on madePeriodMondays), statsYTD, ytdRange — with tallySchedule, calcRawCount and the Generate tab's mondays memo slice and compile; the REAL Counts card (its JSX) found once and compiles",
+  check("CJ2 the REAL Stats memos — the made ones (madeMondays, madePeriodText, statsMade, on madePeriodMondays), statsYTD, ytdRange — with tallySchedule, calcRawCount and the Generate tab's mondays memo slice and compile; the REAL Counts card (its JSX) found once and compiles",
     !!runMemo && !!chain && !!counts.fn && !!mpmSrc && MEMOS.every((m) => chainSrc.includes(m)), J({ runMemo: !!runMemo, chain: !!chain, card: counts.err || "ok", made: !!mpmSrc && MEMOS.filter((m) => chainSrc && chainSrc.includes(m)).length }));
   const runStats = (start, n, o = {}) => {
     if (!runMemo || !chain) return { err: "not sliced" };
@@ -2134,16 +2137,19 @@ ${chainSrc}
       && vdpSrc.includes("}, [vacations, surgeons, apps, madeMondays]);") && !/\bmondays\b|\bendDate\b/.test(vdpSrc)
       && !!vacSrc && vacSrc.split('(statsScope==="ytd"?vacDaysYTD:vacDaysPeriod).out').length - 1 === 3 && vdpReads.length === 6 && vcA > 0 && vdpReads.every((i) => i > vcA && i < vcB),
     J({ reads: vdpReads.length, inCard: vdpReads.filter((i) => i > vcA && i < vcB).length }));
+  // (changed on purpose 2026-10-26, section CU: these read the counts ALONE — the Generate period's `stats` is gone, as it
+  // too counted a published period twice; the made memos stay out of them for the same reason)
   const bc = span("  const buildCum = (prior) => {", "\n  const cum1yr = ");
-  const eys = span("  const exportYearlySummary = useCallback(() => {", "\n  }, [surgeons, stats, priorCounts, startYear, calcShifts]);");
-  const gFair = nsrc.indexOf('{(isScheduler || mySurgeon === "admin") && Object.values(stats).some(s=>s.dc>0) && ('), gRun = nsrc.indexOf("{Object.values(stats).some(s=>s.dc>0) && (");
+  const eys = span("  const exportYearlySummary = useCallback(() => {", "\n  }, [surgeons, priorCounts, startYear, calcShifts]);");
+  const G_FAIR = '{loaded && (isScheduler || mySurgeon === "admin") && Object.values(cum1yr).some(s=>s.dc>0) && (', G_RUN = "{loaded && Object.values(cumStats).some(s=>s.dc>0) && (";
+  const gFair = nsrc.indexOf(G_FAIR), gRun = nsrc.indexOf(G_RUN);
   const MADE = /\b(statsMade|madeMondays|madePeriodText|madePeriodMondays)\b/;
-  check("CJ4 the made tally is the Counts card's alone: buildCum (cum1yr / cumStats) and exportYearlySummary still add `stats` — the Generate period — to priorCounts / year1Counts, and the Fairness Check and Running Totals gates still read `stats` (made memos there would double-count the whole latest period: rollForwardCounts already rolled it in)",
-    countN("  const statsMade = useMemo(() => {") === 1 && countN("    const periodKeys = new Set(mondays.map(m => fmt(m)));\n    return tallySchedule(mStr => periodKeys.has(mStr));\n  }, [schedule, surgeons, mondays]);") === 1
-      && !!bc && bc.includes("const cur = stats[s.id] || {};") && !MADE.test(bc) && !!eys && eys.includes("const cur = stats[s.id] || {};") && !MADE.test(eys)
-      && countN("const cum1yr = useMemo(() => buildCum(year1Counts), [stats, year1Counts, surgeons]);") === 1 && countN("const cumStats = useMemo(() => buildCum(priorCounts), [stats, priorCounts, surgeons]);") === 1
-      && gFair > 0 && countN('{(isScheduler || mySurgeon === "admin") && Object.values(stats).some(s=>s.dc>0) && (') === 1 && nsrc.indexOf("Fairness Check <span", gFair) - gFair < 200
-      && gRun > 0 && countN("{Object.values(stats).some(s=>s.dc>0) && (") === 1 && nsrc.indexOf("Running Totals <span", gRun) - gRun < 200,
+  check("CJ4 the made tally is the Counts card's alone: buildCum (cum1yr / cumStats), exportYearlySummary and the Fairness Check / Running Totals gates read no made memo (it would count the latest period twice: rollForwardCounts already rolled it in) — and, since 2026-10-26 (CU), no Generate-period `stats` either: the memo is gone and they read the counts / the totals",
+    countN("  const statsMade = useMemo(() => {") === 1 && countN("const stats = useMemo(") === 0
+      && !!bc && !MADE.test(bc) && !/\bstats\b/.test(bc) && !!eys && !MADE.test(eys) && !/\bstats\b/.test(eys)
+      && countN("const cum1yr = useMemo(() => buildCum(year1Counts), [year1Counts, surgeons]);") === 1 && countN("const cumStats = useMemo(() => buildCum(priorCounts), [priorCounts, surgeons]);") === 1
+      && gFair > 0 && countN(G_FAIR) === 1 && nsrc.indexOf("Fairness Check <span", gFair) - gFair < 200
+      && gRun > 0 && countN(G_RUN) === 1 && nsrc.indexOf("Running Totals <span", gRun) - gRun < 200,
     J({ bc: !!bc, eys: !!eys, gFair, gRun }));
   const iDgn = nsrc.indexOf("  const doGenerateAndNotify = async () => {"), iRegen = nsrc.indexOf("  const doRegenerate = async (e) => {");
   const pers = []; for (let i = nsrc.indexOf("const period = periodText;"); i >= 0; i = nsrc.indexOf("const period = periodText;", i + 1)) pers.push(i);
@@ -6477,6 +6483,157 @@ console.log("\nCT. Stats → Fairness Check reads in both modes");
       [D.fair, D.review].every((v) => DARK_SHEET.hex(v.fill) && DARK_SHEET.lum(v.fill) < 0.05 && v.ratio >= 4.5) && D.fair.text === "#60e0a0" && D.review.text === "#e0a060"
         && J(D.lines.map((x) => x.color)) === J(["#50b070", "#b09040"]) && D.lines.every((x) => x.ratio >= 4.5),
       J(D));
+  }
+}
+
+// ─── CU. Stats' running totals and the Yearly Summary CSV count a published week once (2026-10-26) ───
+// rollForwardCounts adds every published week (from the counts floor on) to priorCounts / year1Counts at its publish.
+// Stats then showed, as "Prior + This Period", those counts PLUS the Generate period's own tally (`stats`): the Fairness
+// Check (1-Year), Running Totals (1-Year, Multi-Year) and ⬇ Export Yearly Summary (CSV, Multi-Year). A published Generate
+// period counted twice, and while it was unpublished (the Generate tab set up for the next period, as live 2026-10-24)
+// the two cards hid. Owner request (Faraz, 2026-10-26): fix the double count. They are now the counts alone — what the
+// generator balances on — and the cards show whenever there are counts. `stats` is gone (CJ4 pins it). SYNTHETIC data.
+//   CU1 the REAL buildCum + cum1yr / cumStats memos: each tier is its counts exactly (totalDays / totalDaysB kept,
+//       estimated only where a surgeon's counts have none; a surgeon with no counts all 0), the same whether the Generate
+//       tab is on a published period, on an unpublished one, or there is no schedule
+//   CU2 end to end with the REAL rollForwardCounts (and countsOfWeeks / applyCountsDelta / netCounts): publish a
+//       synthetic 4-week period (one backup week) with the Generate tab on it → both tiers are the counts before + that
+//       period ONCE (hand-tallied; main: twice); publish it again (replaced = the same weeks) → still once
+//   CU3 the REAL exportYearlySummary (Blob / URL / document stubbed) after that publish: priorCounts as stored, every
+//       column, exact (main: the period added again); the same with the Generate tab on the next period
+//   CU4 the REAL Fairness Check and Running Totals gates, evaluated, with the Generate tab on the next (unpublished)
+//       period: a scheduler and admin see both, a member only Running Totals (main: neither); no counts → neither;
+//       before the blob has loaded (the counts are config.js's seeds) → neither (review fix)
+//   CU5 the labels: no "Prior + This Period" left; "— 1-Year totals" (the note: each publish adds its weeks in that
+//       calendar year, once — 1-Year's real rule, review fix), "— counted at each publish"
+console.log("\nCU. Stats' running totals and the Yearly Summary CSV count a published week once");
+{
+  const nsrcCU = src.replace(/\r\n/g, "\n"), J = JSON.stringify;
+  const countCU = (s) => nsrcCU.split(s).length - 1;
+  const spanCU = (a, b) => { const i = nsrcCU.indexOf(a); if (i < 0 || nsrcCU.indexOf(a, i + 1) !== -1) return null; const j = nsrcCU.indexOf(b, i + a.length); return j < 0 ? null : nsrcCU.slice(i, j); };
+  const afterCU = (a, b) => { const s = spanCU(a, b); return s === null ? null : s.slice(a.length); };
+  const mkCU = (code, filename) => { try { return code ? vm.runInContext(code, sandbox, { filename }) : null; } catch (ex) { return null; } };
+  const tryCU = (fn) => { try { return fn(); } catch (ex) { return "threw: " + String((ex && ex.message) || ex).slice(0, 160); } };
+  const H = vm.runInContext("({ parse })", sandbox);
+  // the clock: Oct 26, 2026 (rollForwardCounts' 1-Year tier takes the current year's weeks)
+  const Oct26 = class extends Date { constructor(...a) { if (a.length) super(...a); else super(2026, 9, 26, 12, 0, 0); } };
+  // the real code: buildCum + the two memos, rollForwardCounts and its helpers, exportYearlySummary, calcShifts, and
+  // tallySchedule (main's `stats` — the Generate period's tally — is handed in so main runs too; the branch ignores it)
+  const bcSrc = spanCU("  const buildCum = (prior) => {", "\n  const cum1yr = ");
+  const memoSrc = spanCU("  const cum1yr = useMemo(", "\n\n  // Total call days");
+  const rollSrc = (() => { const s = spanCU("  const countsOfWeeks = (weeks, pick) => {", "\n  }, [surgeons]);"); return s === null ? null : s + "\n  }, [surgeons]);"; })();
+  const eysSrc = afterCU("  const exportYearlySummary = useCallback(", "\n  }, [surgeons, ");
+  const csSrc = afterCU("  const calcShifts = ", "\n");
+  const tallySrcCU = (() => { const s = afterCU("  const tallySchedule = ", "\n  };\n"); return s === null ? null : s + "\n  };"; })();
+  const totalsOf = mkCU(bcSrc && memoSrc && `(function (env) { const { surgeons, year1Counts, priorCounts, stats } = env; const useMemo = (f) => f();
+${bcSrc}
+${memoSrc}
+  return { cum1yr, cumStats };
+})`, "cu-totals.js");
+  const rollOf = mkCU(rollSrc && rollSrc.includes("const rollForwardCounts = useCallback(") && `(function (env) { const { surgeons, parse, Date } = env; let prior = env.prior, y1 = env.y1;
+  const useCallback = (f) => f; const setPriorCounts = (fn) => { prior = fn(prior); }; const setYear1Counts = (fn) => { y1 = fn(y1); };
+${rollSrc}
+  return (sched, replaced) => { const r = rollForwardCounts(sched, replaced); return { r, prior, y1 }; };
+})`, "cu-roll.js");
+  const csvOf = mkCU(eysSrc && csSrc && `(function (env) { const { surgeons, priorCounts, stats, startYear } = env; const useCallback = (f) => f; const out = {};
+  const Blob = function (parts, o) { out.csv = parts.join(""); out.type = o && o.type; };
+  const URL = { createObjectURL: () => "blob:cu", revokeObjectURL: () => {} };
+  const document = { createElement: () => { const a = { click: () => { out.file = a.download; out.clicks = (out.clicks || 0) + 1; } }; return a; } };
+  const calcShifts = ${csSrc}
+  const exportYearlySummary = useCallback(${eysSrc}
+  });
+  exportYearlySummary();
+  return out;
+})`, "cu-csv.js");
+  const tallyOf = mkCU(tallySrcCU && `(function (env) { const { schedule, surgeons } = env; const tallySchedule = ${tallySrcCU}\n return tallySchedule; })`, "cu-tally.js");
+  check("CU0 the real buildCum + cum1yr / cumStats, rollForwardCounts (with countsOfWeeks, applyCountsDelta, netCounts), exportYearlySummary, calcShifts and tallySchedule slice and compile",
+    !!totalsOf && !!rollOf && !!csvOf && !!tallyOf, J({ totals: !!totalsOf, roll: !!rollOf, csv: !!csvOf, tally: !!tallyOf }));
+  if (totalsOf && rollOf && csvOf && tallyOf) {
+    const SURG = [{ id: "s1", name: "S1" }, { id: "s2", name: "S2" }, { id: "s3", name: "S3" }];
+    const K = ["dc", "nights", "wknd", "off", "dcB", "nightsB", "wkndB", "offB", "svcAdj6", "svcAdj7", "totalDays", "totalDaysB"];
+    const norm = (c) => Object.fromEntries(K.map((k) => [k, c[k] || 0]));
+    const sameT = (a, b) => J(Object.keys(a).sort().map((id) => [id, norm(a[id])])) === J(Object.keys(b).sort().map((id) => [id, norm(b[id])]));
+    // a synthetic period, Nov 2 – Nov 29, 2026: three regular weeks and a backup week
+    const P = {
+      "2026-11-02": { dayCall: "s1", off: "s2", nights: { mon: "s2", tue: "s3", wed: "s1", thu: "s2", wknd: "s3" } },
+      "2026-11-09": { dayCall: "s2", off: "s3", nights: { mon: "s3", tue: "s1", wed: "s2", thu: "s3", wknd: "s1" } },
+      "2026-11-16": { dayCall: "s3", off: "s1", nights: { mon: "s1", tue: "s2", wed: "s3", thu: "s1", wknd: "s2" } },
+      "2026-11-23": { dayCall: "s1", off: "s2", isBackup: true, nights: { mon: "s2", tue: "s3", wed: "s1", thu: "s2", wknd: "s3" } },
+    };
+    // that period ONCE, tallied by hand (days as applyCountsDelta adds them: service week 7, night 1, weekend 3)
+    const P_ONCE = {
+      s1: { dc: 1, nights: 4, wknd: 1, off: 1, dcB: 1, nightsB: 1, wkndB: 0, offB: 0, totalDays: 14, totalDaysB: 8 },
+      s2: { dc: 1, nights: 4, wknd: 1, off: 1, dcB: 0, nightsB: 2, wkndB: 0, offB: 1, totalDays: 14, totalDaysB: 2 },
+      s3: { dc: 1, nights: 4, wknd: 1, off: 1, dcB: 0, nightsB: 1, wkndB: 1, offB: 0, totalDays: 14, totalDaysB: 4 },
+    };
+    const Y1_0 = {
+      s1: { dc: 5, nights: 30, wknd: 5, off: 4, dcB: 1, nightsB: 3, wkndB: 1, offB: 0, totalDays: 80, totalDaysB: 13 },
+      s2: { dc: 6, nights: 28, wknd: 6, off: 3, dcB: 0, nightsB: 4, wkndB: 0, offB: 1, totalDays: 88, totalDaysB: 4 },
+      s3: { dc: 4, nights: 33, wknd: 4, off: 5, dcB: 1, nightsB: 2, wkndB: 1, offB: 0, totalDays: 70, totalDaysB: 9 },
+    };
+    const PR_0 = {
+      s1: { dc: 30, nights: 150, wknd: 30, off: 20, dcB: 2, nightsB: 10, wkndB: 2, offB: 1, totalDays: 390, totalDaysB: 30 },
+      s2: { dc: 29, nights: 145, wknd: 29, off: 18, dcB: 1, nightsB: 12, wkndB: 1, offB: 2, totalDays: 380, totalDaysB: 22 },
+      s3: { dc: 28, nights: 148, wknd: 28, off: 21, dcB: 2, nightsB: 9, wkndB: 3, offB: 0, totalDays: 385, totalDaysB: 32 },
+    };
+    const plus = (a, b, n = 1) => Object.fromEntries(Object.keys(a).map((id) => [id, Object.fromEntries(K.map((k) => [k, (a[id][k] || 0) + n * ((b[id] || {})[k] || 0)]))]));
+    const NEXT = ["2026-11-30", "2026-12-07", "2026-12-14"]; // the Generate tab on the next period: none of it published
+    const statsFor = (schedule, gen) => { const t = tallyOf({ schedule, surgeons: SURG }); const keys = new Set(gen); return t((m) => keys.has(m)); };
+    const totals = (y1, prior, stats) => tryCU(() => totalsOf({ surgeons: SURG, year1Counts: y1, priorCounts: prior, stats }));
+
+    // CU1 — each tier is its counts exactly, whatever the Generate period holds
+    const SURG4 = SURG.concat([{ id: "s4", name: "S4" }]);
+    const Y1_EST = { s1: Y1_0.s1, s2: Y1_0.s2, s3: { dc: 4, nights: 33, wknd: 4, off: 5, dcB: 1, nightsB: 2, wkndB: 1, offB: 0 } };
+    const WANT1 = { s1: norm(Y1_0.s1), s2: norm(Y1_0.s2), s3: Object.assign(norm(Y1_EST.s3), { totalDays: 4 * 6 + 33 + 4, totalDaysB: 6 + 2 + 1 }), s4: norm({}) };
+    const cu1 = [["the Generate tab on a published period", statsFor(P, Object.keys(P))], ["on the next, unpublished one", statsFor(P, NEXT)], ["no schedule", {}]].map(([what, stats]) => {
+      const got = tryCU(() => totalsOf({ surgeons: SURG4, year1Counts: Y1_EST, priorCounts: PR_0, stats }));
+      const ok = typeof got === "object" && sameT(got.cum1yr, WANT1) && sameT(got.cumStats, Object.assign(Object.fromEntries(SURG.map((s) => [s.id, norm(PR_0[s.id])])), { s4: norm({}) }));
+      return { what, ok, got: typeof got === "object" ? { s1: got.cum1yr.s1, s3: got.cum1yr.s3 } : got };
+    });
+    check("CU1 the REAL buildCum + cum1yr / cumStats: 1-Year is year1Counts exactly and Multi-Year is priorCounts exactly (totalDays / totalDaysB kept; estimated only where a surgeon's counts have none — 6 / 1 / 1; a surgeon with no counts all 0), the same with the Generate tab on a published period, on an unpublished one, or no schedule (main added the Generate period's tally on top)",
+      cu1.every((c) => c.ok), J(cu1.filter((c) => !c.ok)).slice(0, 700));
+
+    // CU2 — publish P with the Generate tab on it: counted once; publish it again: still once
+    const pub1 = tryCU(() => rollOf({ surgeons: SURG, parse: H.parse, Date: Oct26, prior: PR_0, y1: Y1_0 })(P, {}));
+    const ok1 = typeof pub1 === "object" && sameT(pub1.prior, plus(PR_0, P_ONCE)) && sameT(pub1.y1, plus(Y1_0, P_ONCE));
+    const t1 = ok1 ? totals(pub1.y1, pub1.prior, statsFor(P, Object.keys(P))) : null;
+    const pub2 = ok1 ? tryCU(() => rollOf({ surgeons: SURG, parse: H.parse, Date: Oct26, prior: pub1.prior, y1: pub1.y1 })(P, P)) : null;
+    const t2 = pub2 && typeof pub2 === "object" ? totals(pub2.y1, pub2.prior, statsFor(P, Object.keys(P))) : null;
+    const once = (t) => !!t && typeof t === "object" && sameT(t.cum1yr, plus(Y1_0, P_ONCE)) && sameT(t.cumStats, plus(PR_0, P_ONCE));
+    check("CU2 end to end, the REAL rollForwardCounts then the REAL totals: publish a 4-week period (one backup week) with the Generate tab on it → its publish adds it once (hand-tallied), and Fairness / Running Totals show the counts before + that period ONCE (main: twice — dc, nights, every column); publish it again (replaced = the same weeks) → the counts and the totals unchanged, still once",
+      ok1 && once(t1) && !!pub2 && typeof pub2 === "object" && sameT(pub2.prior, pub1.prior) && sameT(pub2.y1, pub1.y1) && once(t2),
+      J({ ok1, pub1: typeof pub1 === "object" ? { s1: pub1.prior.s1 } : pub1, t1: t1 && typeof t1 === "object" ? { s1: t1.cumStats.s1, s1y: t1.cum1yr.s1 } : t1, t2: t2 && typeof t2 === "object" ? { s1: t2.cumStats.s1 } : t2 }).slice(0, 700));
+
+    // CU3 — the CSV after that publish: priorCounts as stored (Total = service week 6, night 1, weekend 2, + totalDaysB)
+    const WANT_CSV = ["Surgeon,Svc Wk,Nights,Wknds,B-SW,B-Nights,B-Wknds,Total", "S1,31,154,31,3,11,2,440", "S2,30,149,30,1,14,1,413", "S3,29,152,29,2,10,4,420"].join("\n");
+    const csv = (stats) => (ok1 ? tryCU(() => csvOf({ surgeons: SURG, priorCounts: pub1.prior, stats, startYear: 2026 })) : null);
+    const c1 = csv(statsFor(P, Object.keys(P))), c2 = csv(statsFor(P, NEXT));
+    check("CU3 the REAL exportYearlySummary after that publish: the CSV is priorCounts as stored, every column, exact — \"S1,31,154,31,3,11,2,440\" … (main added the published Generate period again: S1,32,158,32,4,12,2,…) — and the same with the Generate tab on the next period; one download, call-schedule-summary-2026.csv, text/csv",
+      [c1, c2].every((c) => c && typeof c === "object" && c.csv === WANT_CSV && c.file === "call-schedule-summary-2026.csv" && c.type === "text/csv" && c.clicks === 1),
+      J({ c1, c2 }).slice(0, 700));
+
+    // CU4 — the gates, as the JSX has them (evaluated), with the Generate tab on the next, unpublished period
+    const gateOf = (title) => { const m = nsrcCU.match(new RegExp("\\n          \\{([^\\n]*) && \\(\\n            <div style=\\{css\\.card\\}>\\n              <div style=\\{css\\.cardT\\}>" + title + " <span")); if (!m) return null; try { return vm.runInContext(`(function (env) { const { loaded, isScheduler, mySurgeon, cum1yr, cumStats, stats } = env; return !!(${m[1]}); })`, vm.createContext({ Object })); } catch (ex) { return null; } };
+    const gFairCU = gateOf("Fairness Check"), gRunCU = gateOf("Running Totals");
+    const tNext = ok1 ? totals(pub1.y1, pub1.prior, statsFor(P, NEXT)) : null, tNone = totals({}, {}, statsFor(P, NEXT));
+    const seen = (who, t) => { const env = Object.assign({ loaded: true, stats: statsFor(P, NEXT) }, who, t && typeof t === "object" ? t : {}); return { fair: tryCU(() => gFairCU(env)), run: tryCU(() => gRunCU(env)) }; };
+    const cu4 = gFairCU && gRunCU && tNext && typeof tNext === "object" ? [
+      ["the scheduler", seen({ isScheduler: true, mySurgeon: "s1" }, tNext), { fair: true, run: true }],
+      ["admin", seen({ isScheduler: false, mySurgeon: "admin" }, tNext), { fair: true, run: true }],
+      ["a member", seen({ isScheduler: false, mySurgeon: "s2" }, tNext), { fair: false, run: true }],
+      ["no counts (a factory reset), the scheduler", seen({ isScheduler: true, mySurgeon: "s1" }, tNone), { fair: false, run: false }],
+      // (review fix: before the blob loads, the counts are config.js's seeds — no totals card shows them)
+      ["before the blob has loaded, the scheduler", seen({ loaded: false, isScheduler: true, mySurgeon: "s1" }, tNext), { fair: false, run: false }],
+    ].map(([what, got, want]) => ({ what, ok: J(got) === J(want), got })) : null;
+    check("CU4 the REAL Fairness Check and Running Totals gates (evaluated) with the Generate tab on the next, unpublished period: the scheduler and admin see both, a member only Running Totals (main: neither — they waited for the Generate period to be published); no counts → neither; before the blob has loaded (the seeds) → neither",
+      !!cu4 && cu4.every((c) => c.ok), J(cu4 ? cu4.filter((c) => !c.ok) : { gFair: !!gFairCU, gRun: !!gRunCU, tNext: typeof tNext }).slice(0, 600));
+
+    // CU5 — the labels
+    check("CU5 the labels say what the totals are: no \"Prior + This Period\" left; Fairness Check \"— 1-Year totals\" (its note: each publish adds its weeks in that calendar year, once — 1-Year's rule in rollForwardCounts); Running Totals \"— counted at each publish\"",
+      countCU("Prior + This Period") === 0 && countCU('Fairness Check <span style={{fontWeight:400,fontSize:11,color:"#7a8a98"}}>— 1-Year totals</span>') === 1
+        && countCU("Evaluated against the 1-year running totals kept on the Totals tab: each publish adds its weeks in that calendar year, once.") === 1
+        && countCU('Running Totals <span style={{fontWeight:400,fontSize:11,color:"#7a8a98"}}>— counted at each publish</span>') === 1,
+      J({ prior: countCU("Prior + This Period") }));
   }
 }
 
