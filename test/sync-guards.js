@@ -5825,6 +5825,58 @@ console.log("\nCP. Stats → Billing fits a phone");
     !!bmCP && ths === 6 && tdsB === 4 && total === 1 && badge === 1 && !/style=\{tdS\}|style=\{\{\.\.\.tdS,/.test(bmCP) && rowSides === 48, J({ found: !!bmCP, ths, tdsB, total, badge, rowSides }));
 }
 
+// ─── CQ. Dark mode: Setup's group boxes are dark too (2026-10-25) ───
+// In dark mode Setup's Surgeons and APPs rows (#f4f6f8) and its holiday "Major group / Minor group" boxes (#e8f8e8 /
+// #fce8e8, and the Rotation box #fdf3e3) stayed pale: the dark sheet's rules for those fills are written in hex
+// (div[style*="background:#f4f6f8"] …) and React writes an inline colour as rgb(), so they never match. On the pale
+// rows the sheet's forced light button colour left the ✕ near invisible. Switching the sheet's rules on was tried and
+// rejected: across the app (rendered, every tab) it darkened boxes whose text keeps its own inline dark colour (the
+// calendar's day numbers, Mine's role names, Settings' names — down to 1.5:1). So these boxes are dark-aware inline,
+// as the rest of the app is. The REAL style expressions, evaluated for light and dark:
+//   CQ1 the Surgeons and APPs rows: dark → the card's fill (#16213e) and border, the name #e0e0f0 at 4.5:1+ on it, the ✕
+//       (the sheet's forced button colour) at 4.5:1+ on it, the colour dot ringed; light → exactly as before
+//   CQ2 the holiday group boxes (both outcomes) and the Rotation box: dark → their own dark fill, border and text at
+//       4.5:1+; light → exactly as before
+//   CQ3 none of those dark fills is matched by a dark-sheet rule (no rgb() selector there): nothing re-colours them
+console.log("\nCQ. Dark mode: Setup's group boxes are dark too");
+{
+  const nsrcCQ = src.replace(/\r\n/g, "\n"), J = JSON.stringify;
+  const evQ = (code, names) => { try { return vm.runInContext(`(function (dk${names ? ", " + names : ""}) { return (${code}); })`, vm.createContext({})); } catch (ex) { return null; } };
+  const btnDark = DARK_SHEET.forced("button", "color"), CARD_DK = "#16213e";
+  // the rows: the div that opens each list's map, and its name input's style
+  const rowOf = (mapHead) => { const i = nsrcCQ.indexOf(mapHead); if (i < 0 || nsrcCQ.indexOf(mapHead, i + 1) !== -1) return null; const seg = nsrcCQ.slice(i, i + 1600);
+    const div = (seg.match(/<div key=\{[sa]\.id\} style=\{(\{[^\n]*\})\}>\n/) || [])[1] || null, dot = (seg.match(/\n\s*<div style=\{(\{width:8,height:8[^\n]*\})\}\/>\n/) || [])[1] || null, inp = (seg.match(/\n\s*style=\{(\{\.\.\.css\.inp,[^\n]*\})\}\/>\n/) || [])[1] || null; return { div, dot, inp }; };
+  const ROWS = { surgeons: rowOf("              {surgeons.map((s,i)=>("), apps: rowOf("              {apps.map((a,i)=>(") };
+  const NAMES = "surgeonColors, s, a, i, APP_PAL, css";
+  const ENV = [(n) => ({ tx: "#806010" }), { name: "DJA" }, { name: "MA" }, 0, [{ tx: "#1a6fa8", bd: "#a0c8d8" }], { inp: { background: "#f8f9fb", color: "#2c3e50", border: "1px solid #d0d8e0" } }];
+  const rowView = (r, dk) => { if (!r || !r.div || !r.dot || !r.inp) return null; const d = evQ(r.div, NAMES), o = evQ(r.dot, NAMES), n = evQ(r.inp, NAMES); if (!d || !o || !n) return null;
+    const dv = d(dk, ...ENV), ov = o(dk, ...ENV), nv = n(dk, ...ENV); return { bg: dv.background, border: dv.border, ring: ov.boxShadow, name: nv.color }; };
+  const q1 = {};
+  for (const k of Object.keys(ROWS)) { const L = rowView(ROWS[k], false), D = rowView(ROWS[k], true);
+    q1[k] = { L, D, nameOnDark: D ? DARK_SHEET.cr(D.name, D.bg) : 0, xOnDark: D ? DARK_SHEET.cr(btnDark, D.bg) : 0 }; }
+  check("CQ1 Setup's Surgeons and APPs rows (the REAL styles, evaluated): dark → the card's #16213e (the sheet's dark border on a surgeon's), the name #e0e0f0 at 4.5:1+ on it, the ✕ (the sheet's forced button colour) at 4.5:1+ on it, the colour dot ringed; light → as before (#f4f6f8, the name css.inp's colour, no ring)",
+    ["surgeons", "apps"].every((k) => { const x = q1[k]; return !!x.L && !!x.D && x.D.bg === CARD_DK && x.D.name === "#e0e0f0" && x.nameOnDark >= 4.5 && x.xOnDark >= 4.5 && /^0 0 0 1px/.test(x.D.ring || "")
+      && x.L.bg === "#f4f6f8" && x.L.name === "#2c3e50" && (x.L.ring === "none" || x.L.ring === undefined); }) && q1.surgeons.D.border === "1px solid #2a3a5e" && q1.surgeons.L.border === "1px solid #e0e4ea",
+    J(q1));
+  // the holiday group boxes and the Rotation box
+  const grp = (nsrcCQ.match(/<div key=\{ck\.label\} style=\{(\{flex:1,minWidth:180,[^\n]*\n[^\n]*\})\}>/) || [])[1] || null;
+  const rot = (nsrcCQ.match(/<div style=\{(\{flexBasis:"100%",padding:"8px 12px",borderRadius:6,fontSize:11,[^\n]*\})\}>\n\s*<span style=\{\{fontWeight:700\}\}>⚠ Rotation:/) || [])[1] || null;
+  const gF = grp && evQ(grp, "ck"), rF = rot && evQ(rot);
+  const box = (f, dk, ck) => { const v = f(dk, ck); return { bg: v.background, border: v.border, color: v.color }; };
+  const q2 = gF && rF ? { okL: box(gF, false, { ok: true }), okD: box(gF, true, { ok: true }), badL: box(gF, false, { ok: false }), badD: box(gF, true, { ok: false }), rotL: box(rF, false), rotD: box(rF, true) } : null;
+  const cr2 = q2 ? { ok: DARK_SHEET.cr(q2.okD.color, q2.okD.bg), bad: DARK_SHEET.cr(q2.badD.color, q2.badD.bg), rot: DARK_SHEET.cr(q2.rotD.color, q2.rotD.bg) } : null;
+  check("CQ2 the holiday \"Major group / Minor group\" boxes (both outcomes) and the Rotation box: dark → their own dark fill and border, the text at 4.5:1+ (it stayed on the pale fill); light → exactly as before",
+    !!q2 && J(q2.okL) === J({ bg: "#e8f8e8", border: "1px solid #a0d8a0", color: "#1a6030" }) && J(q2.badL) === J({ bg: "#fce8e8", border: "1px solid #e0a0a0", color: "#903030" }) && J(q2.rotL) === J({ bg: "#fdf3e3", border: "1px solid #e0c080", color: "#7a5010" })
+      && [q2.okD, q2.badD, q2.rotD].every((v) => DARK_SHEET.lum(v.bg) < 0.05) && cr2.ok >= 4.5 && cr2.bad >= 4.5 && cr2.rot >= 4.5,
+    J({ q2, cr2 }));
+  // CQ3 — the sheet has no rule for those dark fills (nor an rgb() selector at all for the boxes'), so nothing re-colours them
+  const rgbOfQ = (h) => "rgb(" + h.slice(1).match(/../g).map((x) => parseInt(x, 16)).join(", ") + ")";
+  const fills = q2 ? [CARD_DK, q2.okD.bg, q2.badD.bg, q2.rotD.bg, "#f4f6f8", "#e8f8e8", "#fce8e8", "#fdf3e3"] : [];
+  const hitQ = fills.filter((h) => DARK_SHEET.rules.some((r) => r.sels.some((sel) => sel.replace(/\s+/g, "").includes(("background:" + rgbOfQ(h)).replace(/\s+/g, "")))));
+  check("CQ3 no dark-sheet rule matches any of those fills as the browser writes them (rgb()) — the dark ones or the light ones — so the inline colours above are what shows",
+    !!q2 && hitQ.length === 0, J({ hitQ }));
+}
+
 // ─── BC. Generate & Publish asks once; Stats → Billing opens on the newest months (UX audit 2026-10-19) ───
 // Generate & Publish ran on the tap and a publish pushes and emails everyone,
 // so one mis-tap published. Stats → Billing listed its months oldest first, so
