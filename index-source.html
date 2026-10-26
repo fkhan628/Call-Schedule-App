@@ -11655,7 +11655,12 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 // the sheet's div[style*="color:#1a6fa8"] never matched and an open month's name read at 2.9:1 on the
                 // dark card; the sheet's own #5aafe8 is now inline in dark mode (6.6:1). In the box the sheet's
                 // "details div" colour still decides, as before.
-                const billTh = {...thS2,color:"#5a6a78"};
+                // Phone fit (2026-10-25): with thS2 / tdS's 8px sides and the headers' letter spacing the table was
+                // 325px at its narrowest — wider than its box on any screen under 390px (309px at 375), so it
+                // scrolled sideways inside the box. 4px sides and no letter spacing: 268px, which fits from a 340px
+                // screen up (a boxed month too); at 320 it still scrolls, by 20px at most.
+                const billTh = {...thS2,color:"#5a6a78",padding:"4px 4px",letterSpacing:0};
+                const billTd = {...tdS,padding:"7px 4px"};
                 return (
                   <div key={mk} style={{marginBottom:16}}>
                     <div style={{fontSize:12,fontWeight:700,color:dk?"#5aafe8":"#1a6fa8",marginBottom:4,textTransform:"uppercase",letterSpacing:0.8}}>{moLabel(mk)}</div>
@@ -11678,12 +11683,12 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                             const empty = days === 0;
                             return (
                               <tr key={s.id} style={{borderBottom:"1px solid #e8ecf0",opacity:empty?0.45:1}}>
-                                <td style={{padding:"5px 6px"}}><Badge id={s.id} small/></td>
-                                <td style={{...tdS,color:empty?"#a0a8b0":"#1a8040",fontWeight:700,fontSize:14}}>{days||"–"}</td>
-                                <td style={tdS}>{r.dc||"–"}</td>
-                                <td style={tdS}>{r.nights||"–"}</td>
-                                <td style={tdS}>{r.wknd||"–"}</td>
-                                <td style={tdS}>{r.hol||"–"}</td>
+                                <td style={{padding:"5px 4px"}}><Badge id={s.id} small/></td>
+                                <td style={{...billTd,color:empty?"#a0a8b0":"#1a8040",fontWeight:700,fontSize:14}}>{days||"–"}</td>
+                                <td style={billTd}>{r.dc||"–"}</td>
+                                <td style={billTd}>{r.nights||"–"}</td>
+                                <td style={billTd}>{r.wknd||"–"}</td>
+                                <td style={billTd}>{r.hol||"–"}</td>
                               </tr>
                             );
                           })}
