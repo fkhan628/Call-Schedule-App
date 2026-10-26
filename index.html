@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.10.20f";
+    var APP_VERSION = "2026.10.25a";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -4312,13 +4312,17 @@ function CallSchedule() {
   };
   const computePeriodLabel = () => {
     const label = (a, b) => typeof periodLabel === "function" ? periodLabel(a, b) : `${a} – ${fmt(addD(parse(b), 6))}`;
-    const gen = mondays.map(m => fmt(m));
-    if (gen.length && gen.every(m => schedule[m])) return label(gen[0], gen[gen.length - 1]);
-    const pub = Object.keys(schedule || {}).filter(k => /^\d{4}-\d{2}-\d{2}$/.test(k) && schedule[k]).sort();
-    if (!pub.length) return "";
+    const made = madePeriodMondays(schedule, mondays);
+    return made.length ? label(made[0], made[made.length - 1]) : "";
+  };
+  const madePeriodMondays = (sched, gen) => {
+    const genKeys = gen.map(m => fmt(m));
+    if (genKeys.length && genKeys.every(m => sched[m])) return genKeys;
+    const pub = Object.keys(sched || {}).filter(k => /^\d{4}-\d{2}-\d{2}$/.test(k) && sched[k]).sort();
+    if (!pub.length) return [];
     let i = pub.length - 1;
-    while (i > 0 && pub.length - i < (gen.length || pub.length) && fmt(addD(parse(pub[i - 1]), 7)) === pub[i]) i--;
-    return label(pub[i], pub[pub.length - 1]);
+    while (i > 0 && pub.length - i < (genKeys.length || pub.length) && fmt(addD(parse(pub[i - 1]), 7)) === pub[i]) i--;
+    return pub.slice(i);
   };
   const openPublishDialog = () => {
     setPublishLabel(computePeriodLabel());
@@ -6792,6 +6796,12 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     const periodKeys = new Set(mondays.map(m => fmt(m)));
     return tallySchedule(mStr => periodKeys.has(mStr));
   }, [schedule, surgeons, mondays]);
+  const madeMondays = useMemo(() => madePeriodMondays(schedule, mondays), [schedule, mondays]);
+  const madePeriodText = useMemo(() => madeMondays.length === 0 ? "" : typeof periodLabel === "function" ? periodLabel(madeMondays[0], madeMondays[madeMondays.length - 1]) : `${madeMondays[0]} – ${fmt(addD(parse(madeMondays[madeMondays.length - 1]), 6))}`, [madeMondays]);
+  const statsMade = useMemo(() => {
+    const madeKeys = new Set(madeMondays);
+    return tallySchedule(mStr => madeKeys.has(mStr));
+  }, [schedule, surgeons, madeMondays]);
   const statsYTD = useMemo(() => {
     const yr = new Date().getFullYear();
     return tallySchedule(mStr => mStr >= `${yr}-01-01` && mStr <= `${yr}-12-31`);
@@ -6863,15 +6873,15 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     return out;
   };
   const vacDaysPeriod = useMemo(() => {
-    const pStart = mondays.length > 0 ? fmt(mondays[0]) : null;
-    const pEnd = endDate ? fmt(endDate) : null;
+    const pStart = madeMondays.length > 0 ? madeMondays[0] : null;
+    const pEnd = madeMondays.length > 0 ? fmt(addD(parse(madeMondays[madeMondays.length - 1]), 6)) : null;
     return {
       out: countVacDaysInWindow(pStart, pEnd),
       pStart,
       pEnd,
       hasPeriod: !!(pStart && pEnd)
     };
-  }, [vacations, surgeons, apps, mondays, endDate]);
+  }, [vacations, surgeons, apps, madeMondays]);
   const workedDaySet = useMemo(() => {
     const set = new Set();
     Object.entries(schedule).forEach(([mStr, wk]) => {
@@ -15135,7 +15145,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     style: css.card
   }, React.createElement("div", {
     style: css.cardT
-  }, statsScope === "ytd" ? React.createElement(React.Fragment, null, "Current Period — ", ytdRange.start, " → ", ytdRange.end) : React.createElement(React.Fragment, null, "This Period — ", periodText)), !Object.values(statsScope === "ytd" ? statsYTD : stats).some(s => s.dc > 0 || s.nights > 0) ? React.createElement("p", {
+  }, statsScope === "ytd" ? React.createElement(React.Fragment, null, "Current Period — ", ytdRange.start, " → ", ytdRange.end) : React.createElement(React.Fragment, null, "This Period", madePeriodText ? React.createElement(React.Fragment, null, " — ", madePeriodText) : null)), !Object.values(statsScope === "ytd" ? statsYTD : statsMade).some(s => s.dc > 0 || s.nights > 0) ? React.createElement("p", {
     style: {
       color: "#7a8a98",
       fontSize: 13
@@ -15209,7 +15219,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   }, "Wknds"), React.createElement("th", {
     style: thS2
   }, "Off")))), React.createElement("tbody", null, surgeons.filter(s => isScheduler || !mySurgeon || mySurgeon === "admin" || s.id === mySurgeon).map(s => {
-    const st = (statsScope === "ytd" ? statsYTD : stats)[s.id] || {};
+    const st = (statsScope === "ytd" ? statsYTD : statsMade)[s.id] || {};
     const total = calcRawCount(st);
     return React.createElement("tr", {
       key: s.id,
