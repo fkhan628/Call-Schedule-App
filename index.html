@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.10.26a";
+    var APP_VERSION = "2026.10.26b";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -6835,10 +6835,6 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     });
     return s;
   };
-  const stats = useMemo(() => {
-    const periodKeys = new Set(mondays.map(m => fmt(m)));
-    return tallySchedule(mStr => periodKeys.has(mStr));
-  }, [schedule, surgeons, mondays]);
   const madeMondays = useMemo(() => madePeriodMondays(schedule, mondays), [schedule, mondays]);
   const madePeriodText = useMemo(() => madeMondays.length === 0 ? "" : typeof periodLabel === "function" ? periodLabel(madeMondays[0], madeMondays[madeMondays.length - 1]) : `${madeMondays[0]} – ${fmt(addD(parse(madeMondays[madeMondays.length - 1]), 6))}`, [madeMondays]);
   const statsMade = useMemo(() => {
@@ -7013,30 +7009,25 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     const estTotal = s => (s.dc || 0) * 6 + (s.nights || 0) + (s.wknd || 0) * 1 + (s.svcAdj6 || 0);
     surgeons.forEach(s => {
       const p = prior[s.id] || {};
-      const cur = stats[s.id] || {};
-      const pTotal = p.totalDays !== undefined ? p.totalDays : estTotal(p);
-      const cTotal = cur.totalDays !== undefined ? cur.totalDays : estTotal(cur);
-      const pTotalB = p.totalDaysB !== undefined ? p.totalDaysB : (p.dcB || 0) * 6 + (p.nightsB || 0) + (p.wkndB || 0) * 1;
-      const cTotalB = cur.totalDaysB !== undefined ? cur.totalDaysB : (cur.dcB || 0) * 6 + (cur.nightsB || 0) + (cur.wkndB || 0) * 1;
       c[s.id] = {
-        dc: (p.dc || 0) + (cur.dc || 0),
-        nights: (p.nights || 0) + (cur.nights || 0),
-        wknd: (p.wknd || 0) + (cur.wknd || 0),
-        off: (p.off || 0) + (cur.off || 0),
-        dcB: (p.dcB || 0) + (cur.dcB || 0),
-        nightsB: (p.nightsB || 0) + (cur.nightsB || 0),
-        wkndB: (p.wkndB || 0) + (cur.wkndB || 0),
-        offB: (p.offB || 0) + (cur.offB || 0),
-        svcAdj6: (p.svcAdj6 || 0) + (cur.svcAdj6 || 0),
-        svcAdj7: (p.svcAdj7 || 0) + (cur.svcAdj7 || 0),
-        totalDays: pTotal + cTotal,
-        totalDaysB: pTotalB + cTotalB
+        dc: p.dc || 0,
+        nights: p.nights || 0,
+        wknd: p.wknd || 0,
+        off: p.off || 0,
+        dcB: p.dcB || 0,
+        nightsB: p.nightsB || 0,
+        wkndB: p.wkndB || 0,
+        offB: p.offB || 0,
+        svcAdj6: p.svcAdj6 || 0,
+        svcAdj7: p.svcAdj7 || 0,
+        totalDays: p.totalDays !== undefined ? p.totalDays : estTotal(p),
+        totalDaysB: p.totalDaysB !== undefined ? p.totalDaysB : (p.dcB || 0) * 6 + (p.nightsB || 0) + (p.wkndB || 0) * 1
       };
     });
     return c;
   };
-  const cum1yr = useMemo(() => buildCum(year1Counts), [stats, year1Counts, surgeons]);
-  const cumStats = useMemo(() => buildCum(priorCounts), [stats, priorCounts, surgeons]);
+  const cum1yr = useMemo(() => buildCum(year1Counts), [year1Counts, surgeons]);
+  const cumStats = useMemo(() => buildCum(priorCounts), [priorCounts, surgeons]);
   const calcShifts = s => (s.dc || 0) * 6 + (s.nights || 0) + (s.wknd || 0) * 2 + (s.svcAdj6 || 0);
   const calcShiftsB = s => (s.dcB || 0) * 6 + (s.nightsB || 0) + (s.wkndB || 0) * 2;
   const calcTotal = s => calcShifts(s) + calcShiftsB(s);
@@ -7520,21 +7511,20 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   const exportYearlySummary = useCallback(() => {
     const header = ["Surgeon", "Svc Wk", "Nights", "Wknds", "B-SW", "B-Nights", "B-Wknds", "Total"];
     const rows = surgeons.map(s => {
-      const cur = stats[s.id] || {};
       const pri = priorCounts[s.id] || {};
-      const cumDc = (pri.dc || 0) + (cur.dc || 0);
-      const cumN = (pri.nights || 0) + (cur.nights || 0);
-      const cumW = (pri.wknd || 0) + (cur.wknd || 0);
-      const cumDcB = (pri.dcB || 0) + (cur.dcB || 0);
-      const cumNB = (pri.nightsB || 0) + (cur.nightsB || 0);
-      const cumWB = (pri.wkndB || 0) + (cur.wkndB || 0);
+      const cumDc = pri.dc || 0,
+        cumN = pri.nights || 0,
+        cumW = pri.wknd || 0;
+      const cumDcB = pri.dcB || 0,
+        cumNB = pri.nightsB || 0,
+        cumWB = pri.wkndB || 0;
       const total1 = calcShifts({
         dc: cumDc,
         nights: cumN,
         wknd: cumW,
-        totalDays: (pri.totalDays || 0) + (cur.totalDays || 0)
+        totalDays: pri.totalDays || 0
       });
-      const total2 = (pri.totalDaysB || 0) + (cur.totalDaysB || 0);
+      const total2 = pri.totalDaysB || 0;
       return [s.name, cumDc, cumN, cumW, cumDcB, cumNB, cumWB, total1 + total2].join(",");
     });
     const csv = [header.join(","), ...rows].join("\n");
@@ -7547,7 +7537,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     a.download = `call-schedule-summary-${startYear}.csv`;
     a.click();
     URL.revokeObjectURL(url);
-  }, [surgeons, stats, priorCounts, startYear, calcShifts]);
+  }, [surgeons, priorCounts, startYear, calcShifts]);
   const dk = darkMode;
   const dkBg = dk ? "#1a1a2e" : "#f0f2f5";
   const dkCardBorder = dk ? "#2a3a5e" : "#e0e4ea";
@@ -15976,7 +15966,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         color: "#8a94a0"
       }
     }, " · ", workedDA, "d worked (excluded)")));
-  }))))), (isScheduler || mySurgeon === "admin") && Object.values(stats).some(s => s.dc > 0) && React.createElement("div", {
+  }))))), loaded && (isScheduler || mySurgeon === "admin") && Object.values(cum1yr).some(s => s.dc > 0) && React.createElement("div", {
     style: css.card
   }, React.createElement("div", {
     style: css.cardT
@@ -15986,14 +15976,14 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       fontSize: 11,
       color: "#7a8a98"
     }
-  }, "— 1-Year (Prior + This Period)")), React.createElement("p", {
+  }, "— 1-Year totals")), React.createElement("p", {
     style: {
       fontSize: 12,
       color: "#7a8a98",
       margin: "0 0 10px",
       lineHeight: 1.5
     }
-  }, "Evaluated against 1-year running totals. Enter current year prior counts in the Totals tab."), (() => {
+  }, "Evaluated against the 1-year running totals kept on the Totals tab: each publish adds its weeks in that calendar year, once."), (() => {
     const v = fn => surgeons.map(s => fn(cum1yr[s.id] || {}));
     const sp = arr => Math.max(...arr) - Math.min(...arr);
     const totalArr = surgeons.map(s => calcShifts(cum1yr[s.id] || {}));
@@ -16042,7 +16032,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         }
       }, label, ": spread ", s, " (min ", Math.min(...arr), ", max ", Math.max(...arr), ") — ", ok ? "Fair" : "Review"));
     }));
-  })()), Object.values(stats).some(s => s.dc > 0) && React.createElement("div", {
+  })()), loaded && Object.values(cumStats).some(s => s.dc > 0) && React.createElement("div", {
     style: css.card
   }, React.createElement("div", {
     style: css.cardT
@@ -16052,7 +16042,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       fontSize: 11,
       color: "#7a8a98"
     }
-  }, "— Prior + This Period")), [{
+  }, "— counted at each publish")), [{
     label: "1-Year",
     color: "#1a6fa8",
     data: cum1yr
