@@ -37,9 +37,10 @@ function shiftStartDate(mondayStr, shiftKey) {
 
 // Last day of a shift, the partner of shiftStartDate (Mine tab, 2026-09-25):
 // a Mon–Thu night ends on its own date; the service week, the weekend and an
-// OFF week (null key) run to the week's Sunday. Same rule as the Next call
-// card. A role is DONE once this date is before today — but My Shifts ends a
-// service week with its last held day (mineUpcoming, 2026-10-25).
+// OFF week (null key) run to the week's Sunday. A role is DONE once this date
+// is before today. (A service week's real end is its last held day — Sun 7a
+// for a Saturday: the Next call card ends it there since 2026-10-20, and My
+// Shifts does in mineUpcoming since 2026-10-25, so neither uses this for it.)
 function shiftLastDay(mondayStr, shiftKey) {
   return NIGHT_KEYS.includes(shiftKey) ? shiftStartDate(mondayStr, shiftKey) : fmt(addD(parse(mondayStr), 6));
 }

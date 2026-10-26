@@ -465,6 +465,11 @@ function CallSchedule() {
 
   // ─── Undo History ───
   const [scheduleHistory, setScheduleHistory] = useState([]);
+  // How many publish steps ↩ Undo has taken back (2026-10-25): a publish that
+  // lands after its deadline raises its 📣 banner only if none was since —
+  // Undo is last-in-first-out, so one after the publish took it back
+  // (runPublish's late()).
+  const publishUndoneRef = useRef(0);
   // Each step is { sched, epoch, counts }: the schedule MIRROR when it was
   // taken and the sync engine's epoch then (sync v2, R15) — Undo is
   // all-or-nothing: if restoring the snapshot would also revert a week
@@ -495,7 +500,7 @@ function CallSchedule() {
     if (step.counts) { setPriorCounts(step.counts.prior || {}); setYear1Counts(step.counts.y1 || {}); }
     // …and the Calendar's "✓ Published" banner (justPublished — review R1): the publish is taken back, and its 📣
     // would announce a schedule that was undone. (Any other step leaves it.)
-    if (step.counts) setJustPublished(null);
+    if (step.counts) { setJustPublished(null); publishUndoneRef.current++; }
     setScheduleHistory(h => h.slice(0, -1));
   };
 
@@ -2479,13 +2484,14 @@ function CallSchedule() {
   // A job still running at its deadline (A5(f)) answers "still running …
   // Nobody was notified", and when it then landed the engine said only "has
   // finished" — the Calendar's 📣 banner never came (2026-10-25). Its late()
-  // (E8) raises it: every week landed, in the session it was published in →
+  // (E8) raises it: every week landed, in the session it was published in,
+  // and not taken back by ↩ Undo meanwhile (Undo works while the job runs) →
   // the "✓ Published" banner for those weeks, as one that lands in time.
   const runPublish = (weeks) => {
-    const ep = sessionEpochRef.current, ms = Object.keys(weeks).sort();
+    const ep = sessionEpochRef.current, undone0 = publishUndoneRef.current, ms = Object.keys(weeks).sort();
     const label = typeof periodLabel === "function" ? periodLabel(ms[0], ms[ms.length - 1]) : `weeks of ${ms[0]} – ${ms[ms.length - 1]}`;
     const late = (r) => {
-      if (!r || !r.ok || sessionEpochRef.current !== ep) return null; // the engine's own words
+      if (!r || !r.ok || sessionEpochRef.current !== ep || publishUndoneRef.current !== undone0) return null; // the engine's own words
       setJustPublished({ label, ep });
       return `Publishing the new weeks has finished — every week is saved.${r.notice ? " " + r.notice : ""} Nobody has been notified yet: 📣 Notify everyone is on the Calendar.`;
     };
@@ -4481,7 +4487,7 @@ function CallSchedule() {
       // "myschedule": ?tab=mine set the view to "mine", which nothing renders —
       // a blank page. Both names open Mine now. A tab the person can't see still
       // falls back to the Calendar (the restricted-tab redirect above), and
-      // ?public=1 (the OR board) has only the Calendar.
+      // ?public=1 (the read-only calendar, and the OR board) has only the Calendar.
       const TAB_VIEWS = { calendar: "calendar", mine: "myschedule", myschedule: "myschedule", requests: "requests", stats: "stats", settings: "settings", setup: "setup", totals: "totals" };
       const toView = tab && Object.prototype.hasOwnProperty.call(TAB_VIEWS, tab) ? TAB_VIEWS[tab] : null;
       if (toView && (!isPublicMode || toView === "calendar")) {

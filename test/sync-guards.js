@@ -10111,22 +10111,23 @@ await (async () => {
     ["refused", "bug", "cancelled"].every((k) => !ch5[k].threw && ch5[k].jp.length === 0 && ch5[k].hist === "OTHER") && !ch5.signOut.threw && ch5.signOut.jp.length === 0 && ch5.signOut.hist === "OTHER,STEP", J(ch5));
   // the REAL undoLastChange with the banner up: o.step — the step undone; o.blocked — a week of it changed by someone else since
   const unBody = bodyCH("  const undoLastChange = () => {", "\n  };\n");
-  const unMk = fnCH("scheduleHistory, schedEditable, schedSyncRef, showToast, commitSchedule, setPriorCounts, setYear1Counts, setScheduleHistory, setJustPublished", unBody === null ? null : "() => {" + unBody + "\n  }");
+  // (2026-10-25: it also counts the publish it took back in publishUndoneRef — runPublish's late() reads it, CO4)
+  const unMk = fnCH("scheduleHistory, schedEditable, schedSyncRef, showToast, commitSchedule, setPriorCounts, setYear1Counts, setScheduleHistory, setJustPublished, publishUndoneRef", unBody === null ? null : "() => {" + unBody + "\n  }");
   const un5 = (step, o = {}) => {
-    const rec = { jp: [], commits: 0, toasts: [], counts: 0 };
+    const rec = { jp: [], commits: 0, toasts: [], counts: 0, undone: { current: 0 } };
     if (!unMk) return { threw: "undoLastChange not extractable" };
     try {
       unMk({ scheduleHistory: step ? [step] : [], schedEditable: () => true, schedSyncRef: { current: { undoPlan: (s) => ({ next: s, touched: [], blocked: o.blocked ? ["2026-11-16"] : [] }) } }, showToast: (m) => rec.toasts.push(String(m)),
-        commitSchedule: () => { rec.commits++; }, setPriorCounts: () => { rec.counts++; }, setYear1Counts: () => { rec.counts++; }, setScheduleHistory: () => {}, setJustPublished: (v) => rec.jp.push(v) })();
+        commitSchedule: () => { rec.commits++; }, setPriorCounts: () => { rec.counts++; }, setYear1Counts: () => { rec.counts++; }, setScheduleHistory: () => {}, setJustPublished: (v) => rec.jp.push(v), publishUndoneRef: rec.undone })();
     } catch (ex) { rec.threw = String(ex).slice(0, 160); }
     return rec;
   };
   const PUB_STEP = { sched: { "2026-11-09": { dayCall: "s5" } }, epoch: 3, counts: { prior: {}, y1: {} } }, EDIT_STEP = { sched: { "2026-11-09": { dayCall: "s5" } }, epoch: 3, counts: null };
   const un = { pub: un5(PUB_STEP), edit: un5(EDIT_STEP), blocked: un5(PUB_STEP, { blocked: true }), none: un5(null) };
   check("CH5 R1 the REAL ↩ Undo of a PUBLISH step (it carries the counts) takes the banner down with the schedule and the counts — its 📣 would announce a schedule that was undone; another kind of step, an Undo refused (a week changed by someone else since) or nothing to undo leaves it",
-    !un.pub.threw && J(un.pub.jp) === J([null]) && un.pub.commits === 1 && un.pub.counts === 2
-      && !un.edit.threw && un.edit.jp.length === 0 && un.edit.commits === 1 && !un.blocked.threw && un.blocked.jp.length === 0 && un.blocked.commits === 0 && /Can't undo/.test(un.blocked.toasts.join(" "))
-      && !un.none.threw && un.none.jp.length === 0 && un.none.commits === 0, J(un));
+    !un.pub.threw && J(un.pub.jp) === J([null]) && un.pub.commits === 1 && un.pub.counts === 2 && un.pub.undone.current === 1
+      && !un.edit.threw && un.edit.jp.length === 0 && un.edit.commits === 1 && un.edit.undone.current === 0 && !un.blocked.threw && un.blocked.jp.length === 0 && un.blocked.commits === 0 && un.blocked.undone.current === 0 && /Can't undo/.test(un.blocked.toasts.join(" "))
+      && !un.none.threw && un.none.jp.length === 0 && un.none.commits === 0 && un.none.undone.current === 0, J(un));
   // the REAL ✕ Clear end to end, over the REAL runAuthoritativeSchedule, from Regenerate's banner (raised by the REAL
   // doRegenerate): o.cancel — "Cancel" at its question; o.job — the engine job's answer
   const clBody = bodyCH("  const clearSchedule = async () => {", "\n  };\n\n  // ─── Snapshot restore");
@@ -10529,6 +10530,8 @@ await (async () => {
 //       saved → no banner, the engine's "not every week is saved"
 //   CO3 a publish that lands in time: runPublish raises nothing itself (its caller does — CD / CH hold that), no late
 //       toast; runPublish is still the one publish job (the census at the top, updated)
+//   CO4 (review fix) one ↩ Undone while it still ran (undoLastChange counts it in publishUndoneRef — CH5) raises
+//       nothing when it lands: its 📣 would announce a schedule that was taken back
 //   the section runs inside its own catch (a throw fails one named check, never the run)
 console.log("\nCO. A publish that lands after its deadline still offers 📣");
 await (async () => {
@@ -10543,7 +10546,7 @@ await (async () => {
     if (!line.trim().endsWith("{")) return line.trim().replace(/;$/, "");
     const e = nsrcCO.indexOf("\n  };\n", rp); return e < 0 ? null : nsrcCO.slice(rp + RP.length, e + 4);
   })();
-  const rpF = (() => { try { return rpCode && vm.runInContext(`(function (env) { const { schedSyncRef, sessionEpochRef, setJustPublished, periodLabel } = env; return (${rpCode}); })`, vm.createContext({})); } catch (ex) { return null; } })();
+  const rpF = (() => { try { return rpCode && vm.runInContext(`(function (env) { const { schedSyncRef, sessionEpochRef, setJustPublished, periodLabel, publishUndoneRef } = env; return (${rpCode}); })`, vm.createContext({})); } catch (ex) { return null; } })();
   const periodLabelCO = vm.runInContext("periodLabel", sandbox);
   if (!createSchedSync || !rpF) { check("CO the engine and runPublish are extractable", false, J({ engine: !!createSchedSync, runPublish: !!rpF })); return; }
   const sleep = (n) => new Promise((r) => setTimeout(r, n));
@@ -10555,13 +10558,13 @@ await (async () => {
   const mk = () => {
     const t = createFakeWeeksTable({ baseUrl: "https://x.supabase.co", anonKey: "ANON", users: { TOK_A: "user-a" }, clock,
       rows: WK.map((k, i) => ({ week_monday: k, data: wkO("s" + (i + 1)), version: 2, updated_by: "user-a", updated_at: "2026-10-01T08:00:00.000Z" })) });
-    const s = { t, mirror: {}, toasts: [], banners: [], ep: { current: 7 } };
+    const s = { t, mirror: {}, toasts: [], banners: [], ep: { current: 7 }, undone: { current: 0 } };
     const h = () => ({ apikey: "ANON", Authorization: "Bearer TOK_A" });
     s.engine = createSchedSync({ getState: () => s.mirror, commit: (n) => { s.mirror = n; }, fetch: (u, i) => t.fetch(u, i), url: "https://x.supabase.co",
       writeHeaders: h, readHeaders: h, anonHeaders: () => ({ apikey: "ANON", Authorization: "Bearer ANON" }), canWrite: () => true, token: () => "TOK_A", userId: () => "user-a",
       now: clock, nowMs: () => msCO, onStatus: () => {}, onToast: (m) => s.toasts.push(String(m)), onWipeBlocked: () => {}, onInternalError: (e) => internalCO.push(String(e && e.message || e)), log: () => {},
       timeouts: { read: 60000, write: 60000, stall: 15, deadline: 60 } });
-    s.runPublish = rpF({ schedSyncRef: { current: s.engine }, sessionEpochRef: s.ep, setJustPublished: (v) => s.banners.push(v), periodLabel: periodLabelCO });
+    s.runPublish = rpF({ schedSyncRef: { current: s.engine }, sessionEpochRef: s.ep, setJustPublished: (v) => s.banners.push(v), periodLabel: periodLabelCO, publishUndoneRef: s.undone });
     return s;
   };
   // a publish as the app runs one: its weeks committed to the screen, then the job (publishWeeks → runPublish);
@@ -10569,6 +10572,7 @@ await (async () => {
   const publish = async (o = {}) => {
     const s = mk(); await s.engine.load();
     const weeks = {}; WK.forEach((k, i) => { weeks[k] = wkO("p" + (i + 1)); });
+    const before = JSON.parse(J(s.mirror));
     s.mirror = Object.assign({}, s.mirror, JSON.parse(J(weeks)));
     const hold = o.hold ? s.t.control.pause({ method: "PATCH", week: WK[1], count: 1 }) : null;
     if (o.failWeek) s.t.control.fail({ method: "PATCH", week: WK[2], kind: "5xx-before", count: 5 });
@@ -10577,6 +10581,8 @@ await (async () => {
     const answer = await Promise.race([job, sleep(1500).then(() => "no answer")]);
     const atAnswer = { toasts: s.toasts.slice(), banners: s.banners.slice() };
     if (o.moveEpoch) s.ep.current++;
+    // o.undo: ↩ Undo of this publish while it still runs — undoLastChange puts the screen back and counts it
+    if (o.undo) { s.mirror = JSON.parse(J(before)); s.undone.current++; }
     if (hold) hold.release();
     await s.engine.idle(); await sleep(5); await s.engine.idle(); await s.engine.idle();
     const table = WK.map((k) => { const r = s.t.get(k); return r && r.data ? r.data.dayCall : null; });
@@ -10598,6 +10604,12 @@ await (async () => {
     J(c2a.answer) === J({ ok: false, running: true }) && J(c2a.banners) === "[]" && J(c2a.toasts) === J([OWN_OK])
       && J(c2b.answer) === J({ ok: false, running: true }) && J(c2b.banners) === "[]" && c2b.toasts.length === 1 && c2b.toasts[0].startsWith("Publishing the new weeks has finished, but not every week is saved."),
     J({ c2a, c2b }));
+
+  // CO4 — (review fix 2026-10-25) ↩ Undo of that publish while it still runs: Undo works during a job, and the job still
+  // writes its own weeks (then the follow-up push sends the undo) — so it ends ok; its 📣 would announce what was taken back
+  const c4 = await publish({ hold: true, undo: true });
+  check("CO4 (review fix) a late publish ↩ Undone while it still ran raises NO banner when it lands (it would announce a schedule that was taken back) and says the engine's own words; the table ends with the undone weeks (the follow-up push)",
+    J(c4.answer) === J({ ok: false, running: true }) && J(c4.banners) === "[]" && J(c4.toasts) === J([OWN_OK]) && J(c4.table) === J(["s1", "s2", "s3"]), J(c4));
 
   // CO3 — in time: runPublish itself raises nothing
   const c3 = await publish({});
@@ -11438,7 +11450,7 @@ await (async () => {
     if ([iU, eU, iC, kC, eC, iP, eP].every(x => x >= 0)) {
       try {
         factory = vm.runInContext(`(function (env) {
-          const { surgeons, parse, useCallback, scheduleRef, commitSchedule, schedSyncRef, schedEditable, showToast, priorCounts, year1Counts, setPriorCounts, setYear1Counts, scheduleHistory, setScheduleHistory, logAudit, setJustPublished } = env;
+          const { surgeons, parse, useCallback, scheduleRef, commitSchedule, schedSyncRef, schedEditable, showToast, priorCounts, year1Counts, setPriorCounts, setYear1Counts, scheduleHistory, setScheduleHistory, logAudit, setJustPublished, publishUndoneRef } = env;
           ${nsrc.slice(iU, eU)}
           ${nsrc.slice(iC, eC) + "\n  });"}
           ${nsrc.slice(iP, eP)}
@@ -11457,7 +11469,7 @@ await (async () => {
         commitSchedule: (v) => { st.schedule = v; ref.current = v; }, schedEditable: () => true, showToast: (m) => st.toasts.push(String(m)),
         schedSyncRef: { current: { epochNow: () => eng.epoch, undoPlan: (snap) => ({ next: JSON.parse(JSON.stringify(snap)), touched: [], blocked: eng.blocked.slice() }) } }, priorCounts: st.prior, year1Counts: st.y1,
         setPriorCounts: upd("prior"), setYear1Counts: upd("y1"), scheduleHistory: st.history, setScheduleHistory: upd("history"),
-        logAudit: (a, msg, meta) => st.audits.push({ a, msg, meta }), setJustPublished: () => {} }); // (↩ Undo of a publish takes the "nobody notified yet" banner down — 2026-10-20, review R1; run in CH5)
+        logAudit: (a, msg, meta) => st.audits.push({ a, msg, meta }), setJustPublished: () => {}, publishUndoneRef: { current: 0 } }); // (↩ Undo of a publish takes the "nobody notified yet" banner down — 2026-10-20, review R1; run in CH5 — and, 2026-10-25, counts in publishUndoneRef: CO4)
       const wk = (dc, n) => ({ dayCall: dc, nights: { wknd: n[4], mon: n[0], tue: n[1], wed: n[2], thu: n[3] }, off: "s7", isBackup: false, isFierceBackup: false, holidayCoverage: null });
       const OLD = { "2026-11-09": wk("s5", ["s1", "s2", "s3", "s4", "s6"]) };
       const P = { "2026-11-16": wk("s1", ["s2", "s3", "s4", "s5", "s6"]), "2026-11-23": wk("s2", ["s1", "s4", "s3", "s6", "s5"]) };
@@ -14801,7 +14813,7 @@ console.log("\nBB. Setup time-off deletes ask first; backup pickers snap to Mond
 // A push or a shared link lands on the app with ?tab=X (the deep-link effect). The Mine tab's view is
 // "myschedule", but the effect's list named it "mine" and set the view to that — which no {view==="…"} block
 // renders: a blank page under the tab bar. The effect now maps a link's tab to its view (mine and myschedule
-// both open Mine), and ?public=1 (the OR board: the calendar only) takes no other tab. The REAL effect (sliced,
+// both open Mine), and ?public=1 (the read-only calendar and the OR board: the calendar only) takes no other tab. The REAL effect (sliced,
 // run in a fresh context: a new free name throws) and the REAL restricted-tab redirect and tab list (CC's slices),
 // for every role:
 //   CK1 each link tab → the view it sets: mine / myschedule → myschedule; calendar, requests, stats, settings,
@@ -14868,7 +14880,7 @@ await (async () => {
   // CK3 — ?public=1 and the URL cleanup
   const p1 = runDL("?public=1&tab=requests&week=2026-11-16", true), p2 = runDL("?public=1&tab=calendar", true), p3 = runDL("?public=1&tab=mine", true);
   const m1 = runDL("?tab=mine&week=2026-11-16&_v=3");
-  check("CK3 ?public=1 (the OR board) takes only ?tab=calendar — requests / mine set nothing; the tab and the week are cleared from the URL either way (other params kept: \"?public=1\", \"?_v=3\"), and the week still moves the calendar (Nov 2026)",
+  check("CK3 ?public=1 (the read-only calendar / OR board) takes only ?tab=calendar — requests / mine set nothing; the tab and the week are cleared from the URL either way (other params kept: \"?public=1\", \"?_v=3\"), and the week still moves the calendar (Nov 2026)",
     J(p1.views) === "[]" && J(p3.views) === "[]" && J(p2.views) === J(["calendar"]) && p1.url === "/?public=1" && p2.url === "/?public=1" && p1.month === 10 && p1.year === 2026
       && J(m1.views) === J(["myschedule"]) && m1.url === "/?_v=3" && m1.month === 10 && m1.year === 2026,
     J({ p1, p2, p3, m1 }));
