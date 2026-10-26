@@ -4935,7 +4935,9 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
     acceptPreview: sess(fnX("publishSearchRunning, showToast, cancelSearch, previewSchedule, previewNeedsOk, previewAck, publishingRef, schedEditable, schedSyncRef, previewEpochRef, previewOrigin, startMonth, startYear, numWeeks, setPublishing, setSaveStatus, snapshots, previewSchedRef, publishWeeks, MO, runPublish, setPreviewSchedule, setShowPreview, setCalMonth, setCalYear, setView, setTimeout, publishNotLanded, sessionEpochRef, setJustPublished",
       wrap("async () => {", after("  const acceptPreview = async () => {", "\n  };\n"), "\n  }"))),
     notLanded: fnX("showToast", wrap("(pr, what) => {", after("  const publishNotLanded = (pr, what) => {", "\n  };\n"), "\n  }")),
-    runPublish: fnX("schedSyncRef", after("  const runPublish = ", ";\n")),
+    // (2026-10-25: runPublish hands the engine a late() — the Calendar's 📣 banner for a publish that lands after its
+    // deadline — so it reads the session and the banner's setter too: sess() gives both; sync-guards CO runs it)
+    runPublish: sess(fnX("schedSyncRef, sessionEpochRef, setJustPublished, periodLabel", wrap("(weeks) => {", after("  const runPublish = (weeks) => {", "\n  };\n"), "\n  }"))),
   };
   const missing = Object.keys(F).filter(k => typeof F[k] !== "function");
   check("SE-X the component slices are extractable by their anchors and compile in a fresh context", missing.length === 0, missing.join(", "));

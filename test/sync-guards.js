@@ -799,7 +799,9 @@ check("the engine's wipe guard: a wipe-shaped push WITHOUT the request's grant i
   count("if ((wipingAll || wipingMost) && !job.grant) {") === 1);
 check("authoritative jobs start at exactly 2 sites — runAuthoritativeSchedule (the grant holders: clear, factory reset, restore) and runPublish (the period's weeks, no grant, no delete: Generate & Publish, Accept & Publish — A14) — a new caller needs this census updated",
   count(".authoritative(") === 2 && count("runAuthoritativeSchedule(") === 3
-    && count('const runPublish = (weeks) => schedSyncRef.current.authoritative(weeks, false, "publish", Object.keys(weeks));') === 1 && count("runPublish(") === 2 && count("const job = runPublish(") === 2
+    // (CO, 2026-10-25, on purpose: runPublish is a block now — it hands the engine its late(), the 📣 banner for a publish
+    // that lands after its deadline — still ONE authoritative call, still no grant, still the period's keys)
+    && count("const runPublish = (weeks) => {") === 1 && count('return schedSyncRef.current.authoritative(weeks, false, "publish", Object.keys(weeks), { late });') === 1 && count("runPublish(") === 2 && count("const job = runPublish(") === 2
     // (clear and restore hand it their Undo step, taken back when the job wrote nothing — executed in SE-G; all three
     // hand it `before`, the screen as it was before their commit, which a refused job puts back — 17/n P2, executed in SE-X10)
     // (19/n P8: the factory reset and the restore also hand it their words for an outcome after the deadline — late(r), executed in SE-X16)
@@ -3060,8 +3062,8 @@ console.log("\nBF. toasts stack (up to 3), errors stay longer, no doubled ⚠");
   // line was replaced by the field, which reads the range back itself (rangeLabel, BK3). So rangeSummary is now
   // called NOWHERE in the page — 0, pinned — and stays in helpers.js, still defined (the OLD_SB check above) and still
   // executed by BE1. The other eleven are each called, each behind its typeof, as before.)
-  check("BF7 (review fix) every call of the batch's twelve helpers in index-source.html sits behind its own `typeof … === \"function\"` (the app's convention for a newer helper), each of them called somewhere — toastAdd / toastMs / toastText, periodLabel ×4 (periodText, the office prefill, both publish audit lines), periodSeam, periodHolidayGaps ×2, authErrorText ×6, tradeSlotHolder ×2, tradePickNotes, calMonthWeekMondays, calendarFeedUrls ×2 — except rangeSummary, called nowhere since the range field replaced its line (moved by BK; it stays in helpers.js, BE1 runs it)",
-    unguarded.length === 0 && BATCH4_HELPERS.every((n) => (n === "rangeSummary" ? callsOf[n] === 0 : callsOf[n] > 0)) && callsOf.authErrorText === 6 && callsOf.periodLabel === 4 && callsOf.periodHolidayGaps === 2 && callsOf.tradeSlotHolder === 2 && callsOf.calendarFeedUrls === 2,
+  check("BF7 (review fix) every call of the batch's twelve helpers in index-source.html sits behind its own `typeof … === \"function\"` (the app's convention for a newer helper), each of them called somewhere — toastAdd / toastMs / toastText, periodLabel ×5 (periodText, the office prefill, both publish audit lines, and — CO, 2026-10-25 — runPublish's late banner), periodSeam, periodHolidayGaps ×2, authErrorText ×6, tradeSlotHolder ×2, tradePickNotes, calMonthWeekMondays, calendarFeedUrls ×2 — except rangeSummary, called nowhere since the range field replaced its line (moved by BK; it stays in helpers.js, BE1 runs it)",
+    unguarded.length === 0 && BATCH4_HELPERS.every((n) => (n === "rangeSummary" ? callsOf[n] === 0 : callsOf[n] > 0)) && callsOf.authErrorText === 6 && callsOf.periodLabel === 5 &&callsOf.periodHolidayGaps === 2 && callsOf.tradeSlotHolder === 2 && callsOf.calendarFeedUrls === 2,
     JSON.stringify({ unguarded, callsOf }));
 }
 
@@ -8381,7 +8383,11 @@ console.log("\nAR. Requests tab copy + the APP trade note");
       const lineOfAt = (i) => n.slice(n.lastIndexOf("\n", i) + 1, n.indexOf("\n", i)).trim();
       const every = at("has been notified"), everyone = at("Everyone has been notified."), nobody = at("Nobody has been notified yet.");
       const lines = nobody.map(lineOfAt);
-      const ok = every.length === 3 && everyone.length === 1 && nobody.length === 2 && nj >= 0 && everyone[0] > nj && everyone[0] < njEnd
+      // (CO, 2026-10-25, on purpose: a fourth "has been notified" — runPublish's late toast, "Nobody has been notified
+      // yet: 📣 …", for a publish that lands after its deadline; it claims nothing was sent)
+      const rp = n.indexOf("  const runPublish = (weeks) => {"), rpEnd = rp < 0 ? -1 : n.indexOf("\n  };\n", rp);
+      const inRp = every.filter((i) => i > rp && i < rpEnd).map(lineOfAt);
+      const ok = every.length === 4 && inRp.length === 1 && /Nobody has been notified yet: 📣 Notify everyone is on the Calendar\./.test(inRp[0]) && everyone.length === 1 && nobody.length === 2 && nj >= 0 && everyone[0] > nj && everyone[0] < njEnd
         && lines.filter((l) => l === "✓ Published {justPublished.label}. Nobody has been notified yet.").length === 1 && lines.filter((l) => l.startsWith("//")).length === 1;
       return { ok, every: every.length, everyone: everyone.length, nobody: lines };
     })();
@@ -10496,13 +10502,109 @@ await (async () => {
   const rgBodyCD = afterCD("  const doRegenerate = async (e) => {", "\n  };\n");
   const raBodyCD = afterCD("  const runAuthoritativeSchedule = async (target, what, undoStep, before, late) => {", "\n  };\n");
   const unBodyCD = afterCD("  const undoLastChange = () => {", "\n  };\n");
+  // (CO, 2026-10-25, on purpose: a NINTH place — runPublish's late(), the one raise for a publish that lands after its
+  // deadline, whichever button started it; executed in CO)
+  const rpBodyCD = afterCD("  const runPublish = (weeks) => {", "\n  };\n");
   const setSites = []; for (let i = nsrcCD.indexOf("setJustPublished("); i >= 0; i = nsrcCD.indexOf("setJustPublished(", i + 1)) setSites.push(nsrcCD.slice(i, i + 32));
-  check("CD6 only eight places set it: raised TWICE, each where its publish landed (acceptPreview, and ↻ Regenerate's doRegenerate — CH), closed by the 📣 tap, Not now, the session boundary, the sender (notifyPublished — any notice to the group), a clear / reset / restore that stands (runAuthoritativeSchedule) and ↩ Undo of a publish (undoLastChange) — CH5",
-    count("setJustPublished(") === 8 && count("setJustPublished({ label: pubPeriod, ep });") === 1 && count("setJustPublished({ label: period, ep });") === 1 && count("setJustPublished(null)") === 6
+  check("CD6 only nine places set it: raised THREE times, each where its publish landed (acceptPreview, ↻ Regenerate's doRegenerate — CH — and runPublish's late() for one that landed after its deadline — CO), closed by the 📣 tap, Not now, the session boundary, the sender (notifyPublished — any notice to the group), a clear / reset / restore that stands (runAuthoritativeSchedule) and ↩ Undo of a publish (undoLastChange) — CH5",
+    count("setJustPublished(") === 9 && count("setJustPublished({ label: pubPeriod, ep });") === 1 && count("setJustPublished({ label: period, ep });") === 1 && count("setJustPublished(null)") === 6
+      && count("setJustPublished({ label, ep });") === 1 && !!rpBodyCD && rpBodyCD.includes("setJustPublished({ label, ep });")
       && !!apBody && apBody.includes("setJustPublished({ label: pubPeriod, ep });") && !!rgBodyCD && rgBodyCD.includes("setJustPublished({ label: period, ep });")
       && !!njBody && njBody.includes("setJustPublished(null)") && !!sbBody && sbBody.includes("setJustPublished(null)")
       && !!npBody && npBody.includes("setJustPublished(null)") && !!raBodyCD && raBodyCD.includes("setJustPublished(null)") && !!unBodyCD && unBodyCD.includes("setJustPublished(null)"), J(setSites));
 })().catch(ex => check("CD harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
+
+// ─── CO. A publish that lands after its deadline still offers 📣 (2026-10-25) ───
+// A publish job still writing at its deadline (90 s) answers its caller "still running … Nobody was notified" (A5(f));
+// when it then landed, the engine toasted "Publishing the new weeks has finished — every week is saved." and nothing
+// more: the Calendar's "✓ Published … 📣 Notify everyone" banner (justPublished) was raised only by a caller that got
+// ok in time, so a slow publish could never be announced from the app. runPublish now hands the engine a late() (E8):
+// when the job ends ok, in the session it was published in, it raises the banner for the weeks it published and says
+// nobody has been told yet. The REAL runPublish (sliced) on the REAL engine (createSchedSync) over the emulated
+// schedule_weeks table, one week's write held past a short deadline:
+//   CO1 held past the deadline, then landed: the caller's answer is "still running" (as before); when it lands, ONE
+//       toast — "… every week is saved. Nobody has been notified yet: 📣 …" — and the banner raised once, for the
+//       weeks published ("Nov 2 – Nov 22, 2026"), in the tap's session; the weeks are in the table
+//   CO2 …landed after a session change (the epoch moved) → no banner, the engine's own words; landed with a week not
+//       saved → no banner, the engine's "not every week is saved"
+//   CO3 a publish that lands in time: runPublish raises nothing itself (its caller does — CD / CH hold that), no late
+//       toast; runPublish is still the one publish job (the census at the top, updated)
+//   the section runs inside its own catch (a throw fails one named check, never the run)
+console.log("\nCO. A publish that lands after its deadline still offers 📣");
+await (async () => {
+  const J = JSON.stringify;
+  const seCO = require("./sync-engine-se.js"), { createFakeWeeksTable } = require("./fake-weeks-table.js");
+  let createSchedSync = null; try { createSchedSync = seCO.compileEngine(seCO.extractEngine(src)); } catch (ex) { createSchedSync = null; }
+  // the REAL runPublish: a one-line arrow (main's) or a block
+  const nsrcCO = src.replace(/\r\n/g, "\n"), RP = "  const runPublish = ", rp = nsrcCO.indexOf(RP);
+  const rpCode = (() => {
+    if (rp < 0 || nsrcCO.indexOf(RP, rp + 1) !== -1) return null;
+    const line = nsrcCO.slice(rp + RP.length, nsrcCO.indexOf("\n", rp));
+    if (!line.trim().endsWith("{")) return line.trim().replace(/;$/, "");
+    const e = nsrcCO.indexOf("\n  };\n", rp); return e < 0 ? null : nsrcCO.slice(rp + RP.length, e + 4);
+  })();
+  const rpF = (() => { try { return rpCode && vm.runInContext(`(function (env) { const { schedSyncRef, sessionEpochRef, setJustPublished, periodLabel } = env; return (${rpCode}); })`, vm.createContext({})); } catch (ex) { return null; } })();
+  const periodLabelCO = vm.runInContext("periodLabel", sandbox);
+  if (!createSchedSync || !rpF) { check("CO the engine and runPublish are extractable", false, J({ engine: !!createSchedSync, runPublish: !!rpF })); return; }
+  const sleep = (n) => new Promise((r) => setTimeout(r, n));
+  const internalCO = [];
+  let msCO = Date.UTC(2026, 9, 25, 12, 0, 0);
+  const clock = () => new Date(msCO += 1000).toISOString();
+  const WK = ["2026-11-02", "2026-11-09", "2026-11-16"];
+  const wkO = (dc) => ({ dayCall: dc, nights: { mon: "s2", tue: "s3", wed: "s4", thu: "s5", wknd: "s6" }, off: "s7", isBackup: false, isFierceBackup: false, holidayCoverage: {} });
+  const mk = () => {
+    const t = createFakeWeeksTable({ baseUrl: "https://x.supabase.co", anonKey: "ANON", users: { TOK_A: "user-a" }, clock,
+      rows: WK.map((k, i) => ({ week_monday: k, data: wkO("s" + (i + 1)), version: 2, updated_by: "user-a", updated_at: "2026-10-01T08:00:00.000Z" })) });
+    const s = { t, mirror: {}, toasts: [], banners: [], ep: { current: 7 } };
+    const h = () => ({ apikey: "ANON", Authorization: "Bearer TOK_A" });
+    s.engine = createSchedSync({ getState: () => s.mirror, commit: (n) => { s.mirror = n; }, fetch: (u, i) => t.fetch(u, i), url: "https://x.supabase.co",
+      writeHeaders: h, readHeaders: h, anonHeaders: () => ({ apikey: "ANON", Authorization: "Bearer ANON" }), canWrite: () => true, token: () => "TOK_A", userId: () => "user-a",
+      now: clock, nowMs: () => msCO, onStatus: () => {}, onToast: (m) => s.toasts.push(String(m)), onWipeBlocked: () => {}, onInternalError: (e) => internalCO.push(String(e && e.message || e)), log: () => {},
+      timeouts: { read: 60000, write: 60000, stall: 15, deadline: 60 } });
+    s.runPublish = rpF({ schedSyncRef: { current: s.engine }, sessionEpochRef: s.ep, setJustPublished: (v) => s.banners.push(v), periodLabel: periodLabelCO });
+    return s;
+  };
+  // a publish as the app runs one: its weeks committed to the screen, then the job (publishWeeks → runPublish);
+  // o.hold: one week's write held until released; o.failWeek: that week's writes refused (5xx); o.moveEpoch: the session changes before it lands
+  const publish = async (o = {}) => {
+    const s = mk(); await s.engine.load();
+    const weeks = {}; WK.forEach((k, i) => { weeks[k] = wkO("p" + (i + 1)); });
+    s.mirror = Object.assign({}, s.mirror, JSON.parse(J(weeks)));
+    const hold = o.hold ? s.t.control.pause({ method: "PATCH", week: WK[1], count: 1 }) : null;
+    if (o.failWeek) s.t.control.fail({ method: "PATCH", week: WK[2], kind: "5xx-before", count: 5 });
+    const job = s.runPublish(weeks);
+    if (hold) await hold.arrived;
+    const answer = await Promise.race([job, sleep(1500).then(() => "no answer")]);
+    const atAnswer = { toasts: s.toasts.slice(), banners: s.banners.slice() };
+    if (o.moveEpoch) s.ep.current++;
+    if (hold) hold.release();
+    await s.engine.idle(); await sleep(5); await s.engine.idle(); await s.engine.idle();
+    const table = WK.map((k) => { const r = s.t.get(k); return r && r.data ? r.data.dayCall : null; });
+    return { answer: answer && typeof answer === "object" ? { ok: answer.ok, running: !!answer.running } : answer, atAnswer, toasts: s.toasts, banners: s.banners, table };
+  };
+  const LABEL = periodLabelCO(WK[0], WK[2]);
+  const OWN_OK = "Publishing the new weeks has finished — every week is saved.";
+
+  // CO1 — late, landed: the banner
+  const c1 = await publish({ hold: true });
+  check(`CO1 a publish held past its deadline answers its caller "still running" (as before), and when it lands: ONE toast — "${OWN_OK} Nobody has been notified yet: 📣 Notify everyone is on the Calendar." — and the 📣 banner raised once, for the weeks it published ("${LABEL}"), in the tap's session (it was never raised); every week in the table`,
+    J(c1.answer) === J({ ok: false, running: true }) && c1.atAnswer.toasts.length === 0 && c1.atAnswer.banners.length === 0
+      && J(c1.toasts) === J([OWN_OK + " Nobody has been notified yet: 📣 Notify everyone is on the Calendar."]) && J(c1.banners) === J([{ label: LABEL, ep: 7 }]) && LABEL === "Nov 2 – Nov 22, 2026"
+      && J(c1.table) === J(["p1", "p2", "p3"]), J(c1));
+
+  // CO2 — late, but another session now / not every week saved: no banner
+  const c2a = await publish({ hold: true, moveEpoch: true }), c2b = await publish({ hold: true, failWeek: true });
+  check("CO2 …one that lands after the session changed (a sign-out / another account meanwhile) raises nothing and says the engine's own words; one that ends with a week not saved raises nothing and says the engine's \"not every week is saved\"",
+    J(c2a.answer) === J({ ok: false, running: true }) && J(c2a.banners) === "[]" && J(c2a.toasts) === J([OWN_OK])
+      && J(c2b.answer) === J({ ok: false, running: true }) && J(c2b.banners) === "[]" && c2b.toasts.length === 1 && c2b.toasts[0].startsWith("Publishing the new weeks has finished, but not every week is saved."),
+    J({ c2a, c2b }));
+
+  // CO3 — in time: runPublish itself raises nothing
+  const c3 = await publish({});
+  check("CO3 a publish that lands in time answers ok and runPublish raises nothing itself (its caller raises the banner — CD / CH), no late toast; the engine hit no internal error in any run",
+    J(c3.answer) === J({ ok: true, running: false }) && J(c3.banners) === "[]" && J(c3.toasts) === "[]" && J(c3.table) === J(["p1", "p2", "p3"]) && internalCO.length === 0,
+    J({ c3, internalCO }));
+})().catch(ex => check("CO harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
 
 // ─── AE. Generator: "Needs your OK" before publish + Setup holiday text (2026-10-11) ───
 // Owner decisions 2026-10-11: time off is a hard stop, card eves are night

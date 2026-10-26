@@ -2476,7 +2476,21 @@ function CallSchedule() {
   // weeks push defers to it. Resolves ok only when EVERY period week landed;
   // a week that didn't stays on screen and pending, and the follow-up push
   // keeps retrying it.
-  const runPublish = (weeks) => schedSyncRef.current.authoritative(weeks, false, "publish", Object.keys(weeks));
+  // A job still running at its deadline (A5(f)) answers "still running …
+  // Nobody was notified", and when it then landed the engine said only "has
+  // finished" — the Calendar's 📣 banner never came (2026-10-25). Its late()
+  // (E8) raises it: every week landed, in the session it was published in →
+  // the "✓ Published" banner for those weeks, as one that lands in time.
+  const runPublish = (weeks) => {
+    const ep = sessionEpochRef.current, ms = Object.keys(weeks).sort();
+    const label = typeof periodLabel === "function" ? periodLabel(ms[0], ms[ms.length - 1]) : `weeks of ${ms[0]} – ${ms[ms.length - 1]}`;
+    const late = (r) => {
+      if (!r || !r.ok || sessionEpochRef.current !== ep) return null; // the engine's own words
+      setJustPublished({ label, ep });
+      return `Publishing the new weeks has finished — every week is saved.${r.notice ? " " + r.notice : ""} Nobody has been notified yet: 📣 Notify everyone is on the Calendar.`;
+    };
+    return schedSyncRef.current.authoritative(weeks, false, "publish", Object.keys(weeks), { late });
+  };
   // What a publish that didn't fully land tells the scheduler (nobody is
   // notified) — ONE message, with the engine's own detail (pr.notice: which
   // weeks, and why) in it; the engine doesn't toast it beside this.
