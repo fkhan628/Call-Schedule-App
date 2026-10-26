@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.10.26b";
+    var APP_VERSION = "2026.10.26c";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -6038,6 +6038,9 @@ function CallSchedule() {
     const currentName = ((_sMap$currentSurgeonI = sMap[currentSurgeonId]) === null || _sMap$currentSurgeonI === void 0 ? void 0 : _sMap$currentSurgeonI.name) || "?";
     const mon = parse(mondayStr);
     const ids = surgeons.map(s => s.id).filter(id => id !== currentSurgeonId);
+    const periodMs = madePeriodMondays(schedule, mondays);
+    const periodKeys = new Set(periodMs);
+    const periodSaid = periodMs.length === 0 ? "" : typeof periodLabel === "function" ? periodLabel(periodMs[0], periodMs[periodMs.length - 1]) : `${periodMs[0]} – ${fmt(addD(parse(periodMs[periodMs.length - 1]), 6))}`;
     const sCounts = {};
     surgeons.forEach(s => {
       sCounts[s.id] = {
@@ -6046,7 +6049,8 @@ function CallSchedule() {
         wknd: 0
       };
     });
-    Object.values(schedule).forEach(wk => {
+    Object.entries(schedule).forEach(([m, wk]) => {
+      if (!wk || !periodKeys.has(m)) return;
       if (wk.dayCall && sCounts[wk.dayCall]) sCounts[wk.dayCall].dc++;
       Object.entries(wk.nights || {}).forEach(([sk, sid]) => {
         if (!sid || !sCounts[sid]) return;
@@ -6054,9 +6058,10 @@ function CallSchedule() {
       });
     });
     const shiftType = shift === "dayCall" ? "dc" : shift === "wknd" ? "wknd" : "nights";
+    const unit = n => shiftType === "dc" ? n === 1 ? "service week" : "service weeks" : shiftType === "wknd" ? n === 1 ? "weekend" : "weekends" : n === 1 ? "night" : "nights";
     const candidates = [];
     ids.forEach(candId => {
-      var _sMap$candId, _sCounts$currentSurge, _sCounts$candId, _sCounts$currentSurge2, _sCounts$candId2;
+      var _sMap$candId, _sCounts$currentSurge, _sCounts$candId;
       const candName = ((_sMap$candId = sMap[candId]) === null || _sMap$candId === void 0 ? void 0 : _sMap$candId.name) || "?";
       const reasons = [];
       let eligible = true;
@@ -6099,12 +6104,14 @@ function CallSchedule() {
       const currentCount = ((_sCounts$currentSurge = sCounts[currentSurgeonId]) === null || _sCounts$currentSurge === void 0 ? void 0 : _sCounts$currentSurge[shiftType]) || 0;
       const candCount = ((_sCounts$candId = sCounts[candId]) === null || _sCounts$candId === void 0 ? void 0 : _sCounts$candId[shiftType]) || 0;
       const countDiff = currentCount - candCount;
-      const priorCurr = priorCounts[currentSurgeonId] || {};
-      const priorCand = priorCounts[candId] || {};
-      const totalCurrType = (priorCurr[shiftType === "dc" ? "dc" : shiftType === "wknd" ? "wknd" : "nights"] || 0) + (((_sCounts$currentSurge2 = sCounts[currentSurgeonId]) === null || _sCounts$currentSurge2 === void 0 ? void 0 : _sCounts$currentSurge2[shiftType]) || 0);
-      const totalCandType = (priorCand[shiftType === "dc" ? "dc" : shiftType === "wknd" ? "wknd" : "nights"] || 0) + (((_sCounts$candId2 = sCounts[candId]) === null || _sCounts$candId2 === void 0 ? void 0 : _sCounts$candId2[shiftType]) || 0);
+      const overallOf = id => {
+        const p = priorCounts[id] || {};
+        return (p[shiftType] || 0) + (p[shiftType + "B"] || 0);
+      };
+      const totalCurrType = overallOf(currentSurgeonId);
+      const totalCandType = overallOf(candId);
       const totalDiff = totalCurrType - totalCandType;
-      if (countDiff > 0) reasons.push(`${candName} has ${countDiff} fewer ${shiftType === "dc" ? "service weeks" : shiftType === "wknd" ? "weekends" : "nights"} this period`);else if (countDiff === 0) reasons.push(`Equal ${shiftType === "dc" ? "service weeks" : shiftType === "wknd" ? "weekends" : "nights"} this period`);else reasons.push(`${candName} has ${Math.abs(countDiff)} more ${shiftType === "dc" ? "service weeks" : shiftType === "wknd" ? "weekends" : "nights"} — less ideal`);
+      if (countDiff > 0) reasons.push(`${candName} has ${countDiff} fewer ${unit(countDiff)} this period`);else if (countDiff === 0) reasons.push(`Equal ${unit(2)} this period`);else reasons.push(`${candName} has ${Math.abs(countDiff)} more ${unit(Math.abs(countDiff))} this period — less ideal`);
       if (totalDiff > 1) reasons.push(`${totalDiff} fewer overall (good for balance)`);
       if (candShiftsThisWeek.length > 0) reasons.push(`Already assigned: ${candShiftsThisWeek.join(", ")}`);
       const rsTodayStr = fmt(new Date());
@@ -6176,10 +6183,11 @@ function CallSchedule() {
       mondayStr,
       shift,
       surgeonId: currentSurgeonId,
-      surgeonName: currentName
+      surgeonName: currentName,
+      periodSaid
     });
     setSwapSuggestions(candidates);
-  }, [schedule, surgeons, sMap, vacations, priorCounts, silvisActive, silvisFakId, silvisDays]);
+  }, [schedule, mondays, surgeons, sMap, vacations, priorCounts, silvisActive, silvisFakId, silvisDays]);
   const executeTwoWaySwap = useCallback((targetMon, targetShift, targetOldId, candId, returnMon, returnShift) => {
     var _sMap$targetOldId, _sMap$candId2;
     const swapToday = fmt(new Date());
@@ -14372,7 +14380,15 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     }
   }, "Swap options for ", React.createElement(Badge, {
     id: swapTarget.surgeonId
-  }), " — ", slotLabel(swapTarget.mondayStr, swapTarget.shift)), swapSuggestions.length === 0 ? React.createElement("p", {
+  }), " — ", slotLabel(swapTarget.mondayStr, swapTarget.shift)), swapSuggestions.length > 0 && swapTarget.periodSaid && React.createElement("div", {
+    "data-swap-basis": "1",
+    style: {
+      fontSize: 11,
+      color: "#5a6a78",
+      margin: "-4px 0 8px",
+      lineHeight: 1.5
+    }
+  }, "“This period” = ", swapTarget.periodSaid, " (This Period on Stats) · “overall” = the multi-year Running Totals · both count 1st + 2nd call"), swapSuggestions.length === 0 ? React.createElement("p", {
     style: {
       color: "#8a94a0",
       fontSize: 13,
