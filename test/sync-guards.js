@@ -4030,7 +4030,7 @@ console.log("\nBL. Schedule Warnings: anyone can hide a warning on this phone");
 //       usable (the half-done unlock undone; a second tap signs in); any other error, and an old cached helpers.js
 //       (no isNoConnectionError), thrown on exactly as before
 //   CI5 no storm: _refresh is called once, from getUser; getUser twice (the mount, the Face ID tap); no timer calls
-//       either; refreshKeep ("Sign in again") unchanged — it never clears
+//       either; refreshKeep ("Sign in again") unchanged — it never clears (its 5xx / 429 "network" since CM, 2026-10-25)
 //   CI-M the mutant battery (config.js and index-source.html): each mutant turns a CI check red, and every CI check is
 //       turned red by at least one mutant
 // Review fixes (2026-10-20):
@@ -4339,8 +4339,10 @@ await (async () => {
         getUserCalls === 2 && /\bauth\.getUser\(\)/.test(code(mountSrc)) && /\bauth\.getUser\(\)/.test(code(bioSrc)) && J(timed) === J([0, 0]), { getUserCalls, timed });
       const rk = [];
       for (const k of ["noSignal", "s503", "s429", "invalidGrant", "s401"]) { at(OLD, server(RF[k])); const r = await auth.refreshKeep(); rk.push({ k, r: J(r), kept: holds(OLD), calls: calls.length }); }
-      const RK_WANT = [{ ok: false, error: "network" }, { ok: false, error: "refused" }, { ok: false, error: "refused" }, { ok: false, error: "refused" }, { ok: false, error: "refused" }].map(J);
-      ck("CI5c", "\"Sign in again\" (refreshKeep) unchanged: it never clears — no answer → network; 503 / 429 / 400 / 401 → refused; the stored session kept every time, one request",
+      // (CM, 2026-10-25, on purpose: a 503 / 429 was "refused" here — the password sheet then opened with no "Couldn't
+      // reach the server" line. refreshKeep now says "refused" only where _refresh clears.)
+      const RK_WANT = [{ ok: false, error: "network" }, { ok: false, error: "network" }, { ok: false, error: "network" }, { ok: false, error: "refused" }, { ok: false, error: "refused" }].map(J);
+      ck("CI5c", "\"Sign in again\" (refreshKeep): it never clears — no answer / 503 / 429 → network (CM); 400 / 401 → refused; the stored session kept every time, one request",
         J(rk.map((x) => x.r)) === J(RK_WANT) && rk.every((x) => x.kept && x.calls === 1), rk);
     });
 
@@ -4388,7 +4390,8 @@ await (async () => {
   const STATUS_R = "    if (res.status === 400 || res.status === 401 || res.status === 403) {";
   const REFUSE_R = "      if (!refused) return { user: null, error: \"network\" };\n      auth._clearSession(); return { user: null };\n";
   const FIELDS_R = "[\"error\", \"error_code\", \"msg\", \"message\"]", BLANK_R = "typeof body[k] === \"string\" && body[k].trim() !== \"\"";
-  const REFUSED_R = "const refused = !!body && typeof body === \"object\" && " + FIELDS_R + ".some((k) => " + BLANK_R + ");";
+  // (CM, 2026-10-25: the refusal test is auth._isRefusal now — _refresh's and refreshKeep's one copy)
+  const REFUSED_R = "return !!body && typeof body === \"object\" && " + FIELDS_R + ".some((k) => " + BLANK_R + ");";
   const NETG = "        if (refreshed?.error === \"network\") return { user: null, error: \"network\" };\n";
   const DEAD_G = "token is dead.\n      auth._clearSession();\n      return { user: null };\n";
   // (UNDO_B and GUARD_B's Face ID anchors start at their line's own indent: the mount's copies are indented deeper)
@@ -4412,7 +4415,7 @@ await (async () => {
     { id: "R9", file: "cfg", what: "a refusal not cleared by _refresh", from: REFUSE_R, to: "      if (!refused) return { user: null, error: \"network\" };\n      return { user: null };\n" },
     { id: "R10", file: "cfg", what: "a refusal said as no connection (the note over a dead session)", from: REFUSE_R, to: "      if (!refused) return { user: null, error: \"network\" };\n      auth._clearSession(); return { user: null, error: \"network\" };\n" },
     { id: "R15", file: "cfg", what: "(F2) the status alone refuses: an edge / firewall HTML 400 / 401 / 403 clears", from: REFUSE_R, to: "      auth._clearSession(); return { user: null };\n" },
-    { id: "R16", file: "cfg", what: "(F2) any JSON body refuses, whatever it names", from: REFUSED_R, to: "const refused = !!body && typeof body === \"object\";" },
+    { id: "R16", file: "cfg", what: "(F2) any JSON body refuses, whatever it names", from: REFUSED_R, to: "return !!body && typeof body === \"object\";" },
     { id: "R17", file: "cfg", what: "(F2) the gateway's / GoTrue 2024's message not counted (their refusals kept for good)", from: FIELDS_R, to: "[\"error\", \"error_code\", \"msg\"]" },
     { id: "R18", file: "cfg", what: "(F2) a blank error field counts as a refusal", from: BLANK_R, to: "typeof body[k] === \"string\"" },
     { id: "R19", file: "cfg", what: "(F2) a refusal's body that isn't JSON throws out of _refresh", from: "      try { body = await res.json(); } catch(e) { body = null; }\n", to: "      body = await res.json();\n" },
@@ -4426,7 +4429,9 @@ await (async () => {
     { id: "G4", file: "cfg", what: "getUser's own no-signal catch clears", from: "    } catch (e) {\n      // Network error (offline, transient blip). Do NOT clear the session —", to: "    } catch (e) {\n      auth._clearSession();\n      // Network error (offline, transient blip). Do NOT clear the session —" },
     { id: "G5", file: "cfg", what: "(F4) getUser's own clear dropped: a refused session with no refresh token kept for good", from: DEAD_G, to: "token is dead.\n      return { user: null };\n" },
     { id: "S1", file: "cfg", what: "signOut no longer clears", from: "    if (!stored || session) auth._clearSession();", to: "" },
-    { id: "K1", file: "cfg", what: "refreshKeep clears on a refusal", from: "      if (!res.ok) return { ok: false, error: \"refused\" };", to: "      if (!res.ok) { auth._clearSession(); return { ok: false, error: \"refused\" }; }" },
+    // (CM, 2026-10-25: K1 re-anchored on refreshKeep's new refusal line; K2 added)
+    { id: "K1", file: "cfg", what: "refreshKeep clears on a refusal", from: "      return { ok: false, error: refused ? \"refused\" : \"network\" };", to: "      if (refused) auth._clearSession();\n      return { ok: false, error: refused ? \"refused\" : \"network\" };" },
+    { id: "K2", file: "cfg", what: "(CM) refreshKeep calls a 5xx / 429 \"refused\" again (the sheet loses its \"Couldn't reach the server\" line)", from: "    if (!res.ok) return { ok: false, error: \"network\" };", to: "    if (!res.ok) return { ok: false, error: \"refused\" };" },
     { id: "B1", file: "idx", what: "main's Face ID profile read, unguarded (throws offline: \"Verifying…\" for good)", from: BIO_TRY, to: "        const profile = await dbAuth.getProfile(user.id);\n" },
     { id: "B2", file: "idx", what: "every profile-read error taken as no signal (a code error swallowed)", from: "\n          " + GUARD_B + "\n", to: "\n" },
     { id: "B3", file: "idx", what: "the half-done unlock not undone (signed in with no profile behind the Face ID screen)", from: UNDO_B, to: "\n" },
@@ -4833,6 +4838,98 @@ await (async () => {
       && count("auth.bindUser(user.id); // this tab is this account's (review r4 branch-4: another tab's sign-in is no session here)") === 1 && count("auth.bindUser(user.id); // (review r4 branch-4)") === 1,
     J({ iErr, iBusy, iDecl, iMount, iSS, iCard }));
 })().catch(ex => check("CE harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
+
+// ─── CM. "Sign in again" says when the server couldn't be reached — a 5xx no longer reads as refused (2026-10-25) ───
+// "Sign in again" (reauthForSync) renews the session in place with auth.refreshKeep; when that can't, it opens the
+// password sheet — with "Couldn't reach the server to renew your sign-in …" when refreshKeep answered "network". But
+// refreshKeep called ANY non-OK answer "refused": a 5xx (an outage), a 429, an edge page, a 200 that is no session —
+// so those opened the sheet with no line, as if the sign-in had been turned down. It now uses _refresh's rule (CI1):
+// "refused" only for the auth server's own JSON on a 400 / 401 / 403; anything else that didn't renew it is
+// "network". It still never clears the stored session (CI5c). The REAL config.js (its own context, a stubbed fetch)
+// and the REAL reauthForSync (sliced, run in a fresh context):
+//   CM1 refreshKeep: no answer, 500 / 502 / 503 / 504, 429, 408 / 404, a 400 / 401 / 403 that isn't the auth server's
+//       JSON, a 200 that is no session → { ok: false, error: "network" }; the refresh token refused (400 invalid_grant /
+//       refresh_token_not_found / refresh_token_already_used / session_expired; 401 / 403 with their JSON) →
+//       "refused"; a 200 with a session → ok, the new session stored. One request each; nothing ever cleared
+//   CM2 …"refused" exactly when _refresh (the app-open refresh) clears the session, on every one of those answers
+//   CM3 the REAL reauthForSync: a 503, a 429, no answer → the sheet opens WITH the "Couldn't reach the server" line; a
+//       refusal → the sheet without it; renewed → no sheet, the session landed (reauthLanded, its user)
+//   the section runs inside its own catch (a throw fails one named check, never the run)
+console.log("\nCM. \"Sign in again\" says when the server couldn't be reached");
+await (async () => {
+  const J = JSON.stringify;
+  const ls = new Map(), calls = []; let route = () => { throw new Error("no route"); };
+  const g = { console: { error() {}, warn() {}, log() {}, info() {} }, window: {}, document: undefined, navigator: { userAgent: "node-test" }, setTimeout, clearTimeout, AbortController,
+    atob: (s) => Buffer.from(String(s), "base64").toString("binary"),
+    localStorage: { getItem: (k) => (ls.has(k) ? ls.get(k) : null), setItem: (k, v) => { ls.set(k, String(v)); }, removeItem: (k) => { ls.delete(k); } },
+    fetch: async (url, init) => { calls.push(((init && init.method) || "GET") + " " + String(url).replace(/^https?:\/\/[^/]+/, "")); return route(); } };
+  g.globalThis = g; vm.createContext(g);
+  vm.runInContext(fs.readFileSync(path.join(ROOT, "helpers.js"), "utf8"), g, { filename: "helpers.js" });
+  vm.runInContext(fs.readFileSync(path.join(ROOT, "config.js"), "utf8"), g, { filename: "config.js" });
+  const auth = vm.runInContext("auth", g);
+  // (a string body is raw text: res.json() parses it, so "<html>" and "" throw as a browser's does)
+  const resp = (status, body) => ({ ok: status >= 200 && status < 300, status, json: async () => (typeof body === "string" ? JSON.parse(body) : body), text: async () => (typeof body === "string" ? body : J(body)) });
+  const OLD = { "dsg-auth-token": "TOK_OLD", "dsg-auth-refresh": "REF_OLD" }, NEW = { "dsg-auth-token": "TOK_NEW", "dsg-auth-refresh": "REF_NEW" };
+  const UM = { id: "auth-m", email: "m@dsg.test" };
+  const NETWORK = {
+    noSignal: () => { throw new TypeError("Load failed"); }, chromeOffline: () => { throw new TypeError("Failed to fetch"); },
+    s500: () => resp(500, { code: 500, msg: "Internal Server Error" }), s502: () => resp(502, "<html>"), s503: () => resp(503, { message: "Service Unavailable" }), s504: () => resp(504, "<html>"),
+    s429: () => resp(429, { code: 429, error_code: "over_request_rate_limit", msg: "Request rate limit reached" }), s408: () => resp(408, "<html>"), s404: () => resp(404, { message: "no Route matched with those values" }),
+    html400: () => resp(400, "<html>"), html401: () => resp(401, "<html>"), html403: () => resp(403, "<html>"), empty401: () => resp(401, ""), bare403: () => resp(403, { ok: false }), blank400: () => resp(400, { error: " ", msg: "" }),
+    portal: () => resp(200, "<html>"), noToken: () => resp(200, { message: "ok" }),
+  };
+  const REFUSED = {
+    invalidGrant: () => resp(400, { error: "invalid_grant", error_description: "Invalid Refresh Token: Already Used" }),
+    notFound: () => resp(400, { code: 400, error_code: "refresh_token_not_found", msg: "Invalid Refresh Token: Refresh Token Not Found" }),
+    alreadyUsed: () => resp(400, { code: 400, error_code: "refresh_token_already_used", msg: "Invalid Refresh Token: Already Used" }),
+    expired: () => resp(400, { code: "session_expired", message: "Invalid Refresh Token: Session Expired" }),
+    s401: () => resp(401, { message: "Invalid API key", hint: "Double check your Supabase `anon` or `service_role` API key." }),
+    s401gt: () => resp(401, { code: 401, error_code: "no_authorization", msg: "This endpoint requires a valid Bearer token" }),
+    s403: () => resp(403, { code: 403, error_code: "session_not_found", msg: "Session from session_id claim in JWT does not exist" }),
+  };
+  const OK = () => resp(200, { access_token: "TOK_NEW", refresh_token: "REF_NEW", token_type: "bearer", expires_in: 3600, user: UM });
+  const at = (store, r) => { ls.clear(); for (const [k, v] of Object.entries(store)) ls.set(k, v); calls.length = 0; route = r; auth.bindUser(null); };
+  const holds = (store) => J([...ls].sort()) === J(Object.entries(store).sort());
+  const keep = async (r) => { at(OLD, r); const out = await auth.refreshKeep(); return { r: J(out), kept: holds(OLD), n: calls.length }; };
+
+  // CM1 — refreshKeep's answer
+  const net = {}, ref = {};
+  for (const [k, f] of Object.entries(NETWORK)) net[k] = await keep(f);
+  for (const [k, f] of Object.entries(REFUSED)) ref[k] = await keep(f);
+  at(OLD, OK); const okR = await auth.refreshKeep(), okStored = holds(NEW), okN = calls.length;
+  const NET = J({ ok: false, error: "network" }), REF = J({ ok: false, error: "refused" });
+  check("CM1 refreshKeep (\"Sign in again\"): no answer, a 5xx (500 / 502 / 503 / 504), 429, 408 / 404, a 400 / 401 / 403 that isn't the auth server's JSON, a 200 that is no session → \"network\" (a 5xx / 429 read as \"refused\"); the refresh token refused (400 invalid_grant / not found / already used / session_expired, 401 / 403 with their JSON) → \"refused\"; a session → ok and stored; one request each, the stored session never cleared",
+    Object.values(net).every((x) => x.r === NET && x.kept && x.n === 1) && Object.values(ref).every((x) => x.r === REF && x.kept && x.n === 1)
+      && !!okR && okR.ok === true && okR.user && okR.user.id === "auth-m" && okR.session && okR.session.access_token === "TOK_NEW" && okStored && okN === 1,
+    J({ net: Object.fromEntries(Object.entries(net).filter(([, x]) => !(x.r === NET && x.kept && x.n === 1))), ref: Object.fromEntries(Object.entries(ref).filter(([, x]) => !(x.r === REF && x.kept && x.n === 1))), okR, okStored }));
+
+  // CM2 — the same verdict as _refresh's
+  const differ = [];
+  for (const [k, f] of Object.entries(Object.assign({}, NETWORK, REFUSED, { ok: OK }))) {
+    at(OLD, f); const kr = await auth.refreshKeep();
+    at(OLD, f); await auth._refresh("REF_OLD"); const cleared = ls.size === 0;
+    if ((kr.error === "refused") !== cleared) differ.push(`${k}: refreshKeep ${J(kr.error || "ok")}, _refresh ${cleared ? "cleared" : "kept"}`);
+  }
+  check("CM2 refreshKeep says \"refused\" exactly when _refresh (the refresh every app open does) would clear the stored session — on every one of those answers",
+    differ.length === 0, differ.slice(0, 6).join(" | "));
+
+  // CM3 — what "Sign in again" then shows
+  const nsrcCM = src.replace(/\r\n/g, "\n"), RA = "  const reauthForSync = ", ra = nsrcCM.indexOf(RA), rb = ra < 0 || nsrcCM.indexOf(RA, ra + 1) !== -1 ? -1 : nsrcCM.indexOf("\n  };\n", ra);
+  const raF = (() => { try { return rb > ra && ra > 0 ? vm.runInContext(`(function (env) { const { reauthBusy, setReauthBusy, auth, reauthLanded, authUser, setReauthPassword, setReauthError, setReauthSheet } = env; return (${nsrcCM.slice(ra + RA.length, rb + 4)}); })`, vm.createContext({})) : null; } catch (ex) { return null; } })();
+  const LINE = "Couldn't reach the server to renew your sign-in — check the connection, then sign in here.";
+  const sheet = async (r) => {
+    at(OLD, r); const st = { sheet: false, error: null, landed: null, busy: [] };
+    try { await raF({ reauthBusy: false, setReauthBusy: (v) => st.busy.push(v), auth, authUser: { id: "auth-m", email: UM.email }, reauthLanded: async (u) => { st.landed = u && u.id; },
+      setReauthPassword: () => {}, setReauthError: (v) => { st.error = v; }, setReauthSheet: (v) => { st.sheet = v; } })(); } catch (ex) { st.threw = String(ex).slice(0, 120); }
+    return st;
+  };
+  const sh = raF ? { s503: await sheet(NETWORK.s503), s502: await sheet(NETWORK.s502), s429: await sheet(NETWORK.s429), noSignal: await sheet(NETWORK.noSignal),
+    refused: await sheet(REFUSED.invalidGrant), refused401: await sheet(REFUSED.s401), ok: await sheet(OK) } : null;
+  check("CM3 the REAL \"Sign in again\" (reauthForSync): a 503, a 502 page, a 429 and no answer open the password sheet WITH \"" + LINE + "\" (a 5xx / 429 opened it with none); a refusal (400, 401) opens it without; renewed → no sheet, the renewed session landed; busy set and cleared each time",
+    !!sh && ["s503", "s502", "s429", "noSignal"].every((k) => sh[k].sheet === true && sh[k].error === LINE && !sh[k].landed) && ["refused", "refused401"].every((k) => sh[k].sheet === true && sh[k].error === "" && !sh[k].landed)
+      && sh.ok.sheet === false && sh.ok.landed === "auth-m" && Object.values(sh).every((x) => !x.threw && J(x.busy) === J([true, false])),
+    J(sh));
+})().catch(ex => check("CM harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
 
 // ─── BG. Sign-in: iPhone autofill hints, plain network errors, no stuck "Sending…" offline (UX audit 2026-10-19) ───
 // The sign-in, sign-up and reset forms gave the iPhone no autofill hints (its saved passwords and account
