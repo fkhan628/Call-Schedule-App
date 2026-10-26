@@ -1800,12 +1800,16 @@ console.log("\nBD. Generate: one period label, the period's seam, holidays with 
   check("BD7 both holiday checks call the ONE helper — Setup Issues, then the Generate panel inside the Period card (before Manual Locks) — and Setup's inline copy is gone",
     sites.length === 2 && sites[0] > iSetup && sites[0] < iIssues && sites[1] > iGen && sites[1] < iLocks
       && count("const yrA = holidayAssignments[String(y)] || [];") === 0 && count("const years = new Set([periodStart.getFullYear()-1") === 0, J({ sites, iSetup, iIssues, iGen, iLocks }));
-  check("BD7 the old period templates are gone — the e-mail's from the selects, Stats' \"This Period — {MO[startMonth]} to …\", the prefill's whole-schedule span — and each says the Generate Mondays' period (periodText: periodLabel, guarded — review fix)",
+  check("BD7 the old period templates are gone — the e-mail's from the selects, Stats' \"This Period — {MO[startMonth]} to …\", the prefill's whole-schedule span — and each says the Generate Mondays' period (periodText: periodLabel, guarded — review fix); since 2026-10-24 Stats' This Period says the MADE period instead (CJ)",
     count("{ period: `${MO[startMonth]} – ${MO[endMoIdx]} ${startYear}` }") === 0 && count("This Period — {MO[startMonth]} to {MO[endMoIdx]} {startYear}") === 0 && count("const fmtNice = (d) =>") === 0
       // (2: the e-mail's in doGenerateAndNotify, and — 2026-10-20, on purpose, CH — ↻ Regenerate's banner label, which its 📣 e-mails)
       && count("const period = periodText;") === 2 && count('sendEmailNotif("schedule_published", { period }, null, ep);') === 1
-      && count("const computePeriodLabel = () => {") === 1 && count("if (gen.length && gen.every(m => schedule[m])) return label(gen[0], gen[gen.length - 1]);") === 1
-      && count("<>This Period — {periodText}</>") === 1);
+      // (re-pinned on purpose — owner decision 2026-10-24, sync-guards CJ: the prefill's rule moved, unchanged, into
+      // madePeriodMondays, which computePeriodLabel now labels; Stats' "This Period" stopped saying the Generate tab's
+      // periodText — it says the made period, madePeriodText — so the old "This Period — {periodText}" pin is now 0)
+      && count("const computePeriodLabel = () => {") === 1 && count("if (genKeys.length && genKeys.every(m => sched[m])) return genKeys;") === 1
+      && count("const made = madePeriodMondays(schedule, mondays);") === 1
+      && count("<>This Period — {periodText}</>") === 0 && count("<>This Period{madePeriodText ? <> — {madePeriodText}</> : null}</>") === 1);
   check("BD7 the Generate panel adds no hook (the 2026.09.24a TDZ class): plain code in a JSX IIFE; it shows the exact dates and the week count",
     !!panelSrc && !/\buse(State|Memo|Effect|Callback|Ref|LayoutEffect)\(/.test(panelSrc)
       && count("<strong>This period:</strong> {periodText} · {weeksTxt(mondays.length)}") === 1);
@@ -1842,6 +1846,320 @@ console.log("\nBD. Generate: one period label, the period's seam, holidays with 
       && count("label: `${pubMs.length} weeks, ${pubPeriod}, ${via || \"Generate & Publish\"}`,") === 1 && count("label: `${pubMs.length} weeks, ${pubPeriod}${origin === \"json\" ? \", loaded from JSON\" : \"\"}`,") === 1
       && count("weeks from ${MO[startMonth]} ${startYear}") === 0 && count("weeks from ${MO[sM]} ${sY}") === 0 && count("const pubMs = Object.keys(result).sort();") === 1 && count("const pubMs = Object.keys(weeks).sort();") === 1,
     J({ fileName, n: pubLbl.length, now: pubLbl.length && lbl(sandbox), old: pubLbl.length && lbl(OLD_SB) }));
+}
+
+// ─── CJ. Stats' "This Period" is the MADE (published) period, whatever the Generate tab says (owner decision 2026-10-24) ───
+// Stats → Counts → "This Period" and Stats → Fairness → Vacation Days Used → "Period" followed the Generate tab's
+// settings (`mondays`: the period about to be generated). Everyone loads those settings from the shared blob, so once
+// the Generate tab was set up for the next period EVERY user's Stats showed that unmade period — live on 2026-10-24
+// (Generate = a start-Monday override Feb 22, 2027 × 14): "This Period — Feb 22 – May 30, 2027 / Generate a schedule
+// first." Owner decision (Faraz, 2026-10-24): "This Period" is the period whose schedule is made — the latest published
+// period — by the rule the office e-mail's prefill already used (computePeriodLabel): the Generate period when every
+// one of its weeks is published; otherwise the latest published run, at most as many weeks as the Generate period has.
+// That rule is now ONE pure function, madePeriodMondays, which the prefill labels; the Counts card reads madePeriodText
+// / statsMade, and the Vacation Days card's vacDaysPeriod is windowed on madeMondays (first Monday → last Sunday).
+// `stats` (the Generate period) is left as it was on purpose: buildCum and exportYearlySummary add it to the
+// rolled-forward priorCounts / year1Counts. Known limit, kept on purpose (the prefill has it too): the run takes the
+// Generate period's LENGTH (Feb 22 × 10 → Dec 14 – Feb 21; × 16 → Nov 2 – Feb 21).
+// Fixture: test/fixtures/stats-made-period-live-weeks-2026-10-24.json — the live slot data 2026-11-02 → 2027-02-15
+// (holiday coverage omitted: tallySchedule ignores it; wk 2026-11-09 is a backup week). Vacations: SYNTHETIC only.
+//   CJ1 madePeriodMondays (sliced) and the REAL computePeriodLabel on BD2's table: the prefill is the label of the
+//       Mondays the rule returns, exact; those Mondays exact; neither input changed
+//   CJ2 the REAL Stats memos (stats, madeMondays, madePeriodText, statsMade, statsYTD, ytdRange — sliced and run with
+//       the real tallySchedule and the Generate tab's real mondays memo) and the REAL Counts card (its JSX, lightly
+//       compiled to h() calls) on the fixture: Generate = Feb 22 × 14 (live), Feb 1 × 14, Nov 16 × 14 and the selects
+//       (February 2027) → "This Period — Nov 16, 2026 – Feb 21, 2027" and its table; Nov 2 × 14 (every week published:
+//       the Generate period wins) → its own period, the backup week in the 2nd Call columns; Feb 22 × 10 / × 16 (the
+//       known limit); nothing published → "This Period" and "Generate a schedule first."; an old cached helpers.js →
+//       the plain dates; a member → only their own row; Year to Date exactly as main shows it
+//   CJ3 the REAL vacDaysPeriod + countVacDaysInWindow and the REAL Vacation Days card on a synthetic fixture with the
+//       Generate tab on Feb 22 × 14: the window is the made period's first Monday → its last Sunday (2026-11-16 →
+//       2027-02-21); a range inside counts, one across each edge is clamped, one only in Feb 22 – May 30 counts 0
+//   CJ4 pins: the Counts and Vacation Days period branches read the made memos; buildCum, exportYearlySummary and the
+//       Fairness Check / Running Totals gates still read `stats`; periodText still feeds the e-mail, the ↻ Regenerate
+//       banner, the Generate panel and the HTML export (the audit lines: their own Mondays); declaration order (TDZ);
+//       BD7's "This Period — {periodText}" pin is replaced on purpose (BD7 cites this decision)
+console.log("\nCJ. Stats' \"This Period\" is the made (published) period, whatever the Generate tab says");
+{
+  const nsrc = src.replace(/\r\n/g, "\n");
+  const J = (o) => JSON.stringify(o);
+  const countN = (s) => nsrc.split(s).length - 1;
+  const span = (a, b) => { const i = nsrc.indexOf(a); if (i < 0 || nsrc.indexOf(a, i + 1) !== -1) return null; const j = nsrc.indexOf(b, i + a.length); return j < 0 ? null : nsrc.slice(i, j); };
+  const after = (a, b) => { const s = span(a, b); return s === null ? null : s.slice(a.length); };
+  const tryRun = (fn) => { try { return fn(); } catch (ex) { return "threw: " + String((ex && ex.message) || ex).slice(0, 160); } };
+  const mk = (code, filename) => { try { return code ? vm.runInContext(code, sandbox, { filename }) : null; } catch (ex) { return null; } };
+  const H = vm.runInContext('({ fmt, parse, addD, pl: typeof periodLabel === "function" ? periodLabel : null })', sandbox);
+  const weeksFrom = (m, n) => Array.from({ length: n }, (_, i) => H.fmt(H.addD(H.parse(m), 7 * i)));
+  const pub = (ms) => Object.fromEntries(ms.map((m) => [m, { dayCall: "s1", nights: { mon: "s2" } }]));
+
+  // CJ1 — the one rule (madePeriodMondays) and the REAL computePeriodLabel (BD2's slice, which now holds the rule too)
+  const mpmSrc = after("  const madePeriodMondays = ", "\n  const openPublishDialog = ");
+  const cplSrc = after("  const computePeriodLabel = ", "\n  const openPublishDialog = ");
+  const mkMpm = mk(mpmSrc && `(function () { return ${mpmSrc}\n })`, "cj-made.js");
+  const MPM = mkMpm ? mkMpm() : null;
+  const mkCpl = mk(cplSrc && `(function (env) { const { schedule, mondays, parse, MO, periodLabel } = env; const computePeriodLabel = ${cplSrc}\n return computePeriodLabel; })`, "cj-cpl.js");
+  const NOV = weeksFrom("2026-11-16", 14), NEXTP = weeksFrom("2027-02-22", 14), PUB42 = pub(weeksFrom("2026-05-04", 42));
+  // BD2's table: [what, schedule, the Generate Mondays, the prefill (BD2's expectation), the made Mondays]
+  const CASES = [
+    ["the Generate period, every week of it published (BD2's first)", PUB42, NOV, "Nov 16, 2026 – Feb 21, 2027", NOV],
+    ["the Generate tab on the NEXT, unpublished period → the latest published run, at most its 14 weeks", PUB42, NEXTP, "Nov 16, 2026 – Feb 21, 2027", NOV],
+    ["3 of the Generate period's 14 weeks published → the last 14 published back to back", pub(weeksFrom("2026-08-03", 15).concat(NOV.slice(0, 3))), NOV, "Aug 31 – Dec 6, 2026", weeksFrom("2026-08-31", 14)],
+    ["a gap before the last run → that run only", pub(weeksFrom("2026-08-03", 10).concat(weeksFrom("2026-11-02", 2))), NOV, "Nov 2 – Nov 15, 2026", weeksFrom("2026-11-02", 2)],
+    ["keys that are not weeks, and a week holding nothing, are not published", Object.assign({}, PUB42, { meta: { x: 1 }, lastPublish: "2027-01-01", "2027-02-22": null }), NEXTP, "Nov 16, 2026 – Feb 21, 2027", NOV],
+    ["an older period, every week of it published, stays the period", PUB42, weeksFrom("2026-05-04", 14), "May 4 – Aug 9, 2026", weeksFrom("2026-05-04", 14)],
+    ["nothing published → no Mondays, no label", {}, NOV, "", []],
+  ];
+  const cj1 = CASES.map(([what, sched, gen, want, wantMs]) => {
+    const before = J(sched), genDates = gen.map(H.parse), genBefore = J(genDates);
+    const ms = MPM ? tryRun(() => MPM(sched, genDates)) : "madePeriodMondays not found";
+    const prefill = mkCpl ? tryRun(() => mkCpl({ schedule: sched, mondays: genDates, parse: H.parse, MO: [], periodLabel: H.pl })()) : "computePeriodLabel not found";
+    const lbl = Array.isArray(ms) ? (ms.length ? H.pl(ms[0], ms[ms.length - 1]) : "") : null;
+    const ok = Array.isArray(ms) && J(ms) === J(wantMs) && lbl === want && prefill === want && J(sched) === before && J(genDates) === genBefore;
+    return { what, ok, got: { ms: Array.isArray(ms) ? `${ms[0]}..${ms[ms.length - 1]} (${ms.length})` : ms, lbl, prefill } };
+  });
+  check("CJ1 madePeriodMondays (the ONE rule, sliced) and the REAL computePeriodLabel agree on BD2's table: the prefill is the label of the Mondays the rule returns, exact; the Mondays exact (\"YYYY-MM-DD\", sorted); neither input changed",
+    !!MPM && !!mkCpl && cj1.every((c) => c.ok), J(cj1.filter((c) => !c.ok)).slice(0, 600));
+
+  // CJ2 — the REAL Stats memos and the REAL Counts card on the live fixture
+  const fixture = JSON.parse(fs.readFileSync(path.join(ROOT, "test", "fixtures", "stats-made-period-live-weeks-2026-10-24.json"), "utf8"));
+  const SURG = [["s1", "DJA"], ["s2", "MCC"], ["s3", "RPC"], ["s4", "KJH"], ["s5", "REH"], ["s6", "FAK"], ["s7", "ARW"]].map(([id, name]) => ({ id, name }));
+  const codeOf = Object.fromEntries(SURG.map((s) => [s.id, s.name]));
+  // the clock: Oct 24, 2026 (the year view reads new Date().getFullYear())
+  const Oct24 = class extends Date { constructor(...a) { if (a.length) super(...a); else super(2026, 9, 24, 12, 0, 0); } };
+  const memoBody = after("  const mondays = useMemo(() => {", "\n  }, [startYear, startMonth, numWeeks, startMondayOverride]);");
+  const runMemo = mk(memoBody && `(function (env) { const { startMondayOverride, numWeeks, startYear, startMonth } = env; return (() => {${memoBody}\n  })(); })`, "cj-mondays.js");
+  const tallySrc = after("  const tallySchedule = ", "\n  const stats = useMemo(");
+  const chainSrc = span("  const stats = useMemo(() => {", "\n\n  // APP stats");
+  const rawSrc = after("  const calcRawCount = ", "\n");
+  // (each made memo read by typeof: main has none of them, so its chain still runs and its own card renders below)
+  const chain = mk(tallySrc && chainSrc && rawSrc && `(function (env) { const { schedule, surgeons, mondays, useMemo, periodLabel, Date } = env;
+  const madePeriodMondays = ${mpmSrc || "null;"}
+  const tallySchedule = ${tallySrc}
+${chainSrc}
+  const calcRawCount = ${rawSrc}
+  return { stats, statsYTD, ytdRange, calcRawCount, madeMondays: typeof madeMondays === "undefined" ? null : madeMondays, madePeriodText: typeof madePeriodText === "undefined" ? null : madePeriodText, statsMade: typeof statsMade === "undefined" ? null : statsMade };
+})`, "cj-stats-memos.js");
+  const ptReal = periodTextIn(sandbox);
+  // the card's real JSX, lightly compiled to h() calls (CE3's compiler, plus fragments <>…</> as tag "#frag")
+  const jsxCJ = (code) => {
+    const q = (x) => JSON.stringify(x);
+    const skipStr = (k) => { const ch = code[k]; for (let m = k + 1; m < code.length; m++) { if (code[m] === "\\") { m++; continue; } if (code[m] === ch) return m; } return code.length; };
+    const close = (j) => {
+      let depth = 0;
+      for (let k = j; k < code.length; k++) {
+        const ch = code[k];
+        if (ch === '"' || ch === "'") { k = skipStr(k); continue; }
+        if (ch === "`") { for (k = k + 1; k < code.length && code[k] !== "`"; k++) { if (code[k] === "\\") k++; else if (code[k] === "$" && code[k + 1] === "{") k = close(k + 1); } continue; }
+        if (ch === "{") depth++; else if (ch === "}" && --depth === 0) return k;
+      }
+      throw new Error("unbalanced { at " + j);
+    };
+    const opens = (k) => code[k] === "<" && (/[A-Za-z]/.test(code[k + 1] || "") || code[k + 1] === ">");
+    const el = (k) => {
+      let j = k + 1, tag = "#frag";
+      if (code[j] !== ">") { tag = /^[A-Za-z][\w.]*/.exec(code.slice(j))[0]; j += tag.length; }
+      const props = [], kids = [];
+      for (;;) {
+        while (/\s/.test(code[j])) j++;
+        if (code[j] === "/" && code[j + 1] === ">") return [`h(${q(tag)}, {${props.join(", ")}})`, j + 2];
+        if (code[j] === ">") { j++; break; }
+        const nm = (/^[\w-]+/.exec(code.slice(j)) || [""])[0];
+        if (!nm) throw new Error("attribute at " + j + ": " + code.slice(j, j + 30));
+        j += nm.length;
+        if (code[j] !== "=") { props.push(`${q(nm)}: true`); continue; }
+        j++;
+        if (code[j] === '"') { const e = skipStr(j); props.push(`${q(nm)}: ${code.slice(j, e + 1)}`); j = e + 1; }
+        else if (code[j] === "{") { const e = close(j); props.push(`${q(nm)}: (${jsxCJ(code.slice(j + 1, e))})`); j = e + 1; }
+        else throw new Error("attribute value at " + j);
+      }
+      let text = "";
+      const flush = () => {
+        if (!text) return;
+        const lines = text.split("\n");
+        const t = lines.length === 1 ? text : lines.map((l, i) => (i > 0 ? l.replace(/^\s+/, "") : l)).map((l, i, a) => (i < a.length - 1 ? l.replace(/\s+$/, "") : l)).filter((l) => l.length).join(" ");
+        if (t.length && !(lines.length > 1 && !t.trim())) kids.push(q(t));
+        text = "";
+      };
+      for (;;) {
+        if (j >= code.length) throw new Error("unclosed <" + tag + ">");
+        if (code.startsWith("</", j)) { flush(); j = code.indexOf(">", j) + 1; break; }
+        if (opens(j)) { flush(); const [js, e] = el(j); kids.push(js); j = e; continue; }
+        if (code[j] === "{") { flush(); const e = close(j); const inner = code.slice(j + 1, e); if (inner.replace(/\/\*[\s\S]*?\*\//g, "").trim()) kids.push(`(${jsxCJ(inner)})`); j = e + 1; continue; }
+        text += code[j]; j++;
+      }
+      return [`h(${q(tag)}, {${props.join(", ")}}${kids.length ? ", " + kids.join(", ") : ""})`, j];
+    };
+    let out = "";
+    for (let i = 0; i < code.length;) {
+      const ch = code[i];
+      if (ch === '"' || ch === "'") { const e = skipStr(i); out += code.slice(i, e + 1); i = e + 1; continue; }
+      if (ch === "`") { const e0 = i; let k = i + 1; for (; k < code.length && code[k] !== "`"; k++) { if (code[k] === "\\") k++; else if (code[k] === "$" && code[k + 1] === "{") k = close(k + 1); } out += code.slice(e0, k + 1); i = k + 1; continue; }
+      // (a card slice starts AT its element: nothing before it is JSX at the start too)
+      if (opens(i) && (/^\s*$/.test(out) || /[(?:,&|>{[=]$/.test(out.replace(/\s+$/, "")))) { const [js, e] = el(i); out += js; i = e; continue; }
+      out += ch; i++;
+    }
+    return out;
+  };
+  const hh = (tag, props, ...kids) => ({ tag, props: props || {}, kids: kids.flat(Infinity).filter((k) => k !== null && k !== undefined && k !== false && k !== true && k !== "") });
+  const all = (n, out = []) => { if (n && typeof n === "object") { out.push(n); n.kids.forEach((k) => all(k, out)); } return out; };
+  const textOf = (n) => (n == null ? "" : typeof n !== "object" ? String(n) : n.kids.map(textOf).join(""));
+  // a card: from its opening line (found once) to its own closing </div> (10 spaces in)
+  const cardFrom = (a) => { const i = nsrc.indexOf(a); if (i < 0 || nsrc.indexOf(a, i + 1) !== -1) return null; const j = nsrc.indexOf("\n          </div>", i); return j < 0 ? null : nsrc.slice(i, j + "\n          </div>".length); };
+  const countsSrc = cardFrom('<div style={css.card}>\n            <div style={css.cardT}>{statsScope==="ytd" ? <>Current Period — {ytdRange.start} → {ytdRange.end}</>');
+  const vacSrc = cardFrom('<div style={css.card}>\n            <div style={css.cardT}>\n              Vacation Days Used\n');
+  const compile = (cardSrc, names, filename) => { try { return cardSrc ? { fn: vm.runInContext(`(function (env) { const { ${names} } = env; return (${jsxCJ(cardSrc)}); })`, sandbox, { filename }) } : { err: "card not found" }; } catch (ex) { return { err: String(ex).slice(0, 200) }; } };
+  const CSS = { card: { k: "card" }, cardT: { k: "cardT" } };
+  const counts = compile(countsSrc, "h, css, statsScope, ytdRange, periodText, madePeriodText, stats, statsMade, statsYTD, thS, thS2, tdS, showBackupStats, surgeons, isScheduler, mySurgeon, calcRawCount", "cj-counts-card.js");
+  const MEMOS = ["  const madeMondays = useMemo(", "  const madePeriodText = useMemo(", "  const statsMade = useMemo("];
+  check("CJ2 the REAL Stats memos — stats, the made ones (madeMondays, madePeriodText, statsMade, on madePeriodMondays), statsYTD, ytdRange — with tallySchedule, calcRawCount and the Generate tab's mondays memo slice and compile; the REAL Counts card (its JSX) found once and compiles",
+    !!runMemo && !!chain && !!counts.fn && !!mpmSrc && MEMOS.every((m) => chainSrc.includes(m)), J({ runMemo: !!runMemo, chain: !!chain, card: counts.err || "ok", made: !!mpmSrc && MEMOS.filter((m) => chainSrc && chainSrc.includes(m)).length }));
+  const runStats = (start, n, o = {}) => {
+    if (!runMemo || !chain) return { err: "not sliced" };
+    const mondays = runMemo({ startMondayOverride: start, numWeeks: n, startYear: o.startYear || 2026, startMonth: o.startMonth === undefined ? 9 : o.startMonth });
+    const m = tryRun(() => chain({ schedule: o.schedule || fixture, surgeons: SURG, mondays, useMemo: (f) => f(), periodLabel: o.oldHelpers ? null : H.pl, Date: Oct24 }));
+    return typeof m === "string" ? { err: m } : { m, mondays };
+  };
+  // the card as a person sees it: its title, its table's rows ("FAK 12/3/7/2/4" = Total / Svc Wk / Nights / Wknds / Off;
+  // "+ dcB/nightsB/wkndB/offB" when 2nd Call shows) and its empty line
+  const viewCounts = (start, n, o = {}) => {
+    const r = runStats(start, n, o);
+    if (r.err || !counts.fn) return { err: r.err || counts.err };
+    const { m, mondays } = r;
+    const tree = tryRun(() => counts.fn({ h: hh, css: CSS, statsScope: o.scope || "period", ytdRange: m.ytdRange, periodText: ptReal ? ptReal(mondays) : null, madePeriodText: m.madePeriodText, stats: m.stats, statsMade: m.statsMade, statsYTD: m.statsYTD,
+      thS: {}, thS2: {}, tdS: {}, showBackupStats: !!o.second, surgeons: SURG, isScheduler: !o.member, mySurgeon: o.member || "s6", calcRawCount: m.calcRawCount }));
+    if (typeof tree === "string") return { err: tree };
+    const nodes = all(tree);
+    const title = textOf(nodes.find((x) => x.props.style === CSS.cardT));
+    const tbody = nodes.find((x) => x.tag === "tbody");
+    const rows = tbody ? tbody.kids.map((tr) => { const c = tr.kids.map(textOf), badge = tr.kids[0].kids[0]; return `${codeOf[badge.props.id] || badge.props.id} ${c.slice(1, 6).join("/")}${c.length > 6 ? " + " + c.slice(6).join("/") : ""}`; }).join(" · ") : "";
+    const p = nodes.find((x) => x.tag === "p");
+    return { title, rows, empty: p ? textOf(p) : null };
+  };
+  const T14 = "DJA 13/2/9/2/2 · MCC 13/2/9/2/2 · RPC 13/2/9/2/0 · KJH 10/2/6/2/4 · REH 11/2/7/2/1 · FAK 12/3/7/2/4 · ARW 12/1/9/2/1";
+  const NOV16 = "This Period — Nov 16, 2026 – Feb 21, 2027";
+  const same = (got, want) => { const norm = (o) => J(Object.keys(o).sort().map((k) => [k, o[k]])); return norm(got) === norm(want); };
+  const runCases = (cases) => cases.map(([what, [start, n], o, want]) => { const got = viewCounts(start, n, o); return { what, ok: same(got, want), got }; });
+  const bad = (rs) => J(rs.filter((r) => !r.ok).map(({ what, got }) => ({ what, got }))).slice(0, 700);
+  const cj2a = runCases([
+    ["Generate = Feb 22 × 14 (live 2026-10-24: the next, unpublished period)", ["2027-02-22", 14], {}, { title: NOV16, rows: T14, empty: null }],
+    ["Generate = Feb 1 × 14 (3 of its weeks published)", ["2027-02-01", 14], {}, { title: NOV16, rows: T14, empty: null }],
+    ["Generate = Nov 16 × 14 (the made period itself)", ["2026-11-16", 14], {}, { title: NOV16, rows: T14, empty: null }],
+    ["no override: the selects, February 2027 × 14 (Feb 1 – May 9)", ["", 14], { startYear: 2027, startMonth: 1 }, { title: NOV16, rows: T14, empty: null }],
+    ["…with Show 2nd Call (no backup week in it: all 0)", ["2027-02-22", 14], { second: true }, { title: NOV16, rows: T14.split(" · ").map((r) => r + " + 0/0/0/0").join(" · "), empty: null }],
+    // (a Generate period with every week published wins, as in the prefill — the one setting main already showed right)
+    ["Generate = Nov 2 × 14, every week published, Show 2nd Call", ["2026-11-02", 14], { second: true }, { title: "This Period — Nov 2, 2026 – Feb 7, 2027", empty: null,
+      rows: "DJA 13/2/8/2/2 + 0/1/0/0 · MCC 13/2/8/2/1 + 1/0/0/0 · RPC 13/2/9/1/0 + 0/1/0/0 · KJH 12/3/6/2/3 + 0/1/0/0 · REH 14/2/8/2/1 + 0/1/1/0 · FAK 8/1/5/2/5 + 0/0/0/1 · ARW 11/1/8/2/1 + 0/0/0/0" }],
+    ["…2nd Call hidden (the backup week still in Total)", ["2026-11-02", 14], {}, { title: "This Period — Nov 2, 2026 – Feb 7, 2027", empty: null,
+      rows: "DJA 13/2/8/2/2 · MCC 13/2/8/2/1 · RPC 13/2/9/1/0 · KJH 12/3/6/2/3 · REH 14/2/8/2/1 · FAK 8/1/5/2/5 · ARW 11/1/8/2/1" }],
+  ]);
+  check("CJ2 This Period is the made period whatever the Generate tab says — Feb 22 × 14 (live), Feb 1 × 14, Nov 16 × 14, the selects (Feb 2027): \"This Period — Nov 16, 2026 – Feb 21, 2027\" and its table, exact (main: \"Feb 22 – May 30, 2027 / Generate a schedule first.\", and Feb 1 × 14 counted 3 weeks); Nov 2 × 14, every week published, wins as in the prefill — \"Nov 2, 2026 – Feb 7, 2027\", the backup week 11/09 in the 2nd Call columns",
+    cj2a.every((r) => r.ok), bad(cj2a));
+  const cj2c = runCases([
+    ["Feb 22 × 10 → the run's last 10 weeks", ["2027-02-22", 10], {}, { title: "This Period — Dec 14, 2026 – Feb 21, 2027", empty: null,
+      rows: "DJA 10/1/7/2/1 · MCC 8/1/6/1/2 · RPC 8/2/5/1/0 · KJH 6/1/4/1/4 · REH 8/1/5/2/1 · FAK 11/3/6/2/1 · ARW 9/1/7/1/1" }],
+    ["Feb 22 × 16 → the 2 weeks before it too", ["2027-02-22", 16], {}, { title: "This Period — Nov 2, 2026 – Feb 21, 2027", empty: null,
+      rows: "DJA 15/2/9/3/2 · MCC 15/2/10/2/2 · RPC 15/2/10/2/0 · KJH 12/3/6/2/4 · REH 14/2/8/2/1 · FAK 12/3/7/2/5 · ARW 13/1/10/2/1" }],
+  ]);
+  check("CJ2 the known limit, kept on purpose (the prefill has it): the run takes the Generate period's length — Feb 22 × 10 → \"Dec 14, 2026 – Feb 21, 2027\", × 16 → \"Nov 2, 2026 – Feb 21, 2027\", tables exact",
+    cj2c.every((r) => r.ok), bad(cj2c));
+  const cj2d = runCases([
+    ["nothing published", ["2027-02-22", 14], { schedule: {} }, { title: "This Period", rows: "", empty: "Generate a schedule first." }],
+    ["an old cached helpers.js (no periodLabel)", ["2027-02-22", 14], { oldHelpers: true }, { title: "This Period — 2026-11-16 – 2027-02-21", rows: T14, empty: null }],
+    ["a member (FAK) sees only their own row", ["2027-02-22", 14], { member: "s6" }, { title: NOV16, rows: "FAK 12/3/7/2/4", empty: null }],
+  ]);
+  check("CJ2 nothing published → \"This Period\" (no dates) and the existing empty line; an old cached helpers.js → the plain dates, never a throw; a member sees only their own row",
+    cj2d.every((r) => r.ok), bad(cj2d));
+  const YTD = { title: "Current Period — 2026-11-02 → 2027-01-03", empty: null, rows: "DJA 8/1/4/2/2 · MCC 8/1/5/1/1 · RPC 8/0/6/1/0 · KJH 9/3/4/1/0 · REH 10/2/5/1/0 · FAK 5/1/3/1/4 · ARW 6/0/5/1/1" };
+  const cj2e = runCases([
+    ["This Period beside it, the same settings: the made period", ["2027-02-22", 14], {}, { title: NOV16, rows: T14, empty: null }],
+    ["Year to Date, Generate = Feb 22 × 14", ["2027-02-22", 14], { scope: "ytd" }, YTD],
+    ["Year to Date, Generate = Nov 2 × 14", ["2026-11-02", 14], { scope: "ytd" }, YTD],
+    ["Year to Date, Show 2nd Call", ["2027-02-22", 14], { scope: "ytd", second: true }, Object.assign({}, YTD, { rows: "DJA 8/1/4/2/2 + 0/1/0/0 · MCC 8/1/5/1/1 + 1/0/0/0 · RPC 8/0/6/1/0 + 0/1/0/0 · KJH 9/3/4/1/0 + 0/1/0/0 · REH 10/2/5/1/0 + 0/1/1/0 · FAK 5/1/3/1/4 + 0/0/0/1 · ARW 6/0/5/1/1 + 0/0/0/0" })],
+  ]);
+  check("CJ2 the scope toggle: This Period the made period, Year to Date unchanged — the clock at Oct 24, 2026: \"Current Period — 2026-11-02 → 2027-01-03\" and the 2026 weeks' table exactly as main shows it, whatever the Generate tab says",
+    cj2e.every((r) => r.ok) && countN("<>Current Period — {ytdRange.start} → {ytdRange.end}</>") === 1, bad(cj2e));
+
+  // CJ3 — the Vacation Days period window: the REAL vacDaysPeriod + countVacDaysInWindow, then the REAL card
+  const cvdSrc = after("  const countVacDaysInWindow = ", "\n  const vacDaysPeriod = useMemo(");
+  const vdpSrc = span("  const vacDaysPeriod = useMemo(", "\n  // Day-level \"this person actually WORKED");
+  const vacMemo = mk(cvdSrc && vdpSrc && `(function (env) { const { vacations, surgeons, apps, madeMondays, mondays, endDate, useMemo } = env;\n  const countVacDaysInWindow = ${cvdSrc}\n${vdpSrc}\n  return vacDaysPeriod; })`, "cj-vac-memo.js");
+  const vac = compile(vacSrc, "h, css, statsScope, vacDaysYTD, vacDaysPeriod, setStatsScope, font, mono, thS, tdS, surgeons, apps, isScheduler, mySurgeon", "cj-vac-card.js");
+  // SYNTHETIC people and ranges — never anyone's real time off
+  const VS = [{ id: "v1", name: "VA" }, { id: "v2", name: "VB" }, { id: "v3", name: "VC" }, { id: "v4", name: "VD" }, { id: "v5", name: "VE" }], VAP = [{ id: "va1", name: "VAP" }];
+  const VAC = {
+    v1: [["2027-01-12", "2027-01-15"]],                                  // inside Nov 16 – Feb 21 → 4
+    v2: [["2026-11-12", "2026-11-18"]],                                  // across its first Monday → Nov 16 – 18 → 3
+    v3: [["2027-02-19", "2027-02-25"]],                                  // across its last Sunday → Feb 19 – 21 → 3
+    v4: [["2027-03-08", "2027-03-12"]],                                  // only in Feb 22 – May 30 (the Generate period) → 0
+    v5: [["2026-10-05", "2026-10-09"], ["2026-12-01", "2026-12-02"]],    // one before it (0), one inside (2)
+    va1: [["2026-11-10", "2027-03-01"]],                                 // an APP across both edges → Nov 16 – Feb 21 → 98
+  };
+  const viewVac = (start, n, o = {}) => {
+    const r = runStats(start, n, o);
+    if (r.err || !vacMemo || !vac.fn) return { err: r.err || (!vacMemo ? "vacDaysPeriod not sliced" : vac.err) };
+    const { m, mondays } = r;
+    const vdp = tryRun(() => vacMemo({ vacations: VAC, surgeons: VS, apps: VAP, madeMondays: m.madeMondays, mondays, endDate: mondays.length ? H.addD(mondays[mondays.length - 1], 6) : null, useMemo: (f) => f() }));
+    if (typeof vdp === "string") return { err: vdp };
+    const tree = tryRun(() => vac.fn({ h: hh, css: CSS, statsScope: "period", vacDaysYTD: { out: {}, start: "", end: "" }, vacDaysPeriod: vdp, setStatsScope() {}, font: "", mono: "", thS: {}, tdS: {}, surgeons: VS, apps: VAP, isScheduler: true, mySurgeon: "v1" }));
+    if (typeof tree === "string") return { err: tree };
+    const nodes = all(tree);
+    const head = nodes.filter((x) => x.tag === "span").map(textOf).find((t) => t.startsWith(" — ")) || null;
+    const tbody = nodes.find((x) => x.tag === "tbody");
+    const rows = tbody ? tbody.kids.map((tr) => tr.kids.map(textOf).map((t, i) => (i === 0 ? tr.kids[0].kids[0].props.id : t)).join(" ")).join(" · ") : "";
+    const p = nodes.find((x) => x.tag === "p");
+    return { window: [vdp.pStart, vdp.pEnd, vdp.hasPeriod], head, rows, empty: p ? textOf(p) : null };
+  };
+  const VROWS = "v1 4 2027-01-12 → 2027-01-15 · v2 3 2026-11-16 → 2026-11-18 · v3 3 2027-02-19 → 2027-02-21 · v4 0 — · v5 2 2026-12-01 → 2026-12-02 · va1 98 2026-11-16 → 2027-02-21";
+  const VWANT = { window: ["2026-11-16", "2027-02-21", true], head: " — This Period (2026-11-16 → 2027-02-21)", rows: VROWS, empty: null };
+  const cj3 = [["Generate = Feb 22 × 14 (live)", ["2027-02-22", 14], {}, VWANT], ["Generate = Feb 1 × 14", ["2027-02-01", 14], {}, VWANT], ["Generate = Nov 16 × 14", ["2026-11-16", 14], {}, VWANT],
+    ["nothing published → no window: the card's all-time fallback, as before", ["2027-02-22", 14], { schedule: {} }, { window: [null, null, false], head: null, empty: null,
+      rows: "v1 4 2027-01-12 → 2027-01-15 · v2 7 2026-11-12 → 2026-11-18 · v3 7 2027-02-19 → 2027-02-25 · v4 5 2027-03-08 → 2027-03-12 · v5 7 2026-10-05 → 2026-10-09 · 2026-12-01 → 2026-12-02 · va1 112 2026-11-10 → 2027-03-01" }],
+  ].map(([what, [start, n], o, want]) => { const got = viewVac(start, n, o); return { what, ok: same(got, want), got }; });
+  check("CJ3 Vacation Days Used → Period is the made period's first Monday → its last Sunday — \"— This Period (2026-11-16 → 2027-02-21)\" with the Generate tab on Feb 22 × 14 (main: 2027-02-22 → 2027-05-30): synthetic ranges, raw days — one inside 4, one across each edge clamped to 3 and 3, one only in Feb 22 – May 30 0, an APP across both 98; nothing published → the all-time fallback",
+    cj3.every((r) => r.ok), bad(cj3));
+
+  // CJ4 — pins
+  // the readers of vacDaysPeriod, comments aside (whole-line // comments and JSX {/* … */})
+  const strip = (s) => s.replace(/^[ \t]*\/\/.*$/gm, "").replace(/\{\/\*[\s\S]*?\*\/\}/g, "");
+  const ssrc = strip(nsrc), svac = vacSrc ? strip(vacSrc) : null;
+  const vcA = svac ? ssrc.indexOf(svac) : -1, vcB = vcA + (svac ? svac.length : 0);
+  const vdpDecl = nsrc.indexOf("  const vacDaysPeriod = useMemo(");
+  const vdpReads = [...ssrc.matchAll(/\bvacDaysPeriod\b/g)].map((x) => x.index).filter((i) => !ssrc.startsWith("const vacDaysPeriod = useMemo(", i - "const ".length));
+  check("CJ4 the Counts card's period branch reads the made memos — its title madePeriodText (\"This Period\" alone when there is none), its empty test and rows statsMade — and no longer periodText or stats",
+    !!countsSrc && countsSrc.includes("<>This Period{madePeriodText ? <> — {madePeriodText}</> : null}</>") && countsSrc.split('(statsScope==="ytd"?statsYTD:statsMade)').length - 1 === 2
+      && !/\bperiodText\b/.test(countsSrc) && !/\bstats\b/.test(countsSrc), countsSrc ? "" : "Counts card not found");
+  check("CJ4 Vacation Days Used reads vacDaysPeriod (its title and its 3 tables), windowed on madeMondays (first Monday → last Sunday) — not mondays / endDate — and nothing else reads vacDaysPeriod",
+    !!vdpSrc && vdpSrc.includes("const pStart = madeMondays.length > 0 ? madeMondays[0] : null;") && vdpSrc.includes("const pEnd = madeMondays.length > 0 ? fmt(addD(parse(madeMondays[madeMondays.length - 1]), 6)) : null;")
+      && vdpSrc.includes("}, [vacations, surgeons, apps, madeMondays]);") && !/\bmondays\b|\bendDate\b/.test(vdpSrc)
+      && !!vacSrc && vacSrc.split('(statsScope==="ytd"?vacDaysYTD:vacDaysPeriod).out').length - 1 === 3 && vdpReads.length === 6 && vcA > 0 && vdpReads.every((i) => i > vcA && i < vcB),
+    J({ reads: vdpReads.length, inCard: vdpReads.filter((i) => i > vcA && i < vcB).length }));
+  const bc = span("  const buildCum = (prior) => {", "\n  const cum1yr = ");
+  const eys = span("  const exportYearlySummary = useCallback(() => {", "\n  }, [surgeons, stats, priorCounts, startYear, calcShifts]);");
+  const gFair = nsrc.indexOf('{(isScheduler || mySurgeon === "admin") && Object.values(stats).some(s=>s.dc>0) && ('), gRun = nsrc.indexOf("{Object.values(stats).some(s=>s.dc>0) && (");
+  const MADE = /\b(statsMade|madeMondays|madePeriodText|madePeriodMondays)\b/;
+  check("CJ4 the made tally is the Counts card's alone: buildCum (cum1yr / cumStats) and exportYearlySummary still add `stats` — the Generate period — to priorCounts / year1Counts, and the Fairness Check and Running Totals gates still read `stats` (made memos there would double-count the whole latest period: rollForwardCounts already rolled it in)",
+    countN("  const statsMade = useMemo(() => {") === 1 && countN("    const periodKeys = new Set(mondays.map(m => fmt(m)));\n    return tallySchedule(mStr => periodKeys.has(mStr));\n  }, [schedule, surgeons, mondays]);") === 1
+      && !!bc && bc.includes("const cur = stats[s.id] || {};") && !MADE.test(bc) && !!eys && eys.includes("const cur = stats[s.id] || {};") && !MADE.test(eys)
+      && countN("const cum1yr = useMemo(() => buildCum(year1Counts), [stats, year1Counts, surgeons]);") === 1 && countN("const cumStats = useMemo(() => buildCum(priorCounts), [stats, priorCounts, surgeons]);") === 1
+      && gFair > 0 && countN('{(isScheduler || mySurgeon === "admin") && Object.values(stats).some(s=>s.dc>0) && (') === 1 && nsrc.indexOf("Fairness Check <span", gFair) - gFair < 200
+      && gRun > 0 && countN("{Object.values(stats).some(s=>s.dc>0) && (") === 1 && nsrc.indexOf("Running Totals <span", gRun) - gRun < 200,
+    J({ bc: !!bc, eys: !!eys, gFair, gRun }));
+  const iDgn = nsrc.indexOf("  const doGenerateAndNotify = async () => {"), iRegen = nsrc.indexOf("  const doRegenerate = async (e) => {");
+  const pers = []; for (let i = nsrc.indexOf("const period = periodText;"); i >= 0; i = nsrc.indexOf("const period = periodText;", i + 1)) pers.push(i);
+  check("CJ4 periodText (the Generate period) still feeds the e-mail (doGenerateAndNotify), the ↻ Regenerate banner, the Generate panel and the HTML export; the publish audit lines still say their own Mondays (pubPeriod) — and Stats says the made period (madePeriodText) instead",
+    pers.length === 2 && pers[0] > iDgn && pers[0] < iRegen && pers[1] > iRegen && pers[1] - iRegen < 1500
+      && countN("<strong>This period:</strong> {periodText} · {weeksTxt(mondays.length)}") === 1 && countN("<title>DSG Call Schedule — ${periodText}</title>") === 1 && countN("<p>Call Schedule · ${periodText} · ${mondays.length} Weeks</p>") === 1
+      && countN('const pubPeriod = typeof periodLabel === "function" ? periodLabel(pubMs[0], pubMs[pubMs.length - 1])') === 2
+      && countN("const periodText = mondays.length === 0 ? \"\" : typeof periodLabel === \"function\" ? periodLabel(mondays[0], mondays[mondays.length - 1]) : `${fmt(mondays[0])} – ${fmt(addD(mondays[mondays.length - 1], 6))}`;") === 1
+      && countN("<>This Period — {periodText}</>") === 0 && countN("<>This Period{madePeriodText ? <> — {madePeriodText}</> : null}</>") === 1,
+    J({ pers, iDgn, iRegen }));
+  const at = (s) => nsrc.indexOf(s);
+  const ord = [["mondays memo", at("  const mondays = useMemo(() => {")], ["madePeriodMondays", at("  const madePeriodMondays = (sched, gen) => {")], ["tallySchedule", at("  const tallySchedule = (includeWeek) => {")],
+    ["madeMondays", at("  const madeMondays = useMemo(() => madePeriodMondays(schedule, mondays), [schedule, mondays]);")], ["madePeriodText", at("  const madePeriodText = useMemo(() => (madeMondays.length === 0 ? ")],
+    ["statsMade", at("  const statsMade = useMemo(() => {")], ["countVacDaysInWindow", at("  const countVacDaysInWindow = (winStart, winEnd) => {")], ["vacDaysPeriod", vdpDecl], ["the Counts card", countsSrc ? at(countsSrc) : -1]];
+  check("CJ4 declaration order (the 2026.09.24a TDZ class): mondays → madePeriodMondays → tallySchedule → madeMondays → madePeriodText → statsMade → countVacDaysInWindow → vacDaysPeriod → the cards, each found once; the made memos' deps name only what is declared above them",
+    ord.every(([, i]) => i > 0) && ord.every(([, i], k) => k === 0 || i > ord[k - 1][1]) && countN("`), [madeMondays]);") === 1 && countN("  }, [schedule, surgeons, madeMondays]);") === 1,
+    J(ord.map(([n, i]) => n + "@" + i)));
 }
 
 // ─── N. Swap family: swapMsg / cascadeMsg (2026-09-07) ───
@@ -3062,8 +3380,11 @@ console.log("\nBF. toasts stack (up to 3), errors stay longer, no doubled ⚠");
   // line was replaced by the field, which reads the range back itself (rangeLabel, BK3). So rangeSummary is now
   // called NOWHERE in the page — 0, pinned — and stays in helpers.js, still defined (the OLD_SB check above) and still
   // executed by BE1. The other eleven are each called, each behind its typeof, as before.)
-  check("BF7 (review fix) every call of the batch's twelve helpers in index-source.html sits behind its own `typeof … === \"function\"` (the app's convention for a newer helper), each of them called somewhere — toastAdd / toastMs / toastText, periodLabel ×5 (periodText, the office prefill, both publish audit lines, and — CO, 2026-10-25 — runPublish's late banner), periodSeam, periodHolidayGaps ×2, authErrorText ×6, tradeSlotHolder ×2, tradePickNotes, calMonthWeekMondays, calendarFeedUrls ×2 — except rangeSummary, called nowhere since the range field replaced its line (moved by BK; it stays in helpers.js, BE1 runs it)",
-    unguarded.length === 0 && BATCH4_HELPERS.every((n) => (n === "rangeSummary" ? callsOf[n] === 0 : callsOf[n] > 0)) && callsOf.authErrorText === 6 && callsOf.periodLabel === 5 &&callsOf.periodHolidayGaps === 2 && callsOf.tradeSlotHolder === 2 && callsOf.calendarFeedUrls === 2,
+  // (2026-10-24, on purpose — owner decision, sync-guards CJ: periodLabel ×5 — Stats' "This Period" says the made
+  // period with its own guarded call, madePeriodText.)
+  // (2026-10-25, on purpose — CO: ×6 — runPublish's late() labels the weeks it raises the 📣 banner for)
+  check("BF7 (review fix) every call of the batch's twelve helpers in index-source.html sits behind its own `typeof … === \"function\"` (the app's convention for a newer helper), each of them called somewhere — toastAdd / toastMs / toastText, periodLabel ×6 (periodText, the office prefill, both publish audit lines, Stats' made period — CJ, runPublish's late banner — CO), periodSeam, periodHolidayGaps ×2, authErrorText ×6, tradeSlotHolder ×2, tradePickNotes, calMonthWeekMondays, calendarFeedUrls ×2 — except rangeSummary, called nowhere since the range field replaced its line (moved by BK; it stays in helpers.js, BE1 runs it)",
+    unguarded.length === 0 && BATCH4_HELPERS.every((n) => (n === "rangeSummary" ? callsOf[n] === 0 : callsOf[n] > 0)) && callsOf.authErrorText === 6 && callsOf.periodLabel === 6 && callsOf.periodHolidayGaps === 2 && callsOf.tradeSlotHolder === 2 && callsOf.calendarFeedUrls === 2,
     JSON.stringify({ unguarded, callsOf }));
 }
 
