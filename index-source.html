@@ -1105,14 +1105,18 @@ function CallSchedule() {
             let profile;
             try { profile = await dbAuth.getProfile(user.id); }
             catch (e) {
-              // The profile read never reached the server — the signal dropped
-              // after getUser answered (review fix 2026-10-20): the app opened
-              // signed in with no profile. Undo the half-done auto-login
-              // (nothing bound or signed in), keep the stored session, and say
-              // what an open with no signal says: the note, with Retry. Any
-              // other error goes to the catch below, as before (an old cached
-              // helpers.js: as before).
-              if (!(typeof isNoConnectionError === "function" && isNoConnectionError(e))) throw e;
+              // The profile read failed after getUser answered — the signal
+              // dropped (review fix 2026-10-20), or (2026-10-26) anything else:
+              // a body that dropped mid-read (Chrome's "network error", which
+              // isNoConnectionError doesn't name), a reply that isn't the
+              // profile, a code error. Either way the app opened
+              // signed in with no profile (any other error went to the catch
+              // below, which left this tab bound with no profile). Undo the
+              // half-done auto-login (nothing bound or signed in), keep the
+              // stored session, and say what an open with no signal says: the
+              // note, with Retry. Anything but no signal is logged, as the
+              // catch below logged it (an old cached helpers.js: logged too).
+              if (!(typeof isNoConnectionError === "function" && isNoConnectionError(e))) console.error("Auth check error:", e);
               auth.bindUser(null); setAuthUser(null);
               setAuthNetErr(true);
               setAuthLoading(false);
@@ -1159,8 +1163,9 @@ function CallSchedule() {
           // bound or signed in on this screen), so Unlock and "Use email &
           // password instead" work as before the tap; the stored session is
           // untouched. No signal says what a no-signal unlock says; anything
-          // else — a reply that isn't JSON (a Wi-Fi sign-in page), a code
-          // error, any error on an old cached helpers.js — that the profile
+          // else — a body that dropped mid-read (Chrome's "network error"), a
+          // reply that isn't JSON, a code error, any error on an old cached
+          // helpers.js — that the profile
           // didn't load.
           const noSignal = typeof isNoConnectionError === "function" && isNoConnectionError(e);
           auth.bindUser(null); setAuthUser(null);
@@ -1328,15 +1333,16 @@ function CallSchedule() {
         let profile;
         try { profile = await dbAuth.getProfile(user.id); }
         catch (e) {
-          // The profile read never reached the server — the signal dropped
-          // after the sign-in answered (review fix 2026-10-20): the app opened
-          // signed in with no profile. Undo the half-done sign-in (nothing
-          // bound or signed in; the session it stored is kept, so a reopen
-          // with signal signs straight in); the catch below then says "No
-          // connection …" on the card, the fields still filled. Any other
-          // error goes on as before (an old cached helpers.js: as before).
-          if (typeof isNoConnectionError === "function" && isNoConnectionError(e)) { auth.bindUser(null); setAuthUser(null); }
-          throw e;
+          // The profile read failed after the sign-in answered — the signal
+          // dropped (review fix 2026-10-20), or (2026-10-26) anything else: a
+          // body that dropped mid-read (Chrome's "network error", which
+          // isNoConnectionError doesn't name), a reply that isn't the
+          // profile, a code error. Each left the app signed in with no
+          // profile. Undo the half-done sign-in (nothing bound or signed in;
+          // the session it stored is kept, so a reopen with signal signs
+          // straight in); the catch below then says its words on the card —
+          // "No connection …" or its plain line — the fields still filled.
+          auth.bindUser(null); setAuthUser(null); throw e;
         }
         if (profile) {
           setUserProfile(profile);

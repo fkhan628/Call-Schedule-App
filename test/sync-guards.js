@@ -4364,9 +4364,11 @@ console.log("\nBL. Schedule Warnings: anyone can hide a warning on this phone");
 //   CI2h getUser's own clear, pinned: a stored session with no refresh token, /auth/v1/user refusing it → cleared,
 //       { user: null }, one request (F4)
 //   CI3g/h the mount auto-login's profile read with no signal → the half-done sign-in undone, the "still signed in"
-//       note, kept; any other error, and an old cached helpers.js, as before (F2, second review)
+//       note, kept (F2, second review); any other error, and an old cached helpers.js, the same since CS (2026-10-26),
+//       still logged (it was thrown on, leaving the tab bound with no profile)
 //   CI4e/f the password sign-in's profile read with no signal → undone, "No connection …" on the card, the session it
-//       stored kept; any other error, and an old cached helpers.js, as before (F3)
+//       stored kept (F3); any other error, and an old cached helpers.js, undone too since CS (2026-10-26), the card's
+//       own words as before
 //   CI6a "Use email & password instead" is inert while a Face ID tap is being verified (F1, both reviews)
 console.log("\nCI. A token refresh that fails for lack of signal keeps you signed in (+ mutant battery)");
 await (async () => {
@@ -4591,13 +4593,15 @@ await (async () => {
       }
       ck("CI3g", "the REAL mount auto-login, getUser answered and then the profile read gets no answer (\"Load failed\", \"Failed to fetch\"): the half-done sign-in undone (the user null again, nothing bound), the \"you're still signed in\" note (authNetErr) and the card (loading ends); the stored session kept; no profile, no reload, nothing logged",
         mp.every((x) => J(x.m) === J(["authUser:auth-c", "getProfile:auth-c", "authUser:null", "authNetErr:true", "authLoading:false"]) && x.bound === null && x.kept && J(x.calls) === J(["GET /auth/v1/user"])), mp);
+      // (CS, 2026-10-26, on purpose: CI3h pinned "as before" — the error thrown on to the effect's catch, which left the tab
+      // BOUND with no profile. Any error is now undone like CI3g and gets the note; it is still logged as the catch logged it.)
       const mo = [];
       for (const [err, oldHelpers] of [[new TypeError("Cannot read properties of undefined (reading 'person_id')"), false], [new SyntaxError("Unexpected token '<', \"<html>\" is not valid JSON"), false], [new TypeError("Load failed"), true]]) {
         at(NEW, server(RF.ok)); const m = await runMount({ profileThrows: err, oldHelpers });
-        mo.push({ m, bound: auth.boundUser(), kept: holds(NEW), want: J(["authUser:auth-c", "getProfile:auth-c", "console.error:" + ("Auth check error: " + String(err)).slice(0, 120), "authLoading:false"]) });
+        mo.push({ m, bound: auth.boundUser(), kept: holds(NEW), want: J(["authUser:auth-c", "getProfile:auth-c", "console.error:" + ("Auth check error: " + String(err)).slice(0, 120), "authUser:null", "authNetErr:true", "authLoading:false"]) });
       }
-      ck("CI3h", "…any other error from that profile read (a code error, a reply that isn't JSON), and an OLD cached helpers.js (no isNoConnectionError): as before — the same error logged by the effect's catch, nothing undone or said, loading ends",
-        mo.every((x) => J(x.m) === x.want && x.bound === "auth-c" && x.kept), mo);
+      ck("CI3h", "…any other error from that profile read (a code error, a reply that isn't JSON), and an OLD cached helpers.js (no isNoConnectionError): logged as the effect's catch logged it, then undone like CI3g — the user null again, nothing bound, the note, loading ends; the stored session kept (CS)",
+        mo.every((x) => J(x.m) === x.want && x.bound === null && x.kept), mo);
     });
 
     // CI4 — Face ID's profile read
@@ -4647,10 +4651,12 @@ await (async () => {
       const po = [];
       for (const [err, oldHelpers, said] of [[new TypeError("Cannot read properties of undefined (reading 'person_id')"), false, GENERIC], [new TypeError("Load failed"), true, NOCONN]]) {
         at({}, server(RF.ok)); const r = await runSubmit({ profileThrows: err, oldHelpers });
-        po.push({ log: r.log, back: r.back === err, bound: auth.boundUser(), stored: holds(NEW), want: J(["error:", "busy:true", "authUser:auth-c", "getProfile:auth-c", "error:" + said, "busy:false"]) });
+        po.push({ log: r.log, back: r.back === err, bound: auth.boundUser(), stored: holds(NEW), want: J(["error:", "busy:true", "authUser:auth-c", "getProfile:auth-c", "authUser:null", "error:" + said, "busy:false"]) });
       }
-      ck("CI4f", "…any other error from that profile read, and an OLD cached helpers.js (no isNoConnectionError): as before — nothing undone (signed in, bound), the catch's words, busy false, the same error handed back",
-        po.every((x) => J(x.log) === x.want && x.back && x.bound === "auth-c" && x.stored), po);
+      // (CS, 2026-10-26, on purpose: CI4f pinned "nothing undone" — which left the app signed in with no profile, as the
+      // mount's twin did. Any profile-read error is undone now; the catch's words as before)
+      ck("CI4f", "…any other error from that profile read, and an OLD cached helpers.js (no isNoConnectionError): undone like CI4e — the user null again, nothing bound — the catch's words, busy false, the same error handed back; the session it stored kept (CS)",
+        po.every((x) => J(x.log) === x.want && x.back && x.bound === null && x.stored), po);
     });
 
     // CI5 — no storm; "Sign in again" unchanged
@@ -4726,10 +4732,14 @@ await (async () => {
   const GUARD_B = "if (!(typeof isNoConnectionError === \"function\" && isNoConnectionError(e))) throw e;";
   // (CN, 2026-10-25: Face ID's catch no longer throws — it decides the line; B2 / B8 / B9 re-anchored on it, B10 added)
   const NOSIG_B = "          const noSignal = typeof isNoConnectionError === \"function\" && isNoConnectionError(e);\n";
+  // (CS, 2026-10-26: the mount's catch logs a non-network error instead of throwing it on)
+  const LOG_M = "if (!(typeof isNoConnectionError === \"function\" && isNoConnectionError(e))) console.error(\"Auth check error:\", e);";
   const MOUNT_TRY = (() => { const a = "            let profile;\n            try { profile = await dbAuth.getProfile(user.id); }\n", i = idxLF.indexOf(a), e = i < 0 ? -1 : idxLF.indexOf("            if (profile) { setUserProfile(profile); setMySurgeon(profile.person_id); }\n", i); return e < 0 ? null : idxLF.slice(i, e); })();
   const UNDO_M = "\n              auth.bindUser(null); setAuthUser(null);\n              setAuthNetErr(true);\n              setAuthLoading(false);\n              return;\n";
   const PW_TRY = (() => { const a = "        // Load profile\n", i = idxLF.indexOf(a), e = i < 0 ? -1 : idxLF.indexOf("        if (profile) {\n", i); return e < 0 ? null : idxLF.slice(i + a.length, e); })();
   const UNDO_P = "if (typeof isNoConnectionError === \"function\" && isNoConnectionError(e)) { auth.bindUser(null); setAuthUser(null); }";
+  // (CS, 2026-10-26: the password path undoes on any error now — one line; P2–P5 re-anchored on it)
+  const UNDO_PW = "          auth.bindUser(null); setAuthUser(null); throw e;\n";
   const LINK_F = "<button onClick={()=>{setBiometricPending(false);setAuthError(\"\");}} disabled={authBusy}\n";
   const CI_MUTANTS = [
     { id: "R0", file: "cfg", what: "main's _refresh, whole: every failed refresh — no answer, a 5xx, a 429 — clears the stored session (the bug)", from: CUR_REFRESH, to: MAIN_REFRESH },
@@ -4777,13 +4787,15 @@ await (async () => {
     { id: "M4", file: "idx", what: "(F2, 2nd review) the mount: no note (a plain sign-in card over a kept session)", from: UNDO_M, to: "\n              auth.bindUser(null); setAuthUser(null);\n              setAuthLoading(false);\n              return;\n" },
     { id: "M5", file: "idx", what: "(F2, 2nd review) the mount: loading never ends", from: UNDO_M, to: "\n              auth.bindUser(null); setAuthUser(null);\n              setAuthNetErr(true);\n              return;\n" },
     { id: "M6", file: "idx", what: "(F2, 2nd review) the mount: no return (falls through to the profile screen and the reload)", from: UNDO_M, to: "\n              auth.bindUser(null); setAuthUser(null);\n              setAuthNetErr(true);\n              setAuthLoading(false);\n" },
-    { id: "M7", file: "idx", what: "(F2, 2nd review) the mount: every profile-read error taken as no signal", from: "\n              " + GUARD_B + "\n", to: "\n" },
-    { id: "M8", file: "idx", what: "(F2, 2nd review) the mount: the helper called bare (an old cached helpers.js)", from: "\n              " + GUARD_B, to: "\n              if (!isNoConnectionError(e)) throw e;" },
+    // (CS, 2026-10-26: the mount's catch no longer throws — it logs a non-network error and undoes; M7 / M8 re-anchored, M9 added)
+    { id: "M7", file: "idx", what: "(F2, 2nd review) the mount: every profile-read error taken as no signal (a code error not logged)", from: "\n              " + LOG_M + "\n", to: "\n" },
+    { id: "M8", file: "idx", what: "(F2, 2nd review) the mount: the helper called bare (an old cached helpers.js)", from: "\n              " + LOG_M, to: "\n              if (!isNoConnectionError(e)) console.error(\"Auth check error:\", e);" },
+    { id: "M9", file: "idx", what: "(CS) the mount: any other profile-read error thrown on again (10/20's code: the tab left bound with no profile)", from: "\n              " + LOG_M, to: "\n              " + GUARD_B },
     { id: "P1", file: "idx", what: "(F3) main's password-path profile read, unguarded (signed in with no profile offline)", from: PW_TRY, to: "        const profile = await dbAuth.getProfile(user.id);\n" },
-    { id: "P2", file: "idx", what: "(F3) every profile-read error undone (a code error signs nobody in)", from: UNDO_P, to: "{ auth.bindUser(null); setAuthUser(null); }" },
-    { id: "P3", file: "idx", what: "(F3) undone but not thrown on (no words; the profile screen)", from: UNDO_P + "\n          throw e;\n", to: UNDO_P + "\n" },
-    { id: "P4", file: "idx", what: "(F3) only the user undone — the tab left bound", from: UNDO_P, to: "if (typeof isNoConnectionError === \"function\" && isNoConnectionError(e)) { setAuthUser(null); }" },
-    { id: "P5", file: "idx", what: "(F3) the helper called bare (an old cached helpers.js)", from: UNDO_P, to: "if (isNoConnectionError(e)) { auth.bindUser(null); setAuthUser(null); }" },
+    { id: "P2", file: "idx", what: "(CS) only a no-signal profile-read error undone again (10/20's: a code error signs in with no profile)", from: UNDO_PW, to: "          " + UNDO_P + "\n          throw e;\n" },
+    { id: "P3", file: "idx", what: "(F3) undone but not thrown on (no words; the profile screen)", from: UNDO_PW, to: "          auth.bindUser(null); setAuthUser(null);\n" },
+    { id: "P4", file: "idx", what: "(F3) only the user undone — the tab left bound", from: UNDO_PW, to: "          setAuthUser(null); throw e;\n" },
+    { id: "P5", file: "idx", what: "(F3) the helper called bare (an old cached helpers.js)", from: UNDO_PW, to: "          if (isNoConnectionError(e)) { auth.bindUser(null); setAuthUser(null); }\n          throw e;\n" },
     { id: "L1", file: "idx", what: "(F1) \"Use email & password instead\" live while a tap is verified", from: LINK_F, to: "<button onClick={()=>{setBiometricPending(false);setAuthError(\"\");}}\n" },
     { id: "L2", file: "idx", what: "(F1) \"Use email & password instead\" disabled the wrong way round", from: LINK_F, to: "<button onClick={()=>{setBiometricPending(false);setAuthError(\"\");}} disabled={!authBusy}\n" },
     { id: "T1", file: "idx", what: "a timer re-runs getUser", from: "  // Biometric unlock handler\n", to: "  useEffect(() => { const t = setInterval(() => auth.getUser(), 30000); return () => clearInterval(t); }, []);\n  // Biometric unlock handler\n" },
@@ -5264,8 +5276,10 @@ await (async () => {
 // ─── CN. Face ID never sticks on "Verifying…": any error from its profile read is undone and said (2026-10-25) ───
 // CI4 fixed the no-signal case: the profile read after getUser threw "Load failed" and the Unlock button stayed on
 // "Verifying…" for good. Any OTHER error still did — thrown on, out of handleBiometricUnlock (an onClick: nothing
-// catches it), busy never set back: a Wi-Fi sign-in page answering the read with 200 (res.json() throws a
-// SyntaxError), a code error, and every error at all on an old cached helpers.js (no isNoConnectionError). Now any
+// catches it), busy never set back: a body that dropped mid-read (Chrome's "network error", which
+// isNoConnectionError doesn't name), a reply that isn't JSON (res.json() throws a SyntaxError), a code error, and
+// every error at all on an old cached helpers.js (no isNoConnectionError). (2026-10-26: over https a Wi-Fi sign-in
+// page can't answer for the server — the fetch itself fails, so that reads as no signal.) Now any
 // error from that read undoes the half-done unlock the same way (no user, the tab unbound, the stored session left
 // alone) and says so: the no-signal line for no signal, otherwise "Couldn't load your profile — tap Unlock to try
 // again, or use email & password." The REAL handleBiometricUnlock (sliced, run in a fresh context: a new free name
@@ -5310,7 +5324,7 @@ await (async () => {
   const others = {};
   for (const [k, err] of [["notJson", new SyntaxError("Unexpected token '<', \"<html>\" is not valid JSON")], ["codeError", new TypeError("Cannot read properties of undefined (reading 'person_id')")], ["aString", "boom"], ["nothing", undefined]])
     others[k] = await tap({ throws: err });
-  check("CN1 Face ID, getUser answered, then the profile read fails with something other than no signal — a reply that isn't JSON (a Wi-Fi sign-in page), a code error, a string, nothing: no throw (it was thrown on, \"Verifying…\" for good), busy back to false, the half-done unlock undone (no user, the tab unbound), \"" + PROFILE + "\", the Face ID screen kept; no profile, no reload",
+  check("CN1 Face ID, getUser answered, then the profile read fails with something other than no signal — a reply that isn't JSON, a code error, a string, nothing: no throw (it was thrown on, \"Verifying…\" for good), busy back to false, the half-done unlock undone (no user, the tab unbound), \"" + PROFILE + "\", the Face ID screen kept; no profile, no reload",
     Object.values(others).every((x) => fine(x, PROFILE)), J(others));
 
   // CN2 — an old cached helpers.js
@@ -5327,6 +5341,63 @@ await (async () => {
     ns.every((x) => fine(x, NET_FACE)) && fine(Object.assign({}, first, { st: after1 }), PROFILE) && !!second && J(second.log) === SIGNED_IN && second.threw === null && st.bound === "u-cn" && st.pending === false && st.busy === false,
     J({ ns, first: first.log, after1, second: second && second.log }));
 })().catch(ex => check("CN harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
+
+// ─── CS. Opening the app never leaves it signed in with no profile (2026-10-26) ───
+// The app-open auto-login (a stored session, no Face ID) reads the profile after getUser answers. CI3g undid a
+// no-signal failure there (the "you're still signed in" note, Retry); ANY OTHER error — a body that dropped mid-read
+// (Chrome's "network error", which isNoConnectionError doesn't name), a reply that isn't JSON (res.json() throws), a
+// code error, or any error at all on an old cached helpers.js — was thrown on to the effect's catch, which logged it
+// and ended loading with the tab BOUND to the account, authUser set and no profile. The password sign-in's profile read
+// had the same twin (CI4f): it is undone there too, the card's own words as before.
+// Now every error is undone the same way (nothing bound, no user, the stored session kept) and gets the note; one that
+// isn't no signal is still logged as the catch logged it. The REAL mount effect (sliced, run in a fresh context: a new
+// free name throws) on a stubbed auth and profile read:
+//   CS1 a reply that isn't JSON, a code error, a rejection that isn't an Error (a string, nothing): logged once, then
+//       undone — unbound, the user null again — the note, loading ends; no profile, no reload, no "create a profile"
+//   CS2 an old cached helpers.js (no isNoConnectionError): no signal and a code error alike — logged, undone, the note
+//   CS3 no signal is as before (CI3g): undone, the note, nothing logged; a profile that reads signs in as before
+//   the section runs inside its own catch (a throw fails one named check, never the run)
+console.log("\nCS. Opening the app never leaves it signed in with no profile");
+await (async () => {
+  const J = JSON.stringify;
+  const nsrcCS = src.replace(/\r\n/g, "\n"), MA = "  // ─── Auth: Check session on mount ───\n  useEffect(", ma = nsrcCS.indexOf(MA), mb = ma < 0 || nsrcCS.indexOf(MA, ma + 1) !== -1 ? -1 : nsrcCS.indexOf("\n  }, []);\n", ma);
+  const NAMES = "isPublicMode, setAuthLoading, window, URLSearchParams, auth, setAuthMode, biometric, setBiometricAvail, setBiometricReason, setBiometricEnrolled, setBiometricPending, dbAuth, setAuthUser, setUserProfile, setMySurgeon, setNeedsProfile, setReloadTrigger, setAuthNetErr, console, isNoConnectionError";
+  const mountF = (() => { try { return mb > ma && ma > 0 ? vm.runInContext(`(function (env) { const { ${NAMES} } = env; return (${nsrcCS.slice(ma + MA.length, mb)}\n  }); })`, vm.createContext({})) : null; } catch (ex) { return null; } })();
+  const nceCS = vm.runInContext("typeof isNoConnectionError === 'function' ? isNoConnectionError : undefined", sandbox);
+  if (!mountF || !nceCS) { check("CS the mount effect is extractable and compiles in a fresh context", false, J({ mount: !!mountF, helper: !!nceCS })); return; }
+  const U = { id: "u-cs", email: "cs@dsg.test" };
+  const open = async (o = {}) => {
+    const log = [], st = { bound: null, loading: true };
+    const env = { isPublicMode: false, URLSearchParams, isNoConnectionError: o.oldHelpers ? undefined : nceCS,
+      window: { location: { hash: "", pathname: "/", search: "" }, history: { replaceState: () => log.push("replaceState") } },
+      auth: { getSession: () => ({ access_token: "TOK", refresh_token: "REF" }), getUser: async () => ({ user: U }), bindUser: (id) => { st.bound = id || null; } },
+      biometric: { isAvailable: async () => ({ available: false, reason: "" }), isEnrolled: () => false },
+      dbAuth: { getProfile: async (id) => { log.push("getProfile:" + id); if ("throws" in o) throw o.throws; return { person_id: "s6", display_name: "FAK", role: "scheduler" }; } },
+      setAuthLoading: (v) => { st.loading = v; log.push("authLoading:" + v); }, setAuthMode: (v) => log.push("authMode:" + v), setBiometricAvail: () => {}, setBiometricReason: () => {}, setBiometricEnrolled: () => {},
+      setBiometricPending: (v) => log.push("biometricPending:" + v), setAuthUser: (u) => log.push("authUser:" + (u ? u.id : null)), setUserProfile: () => log.push("profile"), setMySurgeon: () => {},
+      setNeedsProfile: (v) => log.push("needsProfile:" + v), setReloadTrigger: () => log.push("reloadTrigger"), setAuthNetErr: (v) => log.push("authNetErr:" + v),
+      console: { error: (...a) => log.push("console.error:" + a.map(String).join(" ").slice(0, 100)), warn() {}, log() {}, info() {} } };
+    try { mountF(env)(); } catch (ex) { log.push("threw " + String(ex).slice(0, 100)); }
+    for (let i = 0; i < 200 && st.loading; i++) await new Promise((r) => setTimeout(r, 0));
+    return { log, st };
+  };
+  const UNDONE = (err) => J(["authUser:u-cs", "getProfile:u-cs", ...(err === null ? [] : ["console.error:" + ("Auth check error: " + String(err)).slice(0, 100)]), "authUser:null", "authNetErr:true", "authLoading:false"]);
+  const ok1 = (x, err) => J(x.log) === UNDONE(err) && x.st.bound === null && x.st.loading === false;
+
+  // CS1 — not no signal
+  const E1 = [["notJson", new SyntaxError("Unexpected token '<', \"<html>\" is not valid JSON")], ["codeError", new TypeError("Cannot read properties of undefined (reading 'person_id')")], ["aString", "boom"], ["nothing", undefined]];
+  const r1 = {}; for (const [k, err] of E1) r1[k] = await open({ throws: err });
+  check("CS1 the REAL app-open auto-login, getUser answered, then the profile read fails with something other than no signal — a reply that isn't JSON, a code error, a string, nothing: logged once (\"Auth check error: …\", as the effect's catch logged it), then undone — nothing bound, the user null again — the \"still signed in\" note, loading ends; no profile, no reload, no profile-setup screen (it was left bound with no profile)",
+    E1.every(([k, err]) => ok1(r1[k], err)), J(r1));
+  // CS2 — an old cached helpers.js
+  const r2 = { noSignal: await open({ throws: new TypeError("Load failed"), oldHelpers: true }), codeError: await open({ throws: new TypeError("x is not a function"), oldHelpers: true }) };
+  check("CS2 …with an OLD cached helpers.js (no isNoConnectionError): no signal and a code error alike — logged, undone, the note (never a ReferenceError from the helper)",
+    ok1(r2.noSignal, new TypeError("Load failed")) && ok1(r2.codeError, new TypeError("x is not a function")), J(r2));
+  // CS3 — no signal and a good read, as before
+  const r3 = { loadFailed: await open({ throws: new TypeError("Load failed") }), fetchFailed: await open({ throws: new TypeError("Failed to fetch") }), good: await open({}) };
+  check("CS3 no signal is as before (CI3g): undone, the note, nothing logged; a profile that reads signs in as before (bound, the profile, the data reload)",
+    ok1(r3.loadFailed, null) && ok1(r3.fetchFailed, null) && J(r3.good.log) === J(["authUser:u-cs", "getProfile:u-cs", "profile", "reloadTrigger", "authLoading:false"]) && r3.good.st.bound === "u-cs", J(r3));
+})().catch(ex => check("CS harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
 
 // ─── BG. Sign-in: iPhone autofill hints, plain network errors, no stuck "Sending…" offline (UX audit 2026-10-19) ───
 // The sign-in, sign-up and reset forms gave the iPhone no autofill hints (its saved passwords and account
