@@ -12083,7 +12083,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             });
             // The My Shifts list shows only shifts not yet done, and offers Find Swap only before a
             // shift starts (the helper owns both rules). The full list stays for the Next call card.
-            const myShiftsView = mineUpcoming(myShifts, myToday);
+            // The clock ("HH:MM") is for a service week whose Saturday 24h runs to Sun 7a (2026-10-25).
+            const myShiftsView = mineUpcoming(myShifts, myToday, new Date().toTimeString().slice(0, 5));
             // An APP (UX audit 2026-10-19; two of the seven users) holds no surgeon shift: their Mine shows
             // their APP call days (appShifts, the Calendar's source) in place of the surgeon Next call card
             // and My Shifts. Guarded like the dates below, against an old cached helpers.js.

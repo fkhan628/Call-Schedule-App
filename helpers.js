@@ -38,7 +38,8 @@ function shiftStartDate(mondayStr, shiftKey) {
 // Last day of a shift, the partner of shiftStartDate (Mine tab, 2026-09-25):
 // a Mon–Thu night ends on its own date; the service week, the weekend and an
 // OFF week (null key) run to the week's Sunday. Same rule as the Next call
-// card. A role is DONE once this date is before today.
+// card. A role is DONE once this date is before today — but My Shifts ends a
+// service week with its last held day (mineUpcoming, 2026-10-25).
 function shiftLastDay(mondayStr, shiftKey) {
   return NIGHT_KEYS.includes(shiftKey) ? shiftStartDate(mondayStr, shiftKey) : fmt(addD(parse(mondayStr), 6));
 }
@@ -50,14 +51,28 @@ function shiftLastDay(mondayStr, shiftKey) {
 // drop out. Returns new objects and never touches its input (the Next call
 // card reads the unfiltered list). todayStr is passed in, so there is no clock
 // here and the harness can pin the date.
-function mineUpcoming(myShifts, todayStr) {
+// A service week ends with the last day its surgeon holds (2026-10-25) — the
+// held list's last day, or its Saturday with no list: the Next call card's
+// rule (owner decision 2026-10-20: it reads Mon–Sat). It was kept to the
+// week's Sunday, so it said "in progress" all that Sunday for a call that had
+// ended. A Saturday's 24h runs to Sun 7a, so on that Sunday it stays until
+// 7:00 — nowTime ("HH:MM", the device's clock, passed in like todayStr) says
+// which side of it we are; without one (an old caller), all that Sunday.
+function mineUpcoming(myShifts, todayStr, nowTime) {
+  const beforeSeven = typeof nowTime !== "string" || nowTime < "07:00";
+  const keeps = (mStr, r) => {
+    // A role with a date (a holiday 24h or a single service day, 2026-10-02)
+    // ends on that date and never offers a swap.
+    if (r.date) return r.date >= todayStr;
+    if (r.shiftKey !== "dayCall") return shiftLastDay(mStr, r.shiftKey) >= todayStr;
+    const last = r.held && r.held.length ? r.held[r.held.length - 1] : fmt(addD(parse(mStr), 5));
+    return last >= todayStr || (parse(last).getDay() === 6 && fmt(addD(parse(last), 1)) === todayStr && beforeSeven);
+  };
   return myShifts
     .map(w => ({
       ...w,
-      // A role with a date (a holiday 24h or a single service day, 2026-10-02)
-      // ends on that date and never offers a swap; every other role is as before.
       roles: w.roles
-        .filter(r => (r.date || shiftLastDay(w.mStr, r.shiftKey)) >= todayStr)
+        .filter(r => keeps(w.mStr, r))
         .map(r => ({ ...r, canSwap: !r.date && !!r.shiftKey && shiftStartDate(w.mStr, r.shiftKey) >= todayStr })),
     }))
     .filter(w => w.roles.length > 0);

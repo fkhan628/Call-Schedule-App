@@ -6410,7 +6410,7 @@ console.log("\nBI. Manual Adjustments weeks, dark mode title + secondary buttons
     && ["type", "icon", "detail", "color", "shiftKey"].every((f) => w0.roles[0][f] === src25.roles[2][f]), JSON.stringify(w0));
 
   check("U4 My Shifts renders mineUpcoming's output; the unfiltered map is gone",
-    count("const myShiftsView = mineUpcoming(myShifts, myToday);") === 1 && count("{myShiftsView.map(wk => (") === 1 && count("{myShifts.map(wk => (") === 0);
+    count("const myShiftsView = mineUpcoming(myShifts, myToday, new Date().toTimeString().slice(0, 5));") === 1 && count("{myShiftsView.map(wk => (") === 1 && count("{myShifts.map(wk => (") === 0);
   check("U4 Find Swap renders only when canSwap; a started role shows the in-progress tag instead",
     count("{r.canSwap ? (") === 1 && count("findSwapSuggestions(wk.mStr, r.shiftKey, myId); setView(\"calendar\");") === 1 && count(") : r.shiftKey ? (") === 1 && count(">in progress</span>") === 1);
   {
@@ -7290,7 +7290,7 @@ console.log("\nAO. On Call Today banner on a covered holiday");
     JSON.stringify(fullRPC));
 
   // X3 — the Mine roles from the REAL builder (sliced) + mineUpcoming
-  const MA = "            const myShifts = [];", MB = "            const myShiftsView = mineUpcoming(myShifts, myToday);";
+  const MA = "            const myShifts = [];", MB = "            const myShiftsView = mineUpcoming(myShifts, myToday, new Date().toTimeString().slice(0, 5));";
   const ma = src.indexOf(MA), mb = ma < 0 ? -1 : src.indexOf(MB, ma);
   const ha = src.indexOf("const holidayEmoji = (label) => {"), hb = ha < 0 ? -1 : src.indexOf("\n  };", ha);
   const holidayEmoji = ha > 0 && hb > 0 ? vm.runInContext(`(function () { ${src.slice(ha, hb + 4)}\n return holidayEmoji; })()`, sandbox) : null;
@@ -8767,7 +8767,7 @@ await (async () => {
   // _whenTxt (sliced, as X8 does); the card's date line, as the page writes it (twice: {_range(e)} since the review
   // fixes — the runs, PH-6). The builder now also reads the clock (_now: a Saturday's 24h ends Sun 7a — NC-1 / F3);
   // `at` below is that clock, the day's midnight unless a check gives an hour.
-  const MA = "            const myShifts = [];", MB = "            const myShiftsView = mineUpcoming(myShifts, myToday);";
+  const MA = "            const myShifts = [];", MB = "            const myShiftsView = mineUpcoming(myShifts, myToday, new Date().toTimeString().slice(0, 5));";
   const ma = src.indexOf(MA), mb = ma < 0 ? -1 : src.indexOf(MB, ma);
   const ha = src.indexOf("const holidayEmoji = (label) => {"), hb = ha < 0 ? -1 : src.indexOf("\n  };", ha);
   const NA = "            const _nextUp = [];", NB = "_nextUp.sort((a, b) => a.start - b.start);";
@@ -8966,14 +8966,16 @@ await (async () => {
       if (!r.shiftKey && !r.date) continue; // OFF: never on the card
       const one = [{ ...w, roles: [r] }], onCard = raw(cardB, one, today).length === 1, onMine = upFn(JSON.parse(J(one)), today).length === 1;
       if (onCard) cb5In++; else cb5Out++;
-      // (review fix 2026-10-20, on purpose — CF7: a service week whose last held day is a weekday leaves the card the day after it)
+      // (review fix 2026-10-20 — CF7: a service week whose last held day is a weekday leaves the card the day after it.
+      // My Shifts kept it to the week's Sunday — the one exception this check allowed — until CL (2026-10-25, on purpose):
+      // it now ends there too, so no exception is left: `early` must never be true)
       const early = onMine && endedEarly(r, today);
       if (early) cb5Early++;
-      if (onCard !== (onMine && !early)) cb5Bad.push(`${s.name} ${w.mStr} ${r.type} on ${today}: card ${onCard}, My Shifts ${onMine}`);
+      if (onCard !== onMine) cb5Bad.push(`${s.name} ${w.mStr} ${r.type} on ${today}: card ${onCard}, My Shifts ${onMine}`);
     }
   }
-  check(`CF5 every role of every surgeon on the synthetic weeks is on the card exactly while My Shifts (mineUpcoming) keeps it — but a service week whose last held day is a weekday, gone the day after it (CF7) — every day 10/25–12/6 at midnight (${cb5In} on, ${cb5Out} off, ${cb5Early} ended early)`,
-    READY && !!upFn && cb5Bad.length === 0 && cb5In >= 200 && cb5Out >= 200 && cb5Early >= 2, NOT_READY || cb5Bad.slice(0, 3).join(" | ") || J({ cb5In, cb5Out, cb5Early }));
+  check(`CF5 every role of every surgeon on the synthetic weeks is on the card exactly while My Shifts (mineUpcoming) keeps it — a service week whose last held day is a weekday gone from both the day after it (CF7; My Shifts since CL) — every day 10/25–12/6 at midnight (${cb5In} on, ${cb5Out} off, ${cb5Early} kept by My Shifts past their end)`,
+    READY && !!upFn && cb5Bad.length === 0 && cb5In >= 200 && cb5Out >= 200 && cb5Early === 0, NOT_READY || cb5Bad.slice(0, 3).join(" | ") || J({ cb5In, cb5Out, cb5Early }));
 
   // CF7 — a service week leaves the card when its held shifts end (review fix 2026-10-20 — NC-1; PH-7 / F3)
   const X27 = { // Christmas 2027 (the finding's own case): Fri 12/24 + Sat 12/25 are the holiday pair's — s1 holds Mon–Thu; his next call is the Tue night 12/28
@@ -9026,6 +9028,89 @@ await (async () => {
         && Array.isArray(out.monday) && !out.monday.some((x) => x.startsWith("dayCall 2026-10-26")) && has(out.wknd, "wknd 2026-10-30 2026-11-01 true 10 in 10 days")
         && has(out.wkndSun700, "wknd 2026-10-30 2026-11-01 true -2 in progress"),
       NOT_READY || J(out).slice(0, 600));
+  }
+
+  // ─── CL. My Shifts ends a service week where the Next call card does (2026-10-25) ───
+  // CF7 took a service week off the card when its held shifts end — Sun 7a for one held through its Saturday (that
+  // day's 24h runs to Sun 7a), the day after its last held day otherwise — but My Shifts (helpers.js mineUpcoming)
+  // kept it to the week's Sunday: its row said "in progress" all that Sunday, and all of Saturday and Sunday for one
+  // whose Saturday was someone else's. mineUpcoming now ends it on the card's day, and takes the device's clock
+  // ("HH:MM", a third argument) for the Sun 7a edge; without one (an old cached index.html) that Sunday is kept all
+  // day, as before. Here, on CF's slices (the REAL Mine builder, the REAL card builder) and the REAL helpers.js:
+  //   CL1 worked examples (the row's state: "swap" = Find Swap, "in progress" = started, "dated", or not listed): a whole
+  //       week (s1, 11/2) in progress on Sat 11/7 and Sun 11/8 until 06:59, gone from 07:00 (its weekend, s6, still
+  //       listed that Sunday); no clock → kept that Sunday, as before; gone Mon 11/9; one whose Saturday is someone
+  //       else's (s3, 11/9) in progress on Fri 11/13 23:59, gone Sat 11/14 (s4's dated Service Day listed that day); one
+  //       held on its Saturday only (s5, 11/21) and Thanksgiving's (s1, 11/23–11/28, its last run the Saturday) kept to
+  //       Sun 06:59, gone at 07:00; a role with no held list ends with its Saturday; a night, an OFF week and a dated
+  //       holiday 24h exactly as before
+  //   CL2 every role of every surgeon, every day 10/25–12/6 of the synthetic weeks and the 10 days around each of the 46
+  //       live weeks, at 00:00, 06:59, 07:00, 12:00 and 23:59: listed in My Shifts exactly while it is on the card
+  //   CL3 the page hands My Shifts the device's clock as "HH:MM" (the REAL line — toTimeString's first five
+  //       characters, zero-padded); its rows and their "in progress" tag still come from mineUpcoming's output
+  {
+    const up = (shifts, today, at) => (upFn ? upFn(JSON.parse(J(shifts)), today, at) : null);
+    // a role's row in My Shifts on `today` at `at`: "swap" (Find Swap), "in progress", "dated" (a holiday / single day:
+    // no tag), "off" — or null when it isn't listed. key: the role's shiftKey, its date, or "OFF"
+    const rowState = (shifts, mStr, key, today, at) => {
+      const v = up(shifts, today, at); if (!Array.isArray(v)) return "no helper";
+      const w = v.find((x) => x.mStr === mStr), r = w && w.roles.find((x) => (key === "OFF" ? !x.shiftKey && !x.date : x.shiftKey === key || x.date === key));
+      return !r ? null : r.date ? "dated" : !r.shiftKey ? "off" : r.canSwap ? "swap" : "in progress";
+    };
+    const row = (sid, mStr, key, today, at) => (READY ? rowState(mineB(SYN, sid), mStr, key, today, at) : "not ready");
+    const OFFW = { "2026-11-02": { dayCall: "s1", off: "s7", nights: { mon: "s2", tue: "s3", wed: "s4", thu: "s5", wknd: "s6" } } };
+    const noHeldShifts = [{ mStr: "2026-11-02", roles: [{ type: "Service Week (incl. Sat)", shiftKey: "dayCall" }] }];
+    const l1 = READY ? {
+      fullFri: row("s1", "2026-11-02", "dayCall", "2026-10-30", "12:00"), fullSat: row("s1", "2026-11-02", "dayCall", "2026-11-07", "23:59"),
+      fullSun0: row("s1", "2026-11-02", "dayCall", "2026-11-08", "00:00"), fullSun659: row("s1", "2026-11-02", "dayCall", "2026-11-08", "06:59"),
+      fullSun700: row("s1", "2026-11-02", "dayCall", "2026-11-08", "07:00"), fullSun23: row("s1", "2026-11-02", "dayCall", "2026-11-08", "23:59"),
+      fullSunNoClock: row("s1", "2026-11-02", "dayCall", "2026-11-08"), fullMon: row("s1", "2026-11-02", "dayCall", "2026-11-09", "00:00"),
+      wkndSun700: row("s6", "2026-11-02", "wknd", "2026-11-08", "07:00"), wkndMon: row("s6", "2026-11-02", "wknd", "2026-11-09", "00:00"),
+      satOtherFri: row("s3", "2026-11-09", "dayCall", "2026-11-13", "23:59"), satOtherSat: row("s3", "2026-11-09", "dayCall", "2026-11-14", "00:00"),
+      satOtherSun: row("s3", "2026-11-09", "dayCall", "2026-11-15", "06:59"), satDay: row("s4", "2026-11-09", "2026-11-14", "2026-11-14", "12:00"),
+      satOnlySat: row("s5", "2026-11-16", "dayCall", "2026-11-21", "12:00"), satOnly659: row("s5", "2026-11-16", "dayCall", "2026-11-22", "06:59"), satOnly700: row("s5", "2026-11-16", "dayCall", "2026-11-22", "07:00"),
+      thanksSun659: row("s1", "2026-11-23", "dayCall", "2026-11-29", "06:59"), thanksSun700: row("s1", "2026-11-23", "dayCall", "2026-11-29", "07:00"),
+      thanks24: row("s1", "2026-11-23", "2026-11-26", "2026-11-26", "12:00"), thanks24After: row("s1", "2026-11-23", "2026-11-26", "2026-11-27", "00:00"),
+      noHeldSun659: rowState(noHeldShifts, "2026-11-02", "dayCall", "2026-11-08", "06:59"), noHeldSun700: rowState(noHeldShifts, "2026-11-02", "dayCall", "2026-11-08", "07:00"),
+      night: row("s2", "2026-11-02", "mon", "2026-11-02", "23:59"), nightAfter: row("s2", "2026-11-02", "mon", "2026-11-03", "00:00"),
+      offSun: rowState(mineB(OFFW, "s7"), "2026-11-02", "OFF", "2026-11-08", "23:59"), offMon: rowState(mineB(OFFW, "s7"), "2026-11-02", "OFF", "2026-11-09", "00:00"),
+    } : null;
+    check("CL1 My Shifts (the REAL mineUpcoming on the REAL Mine roles): a whole service week is in progress Sat 11/7 and Sun 11/8 until 06:59, gone from 07:00 (it said \"in progress\" all Sunday) — its weekend still listed then; no clock given (an old caller) → kept that Sunday as before; gone Monday; one whose Saturday is someone else's is gone that Saturday (s4's dated Service Day listed); one held on its Saturday only and Thanksgiving's are kept to Sun 06:59, gone at 07:00; a role with no held list ends with its Saturday; a night, an OFF week and a holiday 24h as before",
+      !!l1 && J(l1) === J({ fullFri: "swap", fullSat: "in progress", fullSun0: "in progress", fullSun659: "in progress", fullSun700: null, fullSun23: null, fullSunNoClock: "in progress", fullMon: null,
+        wkndSun700: "in progress", wkndMon: null, satOtherFri: "in progress", satOtherSat: null, satOtherSun: null, satDay: "dated",
+        satOnlySat: "in progress", satOnly659: "in progress", satOnly700: null, thanksSun659: "in progress", thanksSun700: null, thanks24: "dated", thanks24After: null,
+        noHeldSun659: "in progress", noHeldSun700: null, night: "swap", nightAfter: null, offSun: "off", offMon: null }),
+      NOT_READY || J(l1));
+
+    // CL2 — the list and the card agree at every hour that matters
+    const TIMES = ["00:00", "06:59", "07:00", "12:00", "23:59"];
+    const l2Bad = []; let l2On = 0, l2Off = 0;
+    const agree = (who, shifts, w, r, today) => {
+      for (const at of TIMES) {
+        const one = [{ ...w, roles: [r] }], onCard = raw(cardB, one, today, at).length === 1, onMine = up(one, today, at).length === 1;
+        if (onCard) l2On++; else l2Off++;
+        if (onCard !== onMine) l2Bad.push(`${who} ${w.mStr} ${r.type} on ${today} ${at}: card ${onCard}, My Shifts ${onMine}`);
+      }
+    };
+    if (READY && upFn) for (const s of SURG) {
+      const syn = mineB(SYN, s.id);
+      for (let today = "2026-10-25"; today <= "2026-12-06"; today = nextDay(today)) for (const w of syn) for (const r of w.roles) if (r.shiftKey || r.date) agree(s.name, syn, w, r, today);
+      const live = mineB(LIVE, s.id);
+      for (const w of live) for (const r of w.roles) {
+        if (!r.shiftKey && !r.date) continue;
+        for (let today = fmtD(addDs(P(w.mStr), -1)), i = 0; i < 10; i++, today = nextDay(today)) agree(s.name + " (live)", live, w, r, today);
+      }
+    }
+    check(`CL2 every role of every surgeon — the synthetic weeks every day 10/25–12/6, and the 10 days around each of the 46 live weeks — at 00:00, 06:59, 07:00, 12:00 and 23:59: listed in My Shifts exactly while it is on the Next call card (${l2On} on, ${l2Off} off)`,
+      READY && !!upFn && l2Bad.length === 0 && l2On >= 2000 && l2Off >= 2000, NOT_READY || l2Bad.slice(0, 3).join(" | ") || J({ l2On, l2Off }));
+
+    // CL3 — the page's line
+    const LINE_CL = "            const myShiftsView = mineUpcoming(myShifts, myToday, new Date().toTimeString().slice(0, 5));";
+    const hm = new Date(2026, 10, 8, 6, 59).toTimeString().slice(0, 5), hm7 = new Date(2026, 10, 8, 7, 0).toTimeString().slice(0, 5);
+    check("CL3 My Shifts is handed the device's clock: the REAL line passes toTimeString's first five characters (\"06:59\", \"07:00\" — zero-padded HH:MM, as mineUpcoming compares them); the rows still come from its output, the \"in progress\" tag on a started role",
+      count(LINE_CL.trim()) === 1 && count("mineUpcoming(") === 1 && hm === "06:59" && hm7 === "07:00" && count("{myShiftsView.map(wk => (") === 1
+        && count(") : r.shiftKey ? (\r\n                          <span style={{marginLeft:\"auto\",background:\"#e8f5ec\",border:\"1px solid #b0d8bc\",color:\"#1a8040\",borderRadius:5,padding:\"2px 8px\",fontSize:10,fontWeight:600,fontFamily:font}}>in progress</span>") + count(") : r.shiftKey ? (\n                          <span style={{marginLeft:\"auto\",background:\"#e8f5ec\",border:\"1px solid #b0d8bc\",color:\"#1a8040\",borderRadius:5,padding:\"2px 8px\",fontSize:10,fontWeight:600,fontFamily:font}}>in progress</span>") === 1,
+      J({ line: count(LINE_CL.trim()), calls: count("mineUpcoming("), hm, hm7 }));
   }
 })().catch(ex => check("CF harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
 
@@ -9147,7 +9232,7 @@ console.log("\nAU. Mine: readable dates, Published through, empty states by role
   // AU2 — the REAL Mine builder's roles (sliced, as X3 does)
   const SURG = ["DJA", "MCC", "RPC", "KJH", "REH", "FAK", "ARW"].map((name, i) => ({ id: "s" + (i + 1), name }));
   const nameOf = (id) => (SURG.find((s) => s.id === id) || {}).name || id || "?";
-  const MA = "            const myShifts = [];", MB = "            const myShiftsView = mineUpcoming(myShifts, myToday);";
+  const MA = "            const myShifts = [];", MB = "            const myShiftsView = mineUpcoming(myShifts, myToday, new Date().toTimeString().slice(0, 5));";
   const ma = src.indexOf(MA), mb = ma < 0 ? -1 : src.indexOf(MB, ma);
   const ha = src.indexOf("const holidayEmoji = (label) => {"), hb = ha < 0 ? -1 : src.indexOf("\n  };", ha);
   let mineRun = null;
@@ -13257,7 +13342,7 @@ console.log("\nAZ. Mine works for an APP");
     USES.every((u) => cardSrc.split(u).length === 2) && count("const [showAllMyApp, setShowAllMyApp] = useState(false);") === 1, USES.filter((u) => cardSrc.split(u).length !== 2).join(" | "));
 
   // AZ4 — source order and gates
-  const MBz = "            const myShiftsView = mineUpcoming(myShifts, myToday);";
+  const MBz = "            const myShiftsView = mineUpcoming(myShifts, myToday, new Date().toTimeString().slice(0, 5));";
   const iX3 = nsrcZ.indexOf(MBz), iApp = nsrcZ.indexOf("const mineApp = !!aMap[myId];"), iDays = nsrcZ.indexOf("appUpcoming(appShifts, myId, myToday)");
   const iChip = nsrcZ.indexOf("const mineDateChip = {"), iRet = iChip < 0 ? -1 : nsrcZ.indexOf("return (", iChip);
   const x3a = nsrcZ.indexOf("            const myShifts = [];"), x3slice = x3a >= 0 && iX3 > x3a ? nsrcZ.slice(x3a, iX3 + MBz.length) : "";
