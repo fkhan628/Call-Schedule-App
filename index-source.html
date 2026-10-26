@@ -11941,9 +11941,14 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 const tSp = sp(totalArr);
                 const tOk = tSp <= 7;
                 return <>
-                  <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10,padding:"8px 12px",background:tOk?"#e8f8e8":"#fef8e8",border:`1px solid ${tOk?"#b0d8b0":"#302810"}`,borderRadius:7}}>
+                  {/* Both modes (2026-10-26): the spread line's colours were dark mode's (#60e0a0 / #e0a060, a #302810
+                      border) on a light fill — 1.5:1 and 2.1:1 in light mode, and the pale fill stayed in dark mode
+                      (the dark sheet's hex rules never match React's rgb()). Light: dark text on the light fill; dark: the
+                      same light text on a dark fill. The lines below: their #50b070 / #b09040 read ~3:1 on the white
+                      card; darker in light mode, as they were in dark. */}
+                  <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10,padding:"8px 12px",background:dk?(tOk?"#1a2a1a":"#2a2820"):(tOk?"#e8f8e8":"#fef8e8"),border:`1px solid ${dk?(tOk?"#2a4a2a":"#4a4030"):(tOk?"#b0d8b0":"#e0c080")}`,borderRadius:7}}>
                     <span style={{fontSize:16}}>{tOk?"✅":"⚠️"}</span>
-                    <span style={{fontSize:13,fontWeight:700,color:tOk?"#60e0a0":"#e0a060"}}>
+                    <span style={{fontSize:13,fontWeight:700,color:dk?(tOk?"#60e0a0":"#e0a060"):(tOk?"#1a6030":"#8a5a10")}}>
                       Total Call Days (1yr): spread {tSp} (min {Math.min(...totalArr)}, max {Math.max(...totalArr)}) — {tOk?"Fair":"Review recommended"}
                     </span>
                   </div>
@@ -11959,7 +11964,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                     return (
                       <div key={label} style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
                         <span style={{fontSize:15}}>{ok?"✅":"⚠️"}</span>
-                        <span style={{fontSize:12,color:ok?"#50b070":"#b09040"}}>
+                        <span style={{fontSize:12,color:dk?(ok?"#50b070":"#b09040"):(ok?"#2a7a40":"#8a6a10")}}>
                           {label}: spread {s} (min {Math.min(...arr)}, max {Math.max(...arr)}) — {ok?"Fair":"Review"}
                         </span>
                       </div>

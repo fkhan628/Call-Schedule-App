@@ -6442,6 +6442,44 @@ console.log("\nCQ. Dark mode: Setup's group boxes are dark too");
     !!q2 && hitQ.length === 0, J({ hitQ }));
 }
 
+// ─── CT. Stats → Fairness Check reads in both modes (2026-10-26) ───
+// The card's spread line ("Total Call Days (1yr): spread …") used dark mode's colours in BOTH modes — #60e0a0 / #e0a060
+// text and a #302810 border on a light #e8f8e8 / #fef8e8 fill: 1.5:1 and 2.1:1 in light mode — and in dark mode the
+// fill stayed pale (the dark sheet's hex rules never match React's rgb()). The six lines under it (#50b070 / #b09040)
+// read ~3:1 on the white card. Now each is dark-aware: light → dark text (and a light border) on the light fill, the
+// lines darker; dark → the same light text on a dark fill, the lines as they were. The REAL style expressions, evaluated:
+//   CT1 light: the spread line on its own fill at 4.5:1+ for "Fair" and "Review recommended" (the fills unchanged), no
+//       dark border; the lines at 4.5:1+ on the white card
+//   CT2 dark: the spread line's fill is dark and its text (dark mode's own #60e0a0 / #e0a060) reads at 4.5:1+ on it; the
+//       lines, unchanged (#50b070 / #b09040), at 4.5:1+ on the dark card
+console.log("\nCT. Stats → Fairness Check reads in both modes");
+{
+  const nsrcCT = src.replace(/\r\n/g, "\n"), J = JSON.stringify;
+  const evT = (code, names) => { try { return vm.runInContext(`(function (${names}) { return (${code}); })`, vm.createContext({})); } catch (ex) { return null; } };
+  const boxM = nsrcCT.match(/<div style=\{(\{display:"flex",alignItems:"center",gap:8,marginBottom:10,padding:"8px 12px",background:[^\n]*\})\}>\n\s*<span style=\{\{fontSize:16\}\}>\{tOk\?"✅":"⚠️"\}<\/span>/);
+  const txtM = nsrcCT.match(/<span style=\{(\{fontSize:13,fontWeight:700,color:[^\n]*\})\}>\n\s*Total Call Days \(1yr\): spread/);
+  const lineM = nsrcCT.match(/<span style=\{(\{fontSize:12,color:[^\n]*\})\}>\n\s*\{label\}: spread/);
+  const boxF = boxM && evT(boxM[1], "dk, tOk"), txtF = txtM && evT(txtM[1], "dk, tOk"), lineF = lineM && evT(lineM[1], "dk, ok");
+  const cardLightT = (fs.readFileSync(path.join(ROOT, "app-styles.js"), "utf8").match(/\bcard: \{ background:"(#[0-9a-fA-F]{6})"/) || [])[1] || null;
+  // (as CG4 finds it: the rule's selectors joined back — an rgb() selector holds commas, which the parse splits on)
+  const sqT = (s) => String(s).replace(/\s+/g, "");
+  const whiteRule = DARK_SHEET.rules.find((r) => sqT(r.sels.join(",")).includes(sqT('div[style*="background: rgb(255, 255, 255)"]')) && /!important/.test(r.decl));
+  const cardDarkT = whiteRule ? ((whiteRule.decl.match(/(?:^|;)\s*background\s*:\s*(#[0-9a-fA-F]{6})/) || [])[1] || null) : null;
+  if (!boxF || !txtF || !lineF || !cardLightT || !cardDarkT) { check("CT the Fairness card's styles and the card fills are extractable", false, J({ box: !!boxF, txt: !!txtF, line: !!lineF, cardLightT, cardDarkT })); }
+  else {
+    const view = (dk, tOk) => { const b = boxF(dk, tOk), t = txtF(dk, tOk); return { fill: b.background, border: b.border, text: t.color, ratio: DARK_SHEET.cr(t.color, b.background) }; };
+    const lines = (dk) => [true, false].map((ok) => { const c = lineF(dk, ok).color; return { ok, color: c, ratio: DARK_SHEET.cr(c, dk ? cardDarkT : cardLightT) }; });
+    const L = { fair: view(false, true), review: view(false, false), lines: lines(false) }, D = { fair: view(true, true), review: view(true, false), lines: lines(true) };
+    check("CT1 light mode (the REAL styles, evaluated): the spread line reads at 4.5:1+ on its own fill for \"Fair\" and \"Review recommended\" (it was 1.5:1 and 2.1:1), the fills unchanged (#e8f8e8 / #fef8e8), no dark border (#302810); the six lines at 4.5:1+ on the white card (they were ~3:1)",
+      L.fair.fill === "#e8f8e8" && L.review.fill === "#fef8e8" && L.fair.ratio >= 4.5 && L.review.ratio >= 4.5 && ![L.fair.border, L.review.border].some((b) => /#302810/i.test(b)) && L.lines.every((x) => x.ratio >= 4.5),
+      J(L));
+    check("CT2 dark mode: the spread line's fill is dark (it stayed pale) and its text — dark mode's own #60e0a0 / #e0a060 — reads at 4.5:1+ on it; the six lines unchanged (#50b070 / #b09040) at 4.5:1+ on the dark card",
+      [D.fair, D.review].every((v) => DARK_SHEET.hex(v.fill) && DARK_SHEET.lum(v.fill) < 0.05 && v.ratio >= 4.5) && D.fair.text === "#60e0a0" && D.review.text === "#e0a060"
+        && J(D.lines.map((x) => x.color)) === J(["#50b070", "#b09040"]) && D.lines.every((x) => x.ratio >= 4.5),
+      J(D));
+  }
+}
+
 // ─── BC. Generate & Publish asks once; Stats → Billing opens on the newest months (UX audit 2026-10-19) ───
 // Generate & Publish ran on the tap and a publish pushes and emails everyone,
 // so one mis-tap published. Stats → Billing listed its months oldest first, so
