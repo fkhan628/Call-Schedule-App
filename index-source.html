@@ -465,10 +465,11 @@ function CallSchedule() {
 
   // ─── Undo History ───
   const [scheduleHistory, setScheduleHistory] = useState([]);
-  // How many publish steps ↩ Undo has taken back (2026-10-25): a publish that
-  // lands after its deadline raises its 📣 banner only if none was since —
-  // Undo is last-in-first-out, so one after the publish took it back
-  // (runPublish's late()).
+  // How many publish steps ↩ Undo has taken back (2026-10-25): a publish
+  // raises its 📣 banner (or sends Generate & Publish's notice) only if none
+  // was since its tap — Undo is last-in-first-out, so one after the publish
+  // took it back (runPublish's late() and its answer's undone; 2026-10-26,
+  // commitGenerated re-checks it when it reads the answer).
   const publishUndoneRef = useRef(0);
   // Each step is { sched, epoch, counts }: the schedule MIRROR when it was
   // taken and the sync engine's epoch then (sync v2, R15) — Undo is
@@ -2487,6 +2488,9 @@ function CallSchedule() {
   // (E8) raises it: every week landed, in the session it was published in,
   // and not taken back by ↩ Undo meanwhile (Undo works while the job runs) →
   // the "✓ Published" banner for those weeks, as one that lands in time.
+  // A job that answers in time says the same in its answer (2026-10-26):
+  // undone: true when ↩ Undo took a publish back while it ran, so its caller
+  // raises no 📣 and sends nothing for a schedule that was taken back.
   const runPublish = (weeks) => {
     const ep = sessionEpochRef.current, undone0 = publishUndoneRef.current, ms = Object.keys(weeks).sort();
     const label = typeof periodLabel === "function" ? periodLabel(ms[0], ms[ms.length - 1]) : `weeks of ${ms[0]} – ${ms[ms.length - 1]}`;
@@ -2495,13 +2499,16 @@ function CallSchedule() {
       setJustPublished({ label, ep });
       return `Publishing the new weeks has finished — every week is saved.${r.notice ? " " + r.notice : ""} Nobody has been notified yet: 📣 Notify everyone is on the Calendar.`;
     };
-    return schedSyncRef.current.authoritative(weeks, false, "publish", Object.keys(weeks), { late });
+    return schedSyncRef.current.authoritative(weeks, false, "publish", Object.keys(weeks), { late })
+      .then((r) => (r && publishUndoneRef.current !== undone0 ? Object.assign({}, r, { undone: true }) : r));
   };
   // What a publish that didn't fully land tells the scheduler (nobody is
   // notified) — ONE message, with the engine's own detail (pr.notice: which
   // weeks, and why) in it; the engine doesn't toast it beside this.
   const publishNotLanded = (pr, what) => {
     if (pr && (pr.skipped === "reset" || pr.skipped === "cancelled")) return; // fenced by a sign-out (another session now): nothing is said on its screen
+    // ↩ Undone while its job ran (2026-10-26): the weeks are off the screen and the retry sends the undone ones — not "saved yet"
+    if (pr && pr.undone && !pr.running) { showToast(`${what}, then undone — nothing to announce.`, "info"); return; }
     const n = ((pr && pr.results) || []).filter(x => x.outcome !== "saved").length;
     showToast(pr && pr.error ? `${what}: ${pr.error}${pr.running ? " Nobody was notified." : ""}`
       : pr && pr.notice ? `${what}: ${pr.notice} Nobody was notified.`
@@ -5654,7 +5661,8 @@ function CallSchedule() {
           return "moved";
         }
         const out = await genCommitRef.current(result, via); // with the state as it is NOW (after the snapshot's await)
-        return out && out.ok ? "published" : "not-published";
+        // "undone" (2026-10-26): it landed, but ↩ Undo took it back while it ran — no notice, e-mail or 📣 for it
+        return out && out.ok ? (out.undone ? "undone" : "published") : "not-published";
        } finally { publishingRef.current = false; setPublishing(false); }
     })();
   };
@@ -5682,6 +5690,7 @@ function CallSchedule() {
           label: `${pubMs.length} weeks, ${pubPeriod}, ${via || "Generate & Publish"}`,
           meta: { startMonth, startYear, numWeeks, origin: "generated" },
         });
+        const undone0 = publishUndoneRef.current; // (2026-10-26: the answer's undone is fixed when the job settles — the blob save below can outlast the job)
         const job = runPublish(result); // the period's weeks → the table, as ONE engine job (A14) — registered now, before any await
         setPreviewSchedule(null); setShowPreview(false);
         setSaveStatus(""); // the snapshot's status ends: while the job runs, the engine's "Publishing… keep the app open" is the header's ONE line (A16)
@@ -5695,10 +5704,11 @@ function CallSchedule() {
           const { error: regenErr } = await supabase.from("call_schedule_data").upsert({ id: "main", data: blobData, updated_at: ts });
           if (regenErr) throw new Error(`regenerate blob save failed: ${String(regenErr).slice(0, 200)}`); // catch toasts; checked autosave retries
         } catch(e) { console.error("Immediate save failed:", e); if (sessionEpochRef.current === ep) showToast("Couldn't save the regenerated schedule — check your connection.", "error"); }
-        // "Regenerated!" only when every week of the period landed (A14)
-        const pr = await job;
+        // "Regenerated!" only when every week of the period landed (A14) — and ↩ Undo of it during that save counts too
+        const prJob = await job;
+        const pr = prJob && !prJob.undone && publishUndoneRef.current !== undone0 ? Object.assign({}, prJob, { undone: true }) : prJob;
         if (sessionEpochRef.current !== ep) return { ok: false }; // another session now: nothing said on its screen — and not "published", so no notice or e-mail
-        if (pr && pr.ok) { setSaveStatus("Regenerated!"); setTimeout(() => setSaveStatus(""), 2000); if (pr.notice) showToast(pr.notice, "error"); return { ok: true }; } // (a notice here: another week someone else changed)
+        if (pr && pr.ok) { setSaveStatus(pr.undone ? "Regenerated, then undone" : "Regenerated!"); setTimeout(() => setSaveStatus(""), 2000); if (pr.notice) showToast(pr.notice, "error"); return pr.undone ? { ok: true, undone: true } : { ok: true }; } // (a notice here: another week someone else changed)
         setSaveStatus(""); publishNotLanded(pr, "Regenerated on this screen");
         return { ok: false };
   };
@@ -6096,12 +6106,15 @@ function CallSchedule() {
         const pr = await job;
         if (sessionEpochRef.current !== ep) return; // another session now: nothing said on its screen
         if (pr && pr.ok) {
-          setSaveStatus("Published — totals updated"); setTimeout(() => setSaveStatus(""), 3000); if (pr.notice) showToast(pr.notice, "error"); // (a notice here: another week someone else changed)
+          setSaveStatus(pr.undone ? "Published, then undone — nothing to announce" : "Published — totals updated"); setTimeout(() => setSaveStatus(""), 3000); if (pr.notice) showToast(pr.notice, "error"); // (a notice here: another week someone else changed)
           // Nobody is told by itself (owner decision 2026-10-20): the Calendar's banner asks the scheduler — 📣 Notify everyone / Not now.
-          setJustPublished({ label: pubPeriod, ep });
-          // ✓ Accept & Publish sits far down the Generate tab, and the Calendar opens at that scroll (rendered check: the
-          // banner was ~500 px above a 375 px phone's screen) — so it is brought into view, as the Today button does.
-          setTimeout(() => { const el = document.querySelector('[data-just-published="1"]'); if (el && el.scrollIntoView) el.scrollIntoView({ behavior: "smooth", block: "nearest" }); }, 60);
+          // Not for a publish ↩ Undone while its job ran (pr.undone, 2026-10-26): its 📣 would announce a schedule taken back.
+          if (!pr.undone) {
+            setJustPublished({ label: pubPeriod, ep });
+            // ✓ Accept & Publish sits far down the Generate tab, and the Calendar opens at that scroll (rendered check: the
+            // banner was ~500 px above a 375 px phone's screen) — so it is brought into view, as the Today button does.
+            setTimeout(() => { const el = document.querySelector('[data-just-published="1"]'); if (el && el.scrollIntoView) el.scrollIntoView({ behavior: "smooth", block: "nearest" }); }, 60);
+          }
         }
         else { setSaveStatus(""); publishNotLanded(pr, "Published on this screen"); }
       } finally { publishingRef.current = false; setPublishing(false); }

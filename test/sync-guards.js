@@ -801,7 +801,8 @@ check("authoritative jobs start at exactly 2 sites — runAuthoritativeSchedule 
   count(".authoritative(") === 2 && count("runAuthoritativeSchedule(") === 3
     // (CO, 2026-10-25, on purpose: runPublish is a block now — it hands the engine its late(), the 📣 banner for a publish
     // that lands after its deadline — still ONE authoritative call, still no grant, still the period's keys)
-    && count("const runPublish = (weeks) => {") === 1 && count('return schedSyncRef.current.authoritative(weeks, false, "publish", Object.keys(weeks), { late });') === 1 && count("runPublish(") === 2 && count("const job = runPublish(") === 2
+    // (CR, 2026-10-26: its answer is passed through a .then that marks one ↩ Undone meanwhile — the same one call)
+    && count("const runPublish = (weeks) => {") === 1 && count('return schedSyncRef.current.authoritative(weeks, false, "publish", Object.keys(weeks), { late })') === 1 && count("runPublish(") === 2 && count("const job = runPublish(") === 2
     // (clear and restore hand it their Undo step, taken back when the job wrote nothing — executed in SE-G; all three
     // hand it `before`, the screen as it was before their commit, which a refused job puts back — 17/n P2, executed in SE-X10)
     // (19/n P8: the factory reset and the restore also hand it their words for an outcome after the deadline — late(r), executed in SE-X16)
@@ -10367,7 +10368,8 @@ await (async () => {
     fgBody === null ? null : "(result, preview, clickSig, clickLocks, genEpoch, via) => {" + fgBody + "\n  }");
   const pnBody = bodyCH("  const publishNotLanded = (pr, what) => {", "\n  };\n");
   const cgBody = bodyCH("  const commitGenerated = async (result, via) => {", "\n  };\n  genFinishRef.current = finishGenerate;");
-  const cgMk = fnCH("publishWeeks, numWeeks, MO, startMonth, startYear, runPublish, setPreviewSchedule, setShowPreview, setSaveStatus, lastSyncRef, buildStateBundle, supabase, console, showToast, setTimeout, sessionEpochRef",
+  // (CR, 2026-10-26: commitGenerated re-reads publishUndoneRef when it reads the job's answer — handed in below)
+  const cgMk = fnCH("publishWeeks, numWeeks, MO, startMonth, startYear, runPublish, setPreviewSchedule, setShowPreview, setSaveStatus, lastSyncRef, buildStateBundle, supabase, console, showToast, setTimeout, sessionEpochRef, publishUndoneRef",
     pnBody === null || cgBody === null ? null : "(() => { const publishNotLanded = (pr, what) => {" + pnBody + "\n  };\n  return async (result, via) => {" + cgBody + "\n  }; })()");
   const RES = Object.fromEntries(MONS.map((m, k) => [m, { dayCall: "s" + (k + 1), nights: {} }]));
   // o.landed:false — the job didn't land every week (the second still pending); o.moveDuringJob — a sign-out while the job
@@ -10377,13 +10379,16 @@ await (async () => {
   const e2e = async (o = {}) => {
     const rec = { jp: [], sends: [], toasts: [], status: [], audits: [], jobs: 0, snaps: 0, scrolled: 0, timers: [], views: [], asked: [] };
     if (!rgMk || !fgMk || !cgMk) return { threw: "not extractable: " + J({ rg: !!rgMk, fg: !!fgMk, cg: !!cgMk }) };
-    const ep = { current: 4 }, pg = pageCH();
+    const ep = { current: 4 }, pg = pageCH(), undoneCH = { current: 0 };
     const T = (fn, ms) => { rec.timers.push(ms); if (ms === 60) rec.scroll = fn; return 0; }; // ("Regenerated!"'s own 2 s clear is not run)
     try {
       const commit = cgMk({ publishWeeks: (w, how) => { rec.audits.push(how.label); return { merged: {}, prior: {}, y1: {} }; }, numWeeks: 2, MO: ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"], startMonth: 10, startYear: 2026,
-        runPublish: (w) => { rec.jobs++; rec.jobWeeks = Object.keys(w).join(); return new Promise((r) => setTimeout(() => { if (o.moveDuringJob) ep.current++; r(o.landed === false ? { ok: false, results: [{ k: MONS[0], outcome: "saved" }, { k: MONS[1], outcome: "pending" }] } : { ok: true, results: MONS.map((k) => ({ k, outcome: "saved" })) }); }, 0)); },
+        // (o.undone — CR: runPublish's answer when ↩ Undo took the publish back while its job ran)
+        runPublish: (w) => { rec.jobs++; rec.jobWeeks = Object.keys(w).join(); return new Promise((r) => setTimeout(() => { if (o.moveDuringJob) ep.current++; r(Object.assign(o.landed === false ? { ok: false, results: [{ k: MONS[0], outcome: "saved" }, { k: MONS[1], outcome: "pending" }] } : { ok: true, results: MONS.map((k) => ({ k, outcome: "saved" })) }, o.undone ? { undone: true } : {})); }, 0)); },
         setPreviewSchedule: () => {}, setShowPreview: () => {}, setSaveStatus: (s) => rec.status.push(s), lastSyncRef: { current: null }, buildStateBundle: (x) => Object.assign({}, x),
-        supabase: { from: () => ({ upsert: async () => ({ error: null }) }) }, console: { error() {}, log() {}, warn() {} }, showToast: (m) => rec.toasts.push(String(m)), setTimeout: T, sessionEpochRef: ep });
+        // (o.undoDuringSave — CR: ↩ Undo of the publish lands after its job settled, while the blob save still runs)
+        supabase: { from: () => ({ upsert: async () => { await new Promise((r) => setTimeout(r, 5)); if (o.undoDuringSave) undoneCH.current++; return { error: null }; } }) }, console: { error() {}, log() {}, warn() {} }, showToast: (m) => rec.toasts.push(String(m)), setTimeout: T, sessionEpochRef: ep,
+        publishUndoneRef: undoneCH });
       const finish = fgMk({ view: o.view || "calendar", sessionEpochRef: ep, pendingLocks: [], nameOf: (x) => x, slotLabel: () => "slot", showToast: (m) => rec.toasts.push(String(m)), setPreviewSchedule: () => {}, setPreviewOrigin: () => {}, setShowPreview: () => {},
         genInputsSig: () => o.sigNow || "SIG0", listScheduleBends: () => ({ items: o.items || [] }), surgeons: [], mondays: [], buildGenAvailability: () => ({}), buildSilvisPrimary: () => null, vacations: {}, holidayAssignments: {}, buildPrevWeekSeed: () => null,
         publishingRef: { current: false }, setPublishing: () => {}, setSaveStatus: (s) => rec.status.push(s), snapshots: { capture: async () => { rec.snaps++; return { ok: !o.snapFail }; } }, genCommitRef: { current: commit },
@@ -10399,6 +10404,17 @@ await (async () => {
   const ITEM = [{ kind: "bend", text: "x" }];
   const ch2 = { landed: await e2e(), gp: await e2e({ gp: true, view: "generate" }), partial: await e2e({ landed: false }), signOut: await e2e({ moveDuringJob: true }), noSnap: await e2e({ snapFail: true }), moved: await e2e({ moved: true }),
     review: await e2e({ items: ITEM }), changed: await e2e({ sigNow: "SIG1" }), gpReview: await e2e({ gp: true, view: "generate", items: ITEM }), gpChanged: await e2e({ gp: true, view: "generate", sigNow: "SIG1" }) };
+  // CR3 (2026-10-26, section CR — see CO) the same chain when runPublish answers undone: the outcome is "undone", not "published"
+  const cr3 = { regen: await e2e({ undone: true }), gp: await e2e({ gp: true, view: "generate", undone: true }), duringSave: await e2e({ undoDuringSave: true }), gpDuringSave: await e2e({ gp: true, view: "generate", undoDuringSave: true }) };
+  check("CR3 end to end (the REAL doRegenerate → finishGenerate → commitGenerated) when the publish was ↩ Undone while its job ran: the outcome is \"undone\" (it was \"published\"), NO banner, nothing scrolled or sent, the header \"Regenerated, then undone\" (not \"Regenerated!\"); Generate & Publish's own call \"undone\" too — so doGenerateAndNotify sends nothing (CR4)",
+    !cr3.regen.threw && cr3.regen.outcome === "undone" && cr3.regen.jp.length === 0 && cr3.regen.scrolled === 0 && cr3.regen.sends.length === 0 && cr3.regen.status.includes("Regenerated, then undone") && !cr3.regen.status.includes("Regenerated!")
+      && !cr3.gp.threw && cr3.gp.outcome === "undone" && cr3.gp.jobs === 1, J(cr3));
+  check("CR3 (review fix) …and ↩ Undo that lands after the job settled but while commitGenerated's blob save still ran (the answer itself says nothing): commitGenerated re-reads publishUndoneRef when it reads the answer — \"undone\", no banner, for ↻ Regenerate and for Generate & Publish",
+    !cr3.duringSave.threw && cr3.duringSave.outcome === "undone" && cr3.duringSave.jp.length === 0 && cr3.duringSave.status.includes("Regenerated, then undone") && !cr3.gpDuringSave.threw && cr3.gpDuringSave.outcome === "undone",
+    J({ duringSave: cr3.duringSave, gpDuringSave: cr3.gpDuringSave }));
+  const cr3n = await e2e({ landed: false, undone: true });
+  check("CR3 (review fix) a publish that didn't land every week and was ↩ Undone meanwhile says so (the REAL publishNotLanded): \"Regenerated on this screen, then undone — nothing to announce.\" — not \"…isn't saved yet; retrying automatically\" (the retry sends the undone weeks); no banner",
+    !cr3n.threw && cr3n.outcome === "not-published" && J(cr3n.toasts) === J(["Regenerated on this screen, then undone — nothing to announce."]) && cr3n.jp.length === 0, J(cr3n));
   check("CH2 end to end (the REAL doRegenerate → finishGenerate → commitGenerated): the job landed every week → \"published\", \"Regenerated!\", and the banner ONCE in the tap's session, naming the weeks the publish's own audit line names (the two it sent to the table), brought into view; nothing sent, nothing else said",
     !ch2.landed.threw && ch2.landed.outcome === "published" && ch2.landed.status.includes("Regenerated!") && J(ch2.landed.jp) === BAN4
       && ch2.landed.audits.length === 1 && ch2.landed.audits[0].startsWith(`2 weeks, ${PT}, `) && ch2.landed.jobWeeks === MONS.join() && ch2.landed.scrolled === 1 && ch2.landed.sends.length === 0 && ch2.landed.toasts.length === 0, J(ch2.landed));
@@ -10704,19 +10720,19 @@ await (async () => {
   const PS = { "2026-11-16": { dayCall: "s1", nights: {} }, "2026-11-23": { dayCall: "s2", nights: {} } };
   // (timers are recorded and run after the publish; document answers the banner's selector — o.noEl: the scheduler is on another tab)
   const accept = async (o = {}, mkIt = apMk) => {
-    const rec = { jp: [], sends: [], order: [], toasts: [], timers: [], asked: [], scrolled: [] };
+    const rec = { jp: [], sends: [], order: [], toasts: [], timers: [], asked: [], scrolled: [], status: [] };
     const ep = o.epRef || { current: 4 };
     if (!mkIt) return { threw: "acceptPreview not extractable" };
     try {
       await mkIt({
         previewSchedule: PS, previewSchedRef: { current: PS }, previewNeedsOk: { cost: (o.items || []).length * 6, items: o.items || [] }, previewAck: !!o.ack, previewOrigin: "generated",
         publishWeeks: () => { rec.order.push("publishWeeks"); return {}; },
-        // the job lands a tick later (o.moveDuringJob: a sign-out meanwhile)
-        runPublish: () => { rec.order.push("job"); return new Promise((r) => setTimeout(() => { if (o.moveDuringJob) ep.current++; rec.order.push("landed"); r(o.landed === false ? { ok: false, results: [{ k: "2026-11-23", outcome: "pending" }] } : { ok: true, results: [] }); }, 0)); },
+        // the job lands a tick later (o.moveDuringJob: a sign-out meanwhile; o.undone: runPublish's answer when ↩ Undo took the publish back meanwhile — CR)
+        runPublish: () => { rec.order.push("job"); return new Promise((r) => setTimeout(() => { if (o.moveDuringJob) ep.current++; rec.order.push("landed"); r(o.landed === false ? { ok: false, results: [{ k: "2026-11-23", outcome: "pending" }] } : Object.assign({ ok: true, results: [] }, o.undone ? { undone: true } : {})); }, 0)); },
         publishNotLanded: (pr, what) => rec.toasts.push("NOT LANDED: " + what), publishingRef: { current: !!o.busy }, setPublishing: () => {},
         snapshots: { capture: async () => { rec.order.push("snapshot"); return { ok: !o.snapFail }; } }, showToast: (m) => rec.toasts.push(String(m)), schedEditable: () => !o.gated,
         schedSyncRef: { current: { changedSince: () => [], knownSchedule: () => ({ "2026-11-09": {} }) } }, previewEpochRef: { current: 3 },
-        setPreviewSchedule: () => {}, setShowPreview: () => {}, setCalMonth: () => {}, setCalYear: () => {}, setView: (v) => rec.order.push("view " + v), setSaveStatus: () => {},
+        setPreviewSchedule: () => {}, setShowPreview: () => {}, setCalMonth: () => {}, setCalYear: () => {}, setView: (v) => rec.order.push("view " + v), setSaveStatus: (s) => rec.status.push(s),
         setTimeout: (fn, ms) => { rec.timers.push([ms, fn]); return 0; },
         document: { querySelector: (sel) => { rec.asked.push(sel); return o.noEl ? null : { scrollIntoView: (how) => rec.scrolled.push(how) }; } },
         numWeeks: 2, MO: ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"], startMonth: 10, startYear: 2026,
@@ -10749,6 +10765,12 @@ await (async () => {
       && !cd2.offTab.threw && cd2.offTab.asked.length === 1 && cd2.offTab.scrolled.length === 0 && J(cd2.offTab.jp) === J([{ label: P1, ep: 4 }])
       && ["notLanded", "moved", "unticked", "snapFail"].every((k) => cd2[k].asked.length === 0 && cd2[k].scrolled.length === 0),
     J({ clean: [cd2.clean.timers, cd2.clean.asked, cd2.clean.scrolled], offTab: [cd2.offTab.asked, cd2.offTab.scrolled, cd2.offTab.threw], notLanded: cd2.notLanded.asked }));
+  // CR2 (2026-10-26, section CR — see CO) the REAL acceptPreview when runPublish answers undone (↩ Undo took the publish back
+  // while its job ran): no banner, nothing scrolled, nothing sent; the header says what happened
+  const cr2 = await accept({ undone: true });
+  check("CR2 the REAL ✓ Accept & Publish whose publish was ↩ Undone while its job ran (runPublish's answer: undone): NO banner (its 📣 would announce a schedule taken back), nothing scrolled into view or sent; the header says \"Published, then undone — nothing to announce\" (not \"totals updated\"); one that wasn't undone as before",
+    !cr2.threw && cr2.jp.length === 0 && cr2.asked.length === 0 && cr2.sends.length === 0 && cr2.status.includes("Published, then undone — nothing to announce") && !cr2.status.includes("Published — totals updated")
+      && cd2.clean.status.includes("Published — totals updated") && J(cd2.clean.jp) === J([{ label: P1, ep: 4 }]), J({ cr2, clean: cd2.clean.status }));
 
   // CD3 — the REAL notifyJustPublished (📣 Notify everyone) over the REAL notifyPublished
   const njBody = afterCD("  const notifyJustPublished = async () => {", "\n  };\n");
@@ -10809,9 +10831,9 @@ await (async () => {
     try { await dgnMk({ sessionEpochRef: w.ep, periodText: PT, notifyPublished: w.np, doGenerate: async () => { if (move) w.ep.current++; return result; } })(); } catch (ex) { return ["threw " + String(ex).slice(0, 120)]; }
     return w.log;
   };
-  const cd4 = dgnMk && npMk ? { published: await gp("published"), moved: await gp("published", true), review: await gp("review"), refused: await gp("refused"), busy: await gp("busy"), notPub: await gp("not-published"), cancelled: await gp("cancelled") } : null;
-  check("CD4 the REAL doGenerateAndNotify through the REAL notifyPublished: published → exactly one notice and one e-mail with the Generate period, as before; sent to the preview, refused, busy, not landed, cancelled, or the session gone meanwhile → nothing",
-    !!cd4 && J(cd4.published) === J([NOTICE(0), EMAIL(PT, 0)]) && ["moved", "review", "refused", "busy", "notPub", "cancelled"].every((k) => cd4[k].length === 0), J(cd4));
+  const cd4 = dgnMk && npMk ? { published: await gp("published"), moved: await gp("published", true), review: await gp("review"), refused: await gp("refused"), busy: await gp("busy"), notPub: await gp("not-published"), cancelled: await gp("cancelled"), undone: await gp("undone") } : null;
+  check("CD4 the REAL doGenerateAndNotify through the REAL notifyPublished: published → exactly one notice and one e-mail with the Generate period, as before; sent to the preview, refused, busy, not landed, cancelled, ↩ Undone while it ran (\"undone\" — CR4, 2026-10-26), or the session gone meanwhile → nothing",
+    !!cd4 && J(cd4.published) === J([NOTICE(0), EMAIL(PT, 0)]) && ["moved", "review", "refused", "busy", "notPub", "cancelled", "undone"].every((k) => cd4[k].length === 0), J(cd4));
   check("CD4 the two sends exist ONCE in the app — in notifyPublished — and both publish paths reach them only through it: doGenerateAndNotify calls it once, the banner's tap once, acceptPreview never",
     count('addNotification("schedule_published",') === 1 && count('sendEmailNotif("schedule_published", { period }, null, ep);') === 1
       && !!npBody && npBody.includes('addNotification("schedule_published",') && npBody.includes('sendEmailNotif("schedule_published", { period }, null, ep);')
@@ -10966,7 +10988,7 @@ await (async () => {
   const clock = () => new Date(msCO += 1000).toISOString();
   const WK = ["2026-11-02", "2026-11-09", "2026-11-16"];
   const wkO = (dc) => ({ dayCall: dc, nights: { mon: "s2", tue: "s3", wed: "s4", thu: "s5", wknd: "s6" }, off: "s7", isBackup: false, isFierceBackup: false, holidayCoverage: {} });
-  const mk = () => {
+  const mk = (deadline) => {
     const t = createFakeWeeksTable({ baseUrl: "https://x.supabase.co", anonKey: "ANON", users: { TOK_A: "user-a" }, clock,
       rows: WK.map((k, i) => ({ week_monday: k, data: wkO("s" + (i + 1)), version: 2, updated_by: "user-a", updated_at: "2026-10-01T08:00:00.000Z" })) });
     const s = { t, mirror: {}, toasts: [], banners: [], ep: { current: 7 }, undone: { current: 0 } };
@@ -10974,14 +10996,16 @@ await (async () => {
     s.engine = createSchedSync({ getState: () => s.mirror, commit: (n) => { s.mirror = n; }, fetch: (u, i) => t.fetch(u, i), url: "https://x.supabase.co",
       writeHeaders: h, readHeaders: h, anonHeaders: () => ({ apikey: "ANON", Authorization: "Bearer ANON" }), canWrite: () => true, token: () => "TOK_A", userId: () => "user-a",
       now: clock, nowMs: () => msCO, onStatus: () => {}, onToast: (m) => s.toasts.push(String(m)), onWipeBlocked: () => {}, onInternalError: (e) => internalCO.push(String(e && e.message || e)), log: () => {},
-      timeouts: { read: 60000, write: 60000, stall: 15, deadline: 60 } });
+      timeouts: { read: 60000, write: 60000, stall: 15, deadline: deadline || 60 } });
     s.runPublish = rpF({ schedSyncRef: { current: s.engine }, sessionEpochRef: s.ep, setJustPublished: (v) => s.banners.push(v), periodLabel: periodLabelCO, publishUndoneRef: s.undone });
     return s;
   };
   // a publish as the app runs one: its weeks committed to the screen, then the job (publishWeeks → runPublish);
   // o.hold: one week's write held until released; o.failWeek: that week's writes refused (5xx); o.moveEpoch: the session changes before it lands
+  // (CR, 2026-10-26) o.deadline: the engine's deadline (60 ms unless given); o.undoFirst: ↩ Undo while the held write waits,
+  // then the write released — the job lands IN TIME, after the Undo
   const publish = async (o = {}) => {
-    const s = mk(); await s.engine.load();
+    const s = mk(o.deadline); await s.engine.load();
     const weeks = {}; WK.forEach((k, i) => { weeks[k] = wkO("p" + (i + 1)); });
     const before = JSON.parse(J(s.mirror));
     s.mirror = Object.assign({}, s.mirror, JSON.parse(J(weeks)));
@@ -10989,7 +11013,9 @@ await (async () => {
     if (o.failWeek) s.t.control.fail({ method: "PATCH", week: WK[2], kind: "5xx-before", count: 5 });
     const job = s.runPublish(weeks);
     if (hold) await hold.arrived;
+    if (o.undoFirst) { s.mirror = JSON.parse(J(before)); s.undone.current++; hold.release(); }
     const answer = await Promise.race([job, sleep(1500).then(() => "no answer")]);
+    s.rawAnswer = answer;
     const atAnswer = { toasts: s.toasts.slice(), banners: s.banners.slice() };
     if (o.moveEpoch) s.ep.current++;
     // o.undo: ↩ Undo of this publish while it still runs — undoLastChange puts the screen back and counts it
@@ -10997,7 +11023,8 @@ await (async () => {
     if (hold) hold.release();
     await s.engine.idle(); await sleep(5); await s.engine.idle(); await s.engine.idle();
     const table = WK.map((k) => { const r = s.t.get(k); return r && r.data ? r.data.dayCall : null; });
-    return { answer: answer && typeof answer === "object" ? { ok: answer.ok, running: !!answer.running } : answer, atAnswer, toasts: s.toasts, banners: s.banners, table };
+    return { answer: answer && typeof answer === "object" ? { ok: answer.ok, running: !!answer.running } : answer, undoneFlag: !!(answer && answer.undone), hasUndoneKey: !!answer && typeof answer === "object" && "undone" in answer,
+      atAnswer, toasts: s.toasts, banners: s.banners, table };
   };
   const LABEL = periodLabelCO(WK[0], WK[2]);
   const OWN_OK = "Publishing the new weeks has finished — every week is saved.";
@@ -11027,6 +11054,24 @@ await (async () => {
   check("CO3 a publish that lands in time answers ok and runPublish raises nothing itself (its caller raises the banner — CD / CH), no late toast; the engine hit no internal error in any run",
     J(c3.answer) === J({ ok: true, running: false }) && J(c3.banners) === "[]" && J(c3.toasts) === "[]" && J(c3.table) === J(["p1", "p2", "p3"]) && internalCO.length === 0,
     J({ c3, internalCO }));
+
+  // ─── CR. A publish ↩ Undone while its job ran raises no 📣 — when it lands in time too (2026-10-26) ───
+  // CO4 closed the late case: Undo works while a publish job runs, and the job still writes its own weeks and ends ok,
+  // so its 📣 would announce a schedule taken back. The same held for one that lands IN TIME (≤ 90 s): ✓ Accept &
+  // Publish raised the banner on pr.ok, ↻ Regenerate on doGenerate's "published", and Generate & Publish sent the
+  // group's notice and e-mail. runPublish's answer now says undone: true when ↩ Undo took a publish back since the tap
+  // (undoLastChange's publishUndoneRef — CH5); acceptPreview then raises nothing, commitGenerated passes it on and
+  // doGenerate answers "undone" — no banner (doRegenerate), no notice or e-mail (doGenerateAndNotify).
+  //   CR1 the REAL runPublish on the REAL engine: a write held, ↩ Undo, the write released → it lands in time, ok, its
+  //       answer undone: true; no late toast, no banner; one with no Undo answers exactly as before (no undone key)
+  //   CR2 (in CD) the REAL acceptPreview on that answer: no banner, nothing scrolled or sent, "Published, then undone"
+  //   CR3 (in CH) the REAL doRegenerate → finishGenerate → commitGenerated on it: "undone", no banner, nothing sent
+  //   CR4 (in CD4) the REAL doGenerateAndNotify on "undone": nothing sent
+  const r1 = await publish({ hold: true, deadline: 5000, undoFirst: true }), r1c = await publish({ deadline: 5000 });
+  check("CR1 the REAL runPublish on the REAL engine (a 5 s deadline): a write held, ↩ Undo (publishUndoneRef moved), the write released → the job lands in time, ok, and its answer says undone: true; no late toast, no banner from runPublish; the same publish with no Undo answers ok with no undone key at all (exactly as before)",
+    J(r1.answer) === J({ ok: true, running: false }) && r1.undoneFlag === true && J(r1.banners) === "[]" && J(r1.toasts) === "[]"
+      && J(r1c.answer) === J({ ok: true, running: false }) && r1c.undoneFlag === false && r1c.hasUndoneKey === false && J(r1c.banners) === "[]" && J(r1c.toasts) === "[]",
+    J({ r1, r1c }));
 })().catch(ex => check("CO harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
 
 // ─── AE. Generator: "Needs your OK" before publish + Setup holiday text (2026-10-11) ───
@@ -11135,7 +11180,8 @@ await (async () => {
   check("AE3 Generate & Publish: a result with items opens the preview (\"review\") instead of saving; only \"published\" sends the notice; a cancelled Silvis confirm sends nothing",
     count('    if (needsOkN > 0) {\n      setPreviewSchedule(result); setPreviewOrigin("generated"); previewEpochRef.current = genEpoch;\n      setShowPreview(true);'.replace(/\n/g, src.includes("\r\n") ? "\r\n" : "\n")) === 1
       && count('previewEpochRef.current = genEpoch;') === 3 // preview · inputs changed · Needs your OK (sync v2)
-      && count('return "review";') === 2 && count('return out && out.ok ? "published" : "not-published";') === 1 && count('return "published";') === 0 && count('return "cancelled";') === 2 // review: + inputs changed during the search (2026-10-12) — // the Silvis confirm; a cancelled / empty search (2026-10-12)
+      // (CR, 2026-10-26, on purpose: a publish ↩ Undone while its job ran answers "undone" — never "published", so no notice)
+      && count('return "review";') === 2 && count('return out && out.ok ? (out.undone ? "undone" : "published") : "not-published";') === 1 && count('return "published";') === 0 && count('return "cancelled";') === 2 // review: + inputs changed during the search (2026-10-12) — // the Silvis confirm; a cancelled / empty search (2026-10-12)
       && count('if ((await doGenerate(false)) !== "published") return;') === 1 // Generate & Publish's notice (↻ Regenerate's banner gates on its outcome itself — "published", or "review" → the preview: CH, 2026-10-20 review fixes)
       && count('const outcome = await doGenerate(false, "↻ Regenerate");') === 1 && count('if (outcome !== "published") return;') === 1);
   check("AE4 the box and the generator share ONE availability builder (vacations ∪ no-call ∪ Silvis), and the box reads the bends from generator.js",
@@ -16905,7 +16951,8 @@ await (async () => {
   // ── (5) Generate & Publish: one message with the job's notice ──
   const pnSrcG = after("  const publishNotLanded = (pr, what) => {", "\n  };\n");
   const cgSrc = after("  const commitGenerated = async (result, via) => {", "\n  };\n  genFinishRef.current = finishGenerate;");
-  const cgF = pnSrcG && cgSrc && fnG("publishWeeks, numWeeks, MO, startMonth, startYear, runPublish, setPreviewSchedule, setShowPreview, setSaveStatus, lastSyncRef, buildStateBundle, supabase, console, showToast, setTimeout, sessionEpochRef",
+  // (CR, 2026-10-26: commitGenerated reads publishUndoneRef too — a fresh one per run below)
+  const cgF = pnSrcG && cgSrc && fnG("publishWeeks, numWeeks, MO, startMonth, startYear, runPublish, setPreviewSchedule, setShowPreview, setSaveStatus, lastSyncRef, buildStateBundle, supabase, console, showToast, setTimeout, sessionEpochRef, publishUndoneRef",
     "(() => { const publishNotLanded = (pr, what) => {" + pnSrcG + "\n  };\n  return async (result, via) => {" + cgSrc + "\n  }; })()");
   if (!cgF) check("SE-G commitGenerated + publishNotLanded are extractable", false, "anchor / compile");
   else {
@@ -16914,7 +16961,7 @@ await (async () => {
       const w = { toasts: [], status: [] };
       const out = await cgF({ publishWeeks: () => ({ merged: {}, prior: {}, y1: {} }), numWeeks: 2, MO: ["Jan"], startMonth: 0, startYear: 2026, runPublish: () => Promise.resolve(pr), sessionEpochRef: { current: 0 },
         setPreviewSchedule: () => {}, setShowPreview: () => {}, setSaveStatus: (s) => w.status.push(s), lastSyncRef: { current: null }, buildStateBundle: (x) => Object.assign({}, x),
-        supabase: { from: () => ({ upsert: async () => ({ error: null }) }) }, console: watchG.console, showToast: (m, tone) => w.toasts.push([String(m), tone]), setTimeout: () => 0 })({ [WG[0]]: wkG("g") });
+        supabase: { from: () => ({ upsert: async () => ({ error: null }) }) }, console: watchG.console, showToast: (m, tone) => w.toasts.push([String(m), tone]), setTimeout: () => 0, publishUndoneRef: { current: 0 } })({ [WG[0]]: wkG("g") });
       w.out = out; return w;
     };
     const landed = await cg({ ok: true, results: [], notice: NOTICE }), quiet = await cg({ ok: true, results: [], notice: null }), part = await cg({ ok: false, results: [{ k: WG[0], outcome: "pending" }], notice: SAVE1 });
