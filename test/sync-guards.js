@@ -17071,7 +17071,7 @@ await (async () => {
 
   // ── A15: the restore confirm states the week change; busy cleared in finally; A5(f) still running ──
   const rsSrc = after("  const restoreConfirmText = ", "\n  // ─── Roll forward counts");
-  const RS_ENV = "schedEditable, isScheduler, userProfile, setRestoreBusyId, setSaveStatus, snapshots, scheduleRef, pushUndo, commitSchedule, runAuthoritativeSchedule, schedSyncRef, confirm, snapshotReasonLabel, showToast, setSurgeons, setApps, setBackupMondaySet, setFierceBackupSet, setAppShifts, setPriorCounts, setYear1Counts, setStartMonth, setStartYear, setNumWeeks, setStartMondayOverride, setHolidayAssignments, setPendingLocks, setSilvisRule, sfRule, SF_RULE_DEFAULT, setDismissedWarnings, lastSyncRef, everHadRealDataRef, logAudit, loadSnapshots, setTimeout, alert, sessionEpochRef";
+  const RS_ENV = "schedEditable, isScheduler, userProfile, setRestoreBusyId, setSaveStatus, snapshots, scheduleRef, pushUndo, commitSchedule, runAuthoritativeSchedule, schedSyncRef, confirm, snapshotReasonLabel, showToast, setSurgeons, setApps, setBackupMondaySet, setFierceBackupSet, setAppShifts, setPriorCounts, setYear1Counts, setStartMonth, setStartYear, setNumWeeks, setStartMondayOverride, setHolidayAssignments, setPendingLocks, setSilvisRule, sfRule, SF_RULE_DEFAULT, setDismissedWarnings, lastSyncRef, everHadRealDataRef, logAudit, loadSnapshots, setTimeout, alert, sessionEpochRef, jobClaimRef";
   const rsFn = rsSrc && fnC(RS_ENV, "(() => { const restoreConfirmText = " + rsSrc + "\n  return { restoreConfirmText, restoreSnapshot }; })()");
   if (!rsFn) check("SE-C restoreConfirmText + restoreSnapshot are extractable", false, "anchor / compile");
   else {
@@ -17091,7 +17091,7 @@ await (async () => {
       const w = { f, confirms: [], toasts: [], busy: [], status: [], undo: 0, commits: [], auth: [], audits: [], alerts: 0, adopted: [], snaps: 0, threw: null };
       const noop = () => {};
       const env = {
-        schedEditable: () => true, isScheduler: true, userProfile: null, setRestoreBusyId: (v) => w.busy.push(v), setSaveStatus: (v) => w.status.push(v), sessionEpochRef: { current: 0 },
+        schedEditable: () => true, isScheduler: true, userProfile: null, setRestoreBusyId: (v) => w.busy.push(v), setSaveStatus: (v) => w.status.push(v), sessionEpochRef: { current: 0 }, jobClaimRef: { current: null },
         snapshots: o.snapshots || snapshots,
         scheduleRef: { current: { "2026-01-05": WEEK } }, // on screen: ONE week — the count must come from what's SAVED (three)
         pushUndo: () => { w.undo++; }, commitSchedule: (s) => w.commits.push(Object.keys(s).length),
@@ -17474,7 +17474,7 @@ await (async () => {
   try { const code = se.extractEngine(src); createSchedSyncG = se.compileEngine(code); merge = se.compileMerge(code); } catch (ex) { /* reported just below */ }
   const HG = vm.runInContext("({ parse, addD, fmt, SHIFT_LABELS })", sandbox);
   const geSrc = after("  const schedEditable = ", "\n  };\n");
-  const geF = geSrc && fnG("schedSyncRef, showToast, setReauthNeeded", geSrc + "\n  }");
+  const geF = geSrc && fnG("schedSyncRef, showToast, setReauthNeeded, jobClaimRef", geSrc + "\n  }");
   const puSrc = after("  const pushUndo = useCallback((counts) => {", "\n  }, []);");
   const puF = puSrc && fnG("scheduleRef, schedSyncRef, setScheduleHistory", "(counts) => {" + puSrc + "\n  }");
   const raSrc = after("  const runAuthoritativeSchedule = ", "\n  };\n");
@@ -17509,7 +17509,8 @@ await (async () => {
       onInternalError: (e) => internalG.push(String(e && e.message || e)), log: watchG.log });
     a.schedSyncRef = { current: a.eng };
     appsG.push(a);
-    a.schedEditable = geF({ schedSyncRef: a.schedSyncRef, showToast: a.showToast, setReauthNeeded: () => { a.reauth++; } });
+    a.jobClaimRef = { current: null }; // (a reset / restore's claim, which the gate reads — P7, 2026-10-27)
+    a.schedEditable = geF({ schedSyncRef: a.schedSyncRef, showToast: a.showToast, setReauthNeeded: () => { a.reauth++; }, jobClaimRef: a.jobClaimRef });
     a.pushUndo = puF({ scheduleRef: a.ref, schedSyncRef: a.schedSyncRef, setScheduleHistory: a.setScheduleHistory });
     a.runAuthoritativeSchedule = raF({ schedSyncRef: a.schedSyncRef, commitSchedule: a.commitSchedule, setScheduleHistory: a.setScheduleHistory, sessionEpochRef: { current: 0 }, setJustPublished: () => {} });
     a.updateSchedule = usF({ scheduleRef: a.ref, commitSchedule: a.commitSchedule });
@@ -17615,7 +17616,7 @@ await (async () => {
 
   // ── (3) Factory reset: the gate, one message ──
   const rstSrc = after("  const resetAllData = async () => {", "\n  };\n\n  // ─── Push Notifications");
-  const rstF = rstSrc && fnG("isScheduler, userProfile, alert, schedEditable, prompt, setSaveStatus, setTimeout, snapshots, schedSyncRef, showToast, logAudit, allowWipeSaveRef, everHadRealDataRef, supabase, console, setSurgeons, INIT_SURGEONS, setApps, INIT_APPS, toClearAll, setBackupMondaySet, setFierceBackupSet, scheduleRef, commitSchedule, runAuthoritativeSchedule, setAppShifts, setPriorCounts, setYear1Counts, setStartMonth, setStartYear, sessionEpochRef, resetBusyRef, pendingSaveRef, setSetupSaveNudge",
+  const rstF = rstSrc && fnG("isScheduler, userProfile, alert, schedEditable, prompt, setSaveStatus, setTimeout, snapshots, schedSyncRef, showToast, logAudit, allowWipeSaveRef, everHadRealDataRef, supabase, console, setSurgeons, INIT_SURGEONS, setApps, INIT_APPS, toClearAll, setBackupMondaySet, setFierceBackupSet, scheduleRef, commitSchedule, runAuthoritativeSchedule, setAppShifts, setPriorCounts, setYear1Counts, setStartMonth, setStartYear, sessionEpochRef, resetBusyRef, pendingSaveRef, setSetupSaveNudge, jobClaimRef",
     "async () => {" + rstSrc + "\n  }"); // (23/n: + the reset's hold on the setup autosave — review r6 broke-1; 26/n: + unarm()'s nudge of a held setup change — r7 broke-2)
   if (!rstF) check("SE-G resetAllData is extractable", false, "anchor / compile");
   else {
@@ -17624,7 +17625,7 @@ await (async () => {
       const noop = () => {};
       await rstF({ isScheduler: true, userProfile: null, alert: noop, schedEditable: a.schedEditable, prompt: () => { w.prompts++; return "RESET"; }, setSaveStatus: (s) => w.status.push(s), setTimeout: () => 0, sessionEpochRef: { current: 0 },
         snapshots: { capture: async () => { w.snaps++; if (o.duringSnap) o.duringSnap(); return { ok: true }; } }, schedSyncRef: a.schedSyncRef, showToast: a.showToast, logAudit: () => { w.audits++; },
-        allowWipeSaveRef: { current: false }, everHadRealDataRef: { current: true }, resetBusyRef: { current: false }, pendingSaveRef: { current: null }, setSetupSaveNudge: noop, supabase: { from: () => ({ upsert: async () => { w.upserts++; return { error: null }; } }) },
+        allowWipeSaveRef: { current: false }, everHadRealDataRef: { current: true }, resetBusyRef: { current: false }, pendingSaveRef: { current: null }, setSetupSaveNudge: noop, jobClaimRef: a.jobClaimRef, supabase: { from: () => ({ upsert: async () => { w.upserts++; return { error: null }; } }) },
         console: { error: (...x) => a.errors.push(x.map(String).join(" ")), warn: noop }, setSurgeons: () => { w.cleared++; }, INIT_SURGEONS: [], setApps: noop, INIT_APPS: [], toClearAll: async () => ({ ok: true }), // (21/n: it answers { ok } — review r4 fixes-2)
         setBackupMondaySet: noop, setFierceBackupSet: noop, scheduleRef: a.ref, commitSchedule: a.commitSchedule, runAuthoritativeSchedule: a.runAuthoritativeSchedule,
         setAppShifts: noop, setPriorCounts: noop, setYear1Counts: noop, setStartMonth: noop, setStartYear: noop })();
@@ -17648,7 +17649,7 @@ await (async () => {
 
   // ── (4) Restore: the gate (at the tap, and again once the snapshot is read), the Undo step, one message ──
   const rvSrc = after("  const restoreConfirmText = ", "\n  // ─── Roll forward counts");
-  const rvF = rvSrc && fnG("schedEditable, isScheduler, userProfile, setRestoreBusyId, setSaveStatus, snapshots, scheduleRef, pushUndo, commitSchedule, runAuthoritativeSchedule, schedSyncRef, confirm, snapshotReasonLabel, showToast, setSurgeons, setApps, setBackupMondaySet, setFierceBackupSet, setAppShifts, setPriorCounts, setYear1Counts, setStartMonth, setStartYear, setNumWeeks, setStartMondayOverride, setHolidayAssignments, setPendingLocks, setSilvisRule, sfRule, SF_RULE_DEFAULT, setDismissedWarnings, lastSyncRef, everHadRealDataRef, logAudit, loadSnapshots, setTimeout, alert, sessionEpochRef",
+  const rvF = rvSrc && fnG("schedEditable, isScheduler, userProfile, setRestoreBusyId, setSaveStatus, snapshots, scheduleRef, pushUndo, commitSchedule, runAuthoritativeSchedule, schedSyncRef, confirm, snapshotReasonLabel, showToast, setSurgeons, setApps, setBackupMondaySet, setFierceBackupSet, setAppShifts, setPriorCounts, setYear1Counts, setStartMonth, setStartYear, setNumWeeks, setStartMondayOverride, setHolidayAssignments, setPendingLocks, setSilvisRule, sfRule, SF_RULE_DEFAULT, setDismissedWarnings, lastSyncRef, everHadRealDataRef, logAudit, loadSnapshots, setTimeout, alert, sessionEpochRef, jobClaimRef",
     "(() => { const restoreConfirmText = " + rvSrc + "\n  return { restoreSnapshot }; })()");
   if (!rvF) check("SE-G restoreSnapshot is extractable", false, "anchor / compile");
   else {
@@ -17666,7 +17667,7 @@ await (async () => {
         runAuthoritativeSchedule: a.runAuthoritativeSchedule, schedSyncRef: a.schedSyncRef, confirm: () => { w.confirms++; return true; }, snapshotReasonLabel: (r) => r, showToast: a.showToast,
         setSurgeons: () => { w.adopted++; }, setApps: noop, setBackupMondaySet: noop, setFierceBackupSet: noop, setAppShifts: noop, setPriorCounts: noop, setYear1Counts: noop, setStartMonth: noop, setStartYear: noop,
         setNumWeeks: noop, setStartMondayOverride: noop, setHolidayAssignments: noop, setPendingLocks: noop, setSilvisRule: noop, sfRule: (x) => x, SF_RULE_DEFAULT: {}, setDismissedWarnings: noop,
-        lastSyncRef: { current: null }, everHadRealDataRef: { current: false }, logAudit: noop, loadSnapshots: noop, setTimeout: () => 0, alert: () => { w.alerts++; } })
+        lastSyncRef: { current: null }, everHadRealDataRef: { current: false }, logAudit: noop, loadSnapshots: noop, setTimeout: () => 0, alert: () => { w.alerts++; }, jobClaimRef: a.jobClaimRef })
         .restoreSnapshot({ id: 9, reason: "manual", created_at: "2026-10-13T00:00:00Z" });
       await a.settle();
       return w;
