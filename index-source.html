@@ -732,6 +732,15 @@ function CallSchedule() {
   // this screen still holds the OLD one. The setup autosave's timer writes
   // nothing meanwhile (resetAllData sets it; its final run and unarm() drop it).
   const resetBusyRef = useRef(false);
+  // jobClaimRef (P7): a factory reset or a snapshot restore from the moment it
+  // passes its job gate until it ends — { what: "reset" | "restore" }. Each
+  // spends awaits (its snapshot, the snapshot read and the question, the
+  // stored-data clears, the blob) BEFORE it registers its engine weeks job,
+  // and the engine's jobPending() is null until then; the job gate
+  // (schedEditable("job")) refuses on this too, so a clear / reset / restore /
+  // publish tapped meanwhile is refused at its tap. The holder's own
+  // re-checks hand it in as `own`.
+  const jobClaimRef = useRef(null);
   // loadFailedRef is true when the initial read THREW (network/transient error),
   // as opposed to returning an empty row. A session that couldn't read the row
   // must not autosave — otherwise a privileged session with degraded state could
@@ -2292,7 +2301,10 @@ function CallSchedule() {
   //    first took its `before` from a screen showing the first's target, not
   //    yet applied — when both then wrote nothing, putting that back sent the
   //    first's target as an ordinary save (a saved week deleted, a refused
-  //    restore's copy written).
+  //    restore's copy written). A reset or restore counts from its tap, not
+  //    only once its weeks job is registered (jobClaimRef): one overlapping
+  //    a clear set the counts to {} while the clear was about to take its
+  //    weeks off them (negative counts saved).
   const [reauthNeeded, setReauthNeeded] = useState(false);
   const [reauthBusy, setReauthBusy] = useState(false);
   // The SOFT stale-sign-in warning (A7(3)): set on resume when the stored
@@ -2305,7 +2317,7 @@ function CallSchedule() {
   const [reauthSheet, setReauthSheet] = useState(false);
   const [reauthPassword, setReauthPassword] = useState("");
   const [reauthError, setReauthError] = useState("");
-  const schedEditable = (job) => {
+  const schedEditable = (job, own) => {
     if (!schedSyncRef.current.isSeeded()) {
       showToast("The schedule hasn't loaded yet — nothing was changed. It retries every minute; try again shortly.", "error");
       return false;
@@ -2316,7 +2328,8 @@ function CallSchedule() {
       return false;
     }
     if (job) {
-      const busy = schedSyncRef.current.jobPending();
+      const claimed = jobClaimRef.current && jobClaimRef.current !== own ? jobClaimRef.current.what : null; // a reset / restore not yet registered (never the caller's own)
+      const busy = schedSyncRef.current.jobPending() || claimed;
       if (busy) { showToast(`${schedSyncRef.current.jobLabel(busy)} is still running — wait for it to finish, then try again.`, "error"); return false; }
     }
     return true;
@@ -2936,6 +2949,13 @@ function CallSchedule() {
     // clear / reset / restore / publish queued or running), before anything
     // is asked or written: the reset deletes every week.
     if (!schedEditable("job")) return;
+    // From here until it ends the reset is a pending job (jobClaimRef, P7):
+    // its weeks job is registered only after the awaits below, and a clear /
+    // reset / restore / publish tapped meanwhile is refused at its tap. Let go
+    // however it ends (then its weeks job, if any, is the engine's pending one).
+    const claim = { what: "reset" };
+    jobClaimRef.current = claim;
+   try {
     // Typed confirmation — a single mis-tap can no longer wipe the schedule.
     const typed = prompt(
       "⚠ This permanently clears the ENTIRE saved schedule for everyone " +
@@ -2962,7 +2982,7 @@ function CallSchedule() {
       return;
     }
     // The edit gate again, after the snapshot's await — before the first write.
-    if (!schedEditable("job")) {
+    if (!schedEditable("job", claim)) {
       setSaveStatus("Reset cancelled");
       setTimeout(() => setSaveStatus(""), 2000);
       return;
@@ -3126,8 +3146,9 @@ function CallSchedule() {
       showToast(weeksNotCleared(r), "error");
     };
     // …and never while another clear / reset / restore / publish is queued or
-    // running by now — one requested during the stored-data clears above
-    // (review r2 regress-1): the weeks are left as they are, said as above.
+    // running by now (review r2 regress-1) — a backstop: one tapped during the
+    // stored-data clears above was refused at its tap (the reset's claim). The
+    // weeks are left as they are, said as above.
     const busyJob = schedSyncRef.current.jobPending();
     if (busyJob) tellWeeks({ ok: false, wrote: false, error: `${schedSyncRef.current.jobLabel(busyJob)} is still running — wait for it to finish.` });
     else {
@@ -3135,6 +3156,7 @@ function CallSchedule() {
       commitSchedule({});
       runAuthoritativeSchedule({}, "reset", null, before, weeksNotCleared).then(tellWeeks);
     }
+   } finally { if (jobClaimRef.current === claim) jobClaimRef.current = null; }
   };
 
   // ─── Push Notifications — sent via send-push Edge Function ───
@@ -5871,6 +5893,12 @@ function CallSchedule() {
   const restoreSnapshot = async (snap) => {
     if (!(isScheduler || userProfile?.role === "admin")) return;
     if (!schedEditable("job")) return; // the edit gate, before anything is read, asked or written (and no other clear / reset / restore / publish queued or running — P7)
+    // From here until it ends the restore is a pending job (jobClaimRef, P7):
+    // its weeks job is registered only once the snapshot is read, asked and
+    // its blob written; a clear / reset / restore / publish tapped meanwhile
+    // is refused at its tap. Let go in the finally below.
+    const claim = { what: "restore" };
+    jobClaimRef.current = claim;
     // This session, at the tap (review r3 regress-3): once a sign-out /
     // another account moves it, the restore goes no further — nothing asked on
     // the next screen, no blob written, no weeks job, nothing adopted or said.
@@ -5905,8 +5933,9 @@ function CallSchedule() {
         // While it runs the header's ONE line is the engine's "Restoring… keep
         // the app open" (A16), so the snapshot's own status ends here.
         // Never while another clear / reset / restore / publish is queued or
-        // running by now — one requested while the before_restore snapshot
-        // and the blob were written (P7): the weeks are left as they are.
+        // running by now (P7) — a backstop: one tapped while the
+        // before_restore snapshot and the blob were written was refused at
+        // its tap (the restore's claim). The weeks are left as they are.
         const busyJob = schedSyncRef.current.jobPending();
         if (busyJob) { setSaveStatus(""); weeksR = { ok: false, wrote: false, error: `${schedSyncRef.current.jobLabel(busyJob)} is still running — wait for it to finish.` }; return { ok: false, error: weeksR.error }; }
         const undoStep = Object.keys(scheduleRef.current).length > 0 ? pushUndo() : null;
@@ -5925,7 +5954,7 @@ function CallSchedule() {
         // again first: the read took a moment.
         confirm: (sched) => {
           if (sessionEpochRef.current !== ep) return false; // the snapshot was read across a session boundary: nothing asked on the next session's screen
-          if (!schedEditable("job")) return false;
+          if (!schedEditable("job", claim)) return false;
           const yes = confirm(restoreConfirmText(snapshotReasonLabel(snap.reason), when, sched, schedSyncRef.current.knownSchedule()));
           if (yes) setSaveStatus("Restoring snapshot…");
           return yes;
@@ -5934,7 +5963,7 @@ function CallSchedule() {
         // written: still this session — else nothing is written as the next account.
         proceed: () => sessionEpochRef.current === ep,
       });
-    } finally { setRestoreBusyId(null); } // never left busy (A5(f))
+    } finally { setRestoreBusyId(null); if (jobClaimRef.current === claim) jobClaimRef.current = null; } // never left busy (A5(f)); its weeks job, if still running, is the engine's pending one
     // Another session now (review r3 regress-3; and r3-regress-1: a refused
     // weeks leg hands back the restored blob — never adopted on the next
     // account's screen, never written as that account by its autosave):
