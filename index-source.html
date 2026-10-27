@@ -479,7 +479,10 @@ function CallSchedule() {
   // silently reverts the other person's change. A PUBLISH step also carries
   // the counts as they were before it (owner 2026-10-12: publish → ↩ Undo →
   // publish used to count the period twice — Undo put the schedule back but
-  // not the counts). Other steps carry none and leave the counts alone.
+  // not the counts). Other steps carry none and leave the counts alone — but
+  // a CLEAR step (2026-10-26) is marked `clear`, and gets `uncounted` once
+  // its clear stands: exactly the counts the clear took off, which ↩ Undo
+  // puts back on. A step ↩ Undo takes back is marked `undone`.
   // Returns the step, so a caller whose change then doesn't happen (a clear /
   // restore that wrote nothing) can take exactly that step back.
   const pushUndo = useCallback((counts) => {
@@ -496,12 +499,25 @@ function CallSchedule() {
       showToast(`Can't undo — the week${plan.blocked.length === 1 ? "" : "s"} of ${plan.blocked.join(", ")} ${plan.blocked.length === 1 ? "was" : "were"} changed by someone else since. Nothing was changed.`, "error");
       return;
     }
+    // A clear's step once something was published into the emptied schedule (2026-10-26) — a publish there
+    // pushes no step of its own: refused whole too. The Undo would write the cleared weeks over that publish
+    // (people may already have been told of it), and the counts can't follow both.
+    const since = step.clear ? plan.touched.filter(k => k in (scheduleRef.current || {})) : [];
+    if (since.length) {
+      showToast(`Can't undo the clear — ${since.length} week${since.length === 1 ? " was" : "s were"} published since. Nothing was changed. To go back to the schedule from before the clear, restore its "Before schedule clear" snapshot in Settings.`, "error");
+      return;
+    }
     commitSchedule(plan.next);
     // A publish step takes its counts back off too — only together with the schedule, never one without the other.
     if (step.counts) { setPriorCounts(step.counts.prior || {}); setYear1Counts(step.counts.y1 || {}); }
+    // A clear step puts back on exactly what its clear took off (2026-10-26) — as a change, not the counts as they
+    // were, so a count adopted or edited since stands. None if the clear took none off (refused, or taken back
+    // before it stood).
+    if (step.uncounted) { const u = step.uncounted; setPriorCounts(prev => applyCountsDelta(prev, u.back)); setYear1Counts(prev => applyCountsDelta(prev, u.back1yr)); }
     // …and the Calendar's "✓ Published" banner (justPublished — review R1): the publish is taken back, and its 📣
     // would announce a schedule that was undone. (Any other step leaves it.)
     if (step.counts) { setJustPublished(null); publishUndoneRef.current++; }
+    step.undone = true; // (a clear still running when its step is taken back takes nothing off the counts — clearSchedule)
     setScheduleHistory(h => h.slice(0, -1));
   };
 
@@ -5727,7 +5743,7 @@ function CallSchedule() {
     // there, silently — none of it is run, saved or said as the next session.
     const ep = sessionEpochRef.current;
     if (!schedEditable("job")) return; // the edit gate first — before even asking (and no other clear / reset / restore / publish queued or running — P7)
-    if (!confirm("Clear the entire generated schedule? Holiday assignments and setup data will be kept.\n\nThis cannot be undone.")) return;
+    if (!confirm("Clear the entire generated schedule? Holiday assignments and setup data will be kept. The cleared weeks from May 4, 2026 on come off the running totals.\n\nThis cannot be undone.")) return;
     // Preserve pre-clear state; if the snapshot can't be written, refuse to clear.
     const clearSnap = await snapshots.capture("clear_schedule", { minWeeks: Object.keys(schedSyncRef.current.knownSchedule()).length ? 1 : 0 });
     if (sessionEpochRef.current !== ep) return;
@@ -5739,16 +5755,59 @@ function CallSchedule() {
     // The Undo step only now that the clear goes ahead — and it's taken back
     // (runAuthoritativeSchedule) if the job then writes nothing.
     const undoStep = Object.keys(scheduleRef.current).length > 0 ? pushUndo() : null;
+    if (undoStep) undoStep.clear = true; // (its ↩ Undo is refused once something was published into the emptied schedule — undoLastChange)
     const before = scheduleRef.current; // the screen as it was — what a refused clear puts back (E4): edits pending from before the tap stay pending
     commitSchedule({});
+    // The cleared weeks come OFF the counts (owner 2026-10-26) once the clear
+    // STANDS — its job not refused with nothing written (the complement of
+    // runAuthoritativeSchedule's put-back), in this session, its step not
+    // taken back by ↩ Undo meanwhile — and only the weeks of `before` still
+    // off the screen then (a delete that met someone else's change and was
+    // adopted back stays stored, and counted). Not at the tap: the setup
+    // autosave saves the counts within a second, and a clear then refused
+    // after its deadline, fenced by a sign-out or cut short by the app
+    // closing would leave its weeks stored and counted out. In time: below;
+    // still running at its deadline: when it ends (its late()). Each saves
+    // the counts it set (from the latest render's), and records them on its
+    // Undo step — ↩ Undo puts exactly those back.
+    const stood = (r) => !!r && !r.running && !r.skipped && !!(r.ok || r.wrote || !(r.error || r.internal));
+    const uncount = (r) => {
+      if (!undoStep || undoStep.undone || !stood(r) || sessionEpochRef.current !== ep) return null;
+      const shown = scheduleRef.current || {};
+      const latest = stateBundleRef.current();
+      const off = uncountWeeks(Object.fromEntries(Object.entries(before).filter(([mStr]) => !(mStr in shown))), { prior: latest.priorCounts, y1: latest.year1Counts });
+      if (off) undoStep.uncounted = off;
+      return off;
+    };
+    // The clear's setup save — from the state as it is NOW (stateBundleRef:
+    // the latest render's) with the counts it just set (`off`, not rendered
+    // yet), and never across the session boundary (signed out / another
+    // account: nothing of this session is written).
+    const saveCleared = (off) => (async () => {
+      try {
+        if (!setupReadRef.current || !auth.getSession()) return;
+        const ts = new Date().toISOString();
+        lastSyncRef.current = ts;
+        // (Our own write, not a read: the setup as last written or read stays the autosave's baseline — review r3.)
+        if (setupBaseRef.current) setupBaseRef.current = { at: ts, sig: setupBaseRef.current.sig };
+        // Stage 6: schedule lives in schedule_weeks (cleared by the authoritative engine job).
+        const blobData = stateBundleRef.current(Object.assign({ schedule: {}, _intentionalClear: true }, off ? { priorCounts: off.prior, year1Counts: off.y1 } : {})); delete blobData.schedule;
+        delete blobData.vacations; delete blobData.noCallDays; // retired mirror — time_off is the source
+        const { error: clearErr } = await supabase.from("call_schedule_data").upsert({ id: "main", data: blobData, updated_at: ts });
+        if (clearErr) throw new Error(`clear-schedule blob save failed: ${String(clearErr).slice(0, 200)}`); // catch toasts; checked autosave retries
+      } catch(e) { console.error("Immediate save failed:", e); if (sessionEpochRef.current === ep) showToast("Couldn't save the cleared state — check your connection.", "error"); }
+    })();
     // Every week deleted: an authoritative engine job with its own grant (the
     // re-read of the whole table comes first, so weeks added elsewhere since
     // the last pull go too). "Schedule cleared" only once it has happened;
     // while it runs, the engine's line says "Clearing… keep the app open" —
     // the header's ONE line for it (A16), so no status of ours beside it.
-    const cr = await runAuthoritativeSchedule({}, "clear", undoStep, before);
+    // Its late(): the counts of one that ends after its deadline (the engine's
+    // own words tell how it ended).
+    const cr = await runAuthoritativeSchedule({}, "clear", undoStep, before, (r) => { const off = uncount(r); if (off) saveCleared(off); return null; });
     if (sessionEpochRef.current !== ep) return; // another session now (a job still running across the boundary says no "taking longer than expected" there either — 19/n open item 1)
     if (cr.skipped === "reset" || cr.skipped === "cancelled") return; // fenced by a sign-out (review r1, 17/n open item): another session now — nothing is said, or saved, on its screen
+    const off = uncount(cr); // (none yet for one still running: its late())
     if (cr.running) showToast(cr.error, "info"); // A5(f): still deleting past its deadline — the engine toasts how it ended
     else if (!cr.ok) {
       // ONE message for the outcome: ours, with the engine's own detail (which
@@ -5756,24 +5815,8 @@ function CallSchedule() {
       showToast(cr.error ? "The schedule was NOT cleared — " + cr.error : "The schedule wasn't fully cleared. " + (cr.notice || `${schedSyncRef.current.pending().length} week(s) not deleted yet — retrying automatically.`), "error");
       if (cr.error) return;
     } else { setSaveStatus("Schedule cleared"); setTimeout(() => setSaveStatus(""), 2000); }
-    // Immediately save to prevent polling race condition — from the state as
-    // it is NOW, after the job (stateBundleRef: the latest render's), and
-    // never across the session boundary (signed out / another account during
-    // the job: nothing of this session is written).
-    (async () => {
-      try {
-        if (!setupReadRef.current || !auth.getSession()) return;
-        const ts = new Date().toISOString();
-        lastSyncRef.current = ts;
-        // (Our own write, not a read: the setup as last written or read stays the autosave's baseline — review r3.)
-        if (setupBaseRef.current) setupBaseRef.current = { at: ts, sig: setupBaseRef.current.sig };
-        // Stage 6: schedule lives in schedule_weeks (cleared by the authoritative engine job above).
-        const blobData = stateBundleRef.current({ schedule: {}, _intentionalClear: true }); delete blobData.schedule;
-        delete blobData.vacations; delete blobData.noCallDays; // retired mirror — time_off is the source
-        const { error: clearErr } = await supabase.from("call_schedule_data").upsert({ id: "main", data: blobData, updated_at: ts });
-        if (clearErr) throw new Error(`clear-schedule blob save failed: ${String(clearErr).slice(0, 200)}`); // catch toasts; checked autosave retries
-      } catch(e) { console.error("Immediate save failed:", e); if (sessionEpochRef.current === ep) showToast("Couldn't save the cleared state — check your connection.", "error"); }
-    })();
+    // Immediately save to prevent polling race condition (after the job).
+    saveCleared(off);
   };
 
   // ─── Snapshot restore (Settings → Restore from Snapshot) ───
@@ -6010,15 +6053,16 @@ function CallSchedule() {
     Object.keys(add).forEach(id => { out[id] = {}; Object.keys(add[id]).forEach(k => { out[id][k] = add[id][k] - ((sub[id] || {})[k] || 0); }); });
     return out;
   };
+  // COUNTS FLOOR: everything through April 2026 is already inside the
+  // multi-year aggregates (the 45-month PDF-parse era) AND, since the
+  // 2026-08 historical import, also in schedule_weeks. Rolling a
+  // (re)published historical range forward would double-count those months
+  // into counts that already contain them. Nobody publishes the past on
+  // purpose — this makes sure an accidental publish can't. (A clear takes
+  // off only the weeks from the floor on, too — uncountWeeks.)
+  const COUNTS_FLOOR = "2026-05-04";
   const rollForwardCounts = useCallback((sched, replaced) => {
     if (!sched || Object.keys(sched).length === 0) return null;
-    // COUNTS FLOOR: everything through April 2026 is already inside the
-    // multi-year aggregates (the 45-month PDF-parse era) AND, since the
-    // 2026-08 historical import, also in schedule_weeks. Rolling a
-    // (re)published historical range forward would double-count those months
-    // into counts that already contain them. Nobody publishes the past on
-    // purpose — this makes sure an accidental publish can't.
-    const COUNTS_FLOOR = "2026-05-04";
     sched = Object.fromEntries(Object.entries(sched).filter(([mStr]) => mStr >= COUNTS_FLOOR));
     if (Object.keys(sched).length === 0) return null;
     // Only a replaced week that is itself being published again comes off
@@ -6035,6 +6079,27 @@ function CallSchedule() {
     const delta1yr = netCounts(countsOfWeeks(sched, inYear), countsOfWeeks(old, inYear));
     setYear1Counts(prev => applyCountsDelta(prev, delta1yr));
     return { delta, delta1yr, replacedCounted: Object.keys(old).length };
+  }, [surgeons]);
+  // ✕ Clear's counts (owner 2026-10-26): the weeks it deletes come OFF the
+  // counts once the clear stands (clearSchedule). It used to leave them, so
+  // clearing a period and publishing it again counted it twice. The rule is
+  // a re-publish's for the weeks it replaces: from the counts floor on, each
+  // week as it is stored now, and into 1-Year only this calendar year's.
+  // `from`: the counts now ({ prior, y1 } — the latest render's). Returns
+  // { back, back1yr, prior, y1 } — what came off (as a delta that puts it
+  // back on: ↩ Undo's) and the counts after, for the clear's immediate save —
+  // or null (no week from the floor on).
+  const uncountWeeks = useCallback((weeks, from) => {
+    const gone = Object.fromEntries(Object.entries(weeks || {}).filter(([mStr]) => mStr >= COUNTS_FLOOR));
+    if (Object.keys(gone).length === 0) return null;
+    const none = countsOfWeeks({});
+    const back = countsOfWeeks(gone), delta = netCounts(none, back);
+    setPriorCounts(prev => applyCountsDelta(prev, delta));
+    const currentYear = new Date().getFullYear();
+    const inYear = (mStr) => parse(mStr).getFullYear() === currentYear;
+    const back1yr = countsOfWeeks(gone, inYear), delta1yr = netCounts(none, back1yr);
+    setYear1Counts(prev => applyCountsDelta(prev, delta1yr));
+    return { back, back1yr, prior: applyCountsDelta(from.prior, delta), y1: applyCountsDelta(from.y1, delta1yr) };
   }, [surgeons]);
 
   // "Needs your OK" (owner decision 2026-10-11): every bend, empty slot,

@@ -432,7 +432,7 @@ const MUTANTS = [
   { id: "P1", app: true, what: "P1: commitSchedule doesn't ask the engine to report (the header reads Synced through an edit's debounce — A16)",
     from: " Promise.resolve().then(() => { if (schedSyncRef.current) schedSyncRef.current.report(); });", to: "" },
   { id: "P2a", app: true, what: "P2: Clear hands the engine no `before` (a refused clear drops the edits pending from before the tap)",
-    from: 'runAuthoritativeSchedule({}, "clear", undoStep, before)', to: 'runAuthoritativeSchedule({}, "clear", undoStep)' },
+    from: 'runAuthoritativeSchedule({}, "clear", undoStep, before, (r) =>', to: 'runAuthoritativeSchedule({}, "clear", undoStep, undefined, (r) =>' }, // (2026-10-26: + its late(), the counts — sync-guards CW8)
   { id: "P2b", app: true, what: "P2: Restore's schedule leg hands the engine no `before`",
     from: 'runAuthoritativeSchedule(sched, "restore", undoStep, before, weeksNotRestored)', to: 'runAuthoritativeSchedule(sched, "restore", undoStep, undefined, weeksNotRestored)' },
   { id: "P2c", app: true, what: "P2: Factory reset hands the engine no `before`",
@@ -462,11 +462,11 @@ const MUTANTS = [
   { id: "P4g", app: true, what: "P4: the edge-URL save runs across the boundary (this page's URL echoed as the next account when its role arrives)",
     from: "    if (!setupReadRef.current) return;\n    const timer = setTimeout(async () => {", to: "    const timer = setTimeout(async () => {" },
   { id: "P5a", app: true, what: "P5: the clear's setup save after its job is built from the tap's render (a setting changed / adopted meanwhile is reverted)",
-    from: "stateBundleRef.current({ schedule: {}, _intentionalClear: true })", to: "buildStateBundle({ schedule: {}, _intentionalClear: true })" },
+    from: "stateBundleRef.current(Object.assign({ schedule: {}, _intentionalClear: true }", to: "buildStateBundle(Object.assign({ schedule: {}, _intentionalClear: true }" }, // (2026-10-26: + the counts it set — sync-guards CW5)
   { id: "P5b", app: true, what: "P4/P5: the clear's setup save is made across the session boundary (signed out during the job: an anon upsert)",
     from: "        if (!setupReadRef.current || !auth.getSession()) return;\n        const ts = new Date().toISOString();", to: "        const ts = new Date().toISOString();" },
   { id: "P6a", app: true, what: "P6: Clear shows its own 'Clearing…' beside the engine's busy line",
-    from: '    const cr = await runAuthoritativeSchedule({}, "clear", undoStep, before);', to: '    setSaveStatus("Clearing… keep the app open");\n    const cr = await runAuthoritativeSchedule({}, "clear", undoStep, before);' },
+    from: '    const cr = await runAuthoritativeSchedule({}, "clear", undoStep, before, (r) =>', to: '    setSaveStatus("Clearing… keep the app open");\n    const cr = await runAuthoritativeSchedule({}, "clear", undoStep, before, (r) =>' },
   { id: "P6b", app: true, what: "P6: Accept & Publish shows its own 'Publishing…' beside the engine's busy line",
     from: '        setView("calendar");\n        setSaveStatus(""); // the snapshot\'s status ends', to: '        setView("calendar");\n        setSaveStatus("Publishing…"); // the snapshot\'s status ends' },
   { id: "P6c", app: true, what: "P6: Generate & Publish shows its own 'Publishing…' beside the engine's busy line",
@@ -4908,6 +4908,7 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
     pendingSaveRef: env.pendingSaveRef || { current: null }, setSetupSaveNudge: env.setSetupSaveNudge || (() => {}), // (the reset's unarm() nudges a held setup change — review r7 broke-2)
     setJustPublished: env.setJustPublished || (() => {}), // (2026-10-20: Accept & Publish's landed publish raises the Calendar's "nobody notified yet" banner; the boundary clears it — sync-guards CD runs both)
     publishUndoneRef: env.publishUndoneRef || { current: 0 }, // (2026-10-25: ↩ Undo of a publish counts it; a late publish's banner checks it — sync-guards CO4)
+    uncountWeeks: env.uncountWeeks || (() => null), // (2026-10-26: ✕ Clear takes its weeks off the counts — these runs move none; sync-guards CW runs the real one)
     timeOffLoadSeqRef: env.timeOffLoadSeqRef || { current: { read: 0, del: 0, shown: 0 } } })) : mk); // (deleteTimeOff counts its answers for the time-off reads — review r7 fix-2)
   const HX = appHelpers();
   const F = {
@@ -4968,7 +4969,9 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
     // (2026-10-20, review R1: a clear / reset / restore that stands takes the Calendar's "nobody notified yet" banner
     // down, in this session only — sess() gives the session and setJustPublished's no-op; sync-guards CH5 runs it)
     runAuth: sess(fnX("schedSyncRef, setScheduleHistory, sessionEpochRef, setJustPublished", decl("runAuthoritativeSchedule", "\n  };\n"))),
-    clear: sess(fnX("schedEditable, confirm, snapshots, schedSyncRef, showToast, scheduleRef, pushUndo, commitSchedule, setSaveStatus, runAuthoritativeSchedule, setTimeout, lastSyncRef, buildStateBundle, stateBundleRef, setupReadRef, auth, supabase, console, sessionEpochRef, setupBaseRef",
+    // (2026-10-26: ✕ Clear takes its weeks off the counts once it stands — uncountWeeks; sess() gives it, and these
+    // runs move no counts — sync-guards CW runs the real one)
+    clear: sess(fnX("schedEditable, confirm, snapshots, schedSyncRef, showToast, scheduleRef, pushUndo, commitSchedule, setSaveStatus, runAuthoritativeSchedule, setTimeout, lastSyncRef, buildStateBundle, stateBundleRef, setupReadRef, auth, supabase, console, sessionEpochRef, setupBaseRef, uncountWeeks",
       decl("clearSchedule", "\n  };\n\n  // ─── Snapshot restore"))),
     reset: sess(fnX("isScheduler, userProfile, alert, schedEditable, prompt, setSaveStatus, setTimeout, snapshots, schedSyncRef, showToast, logAudit, allowWipeSaveRef, everHadRealDataRef, supabase, console, setSurgeons, INIT_SURGEONS, setApps, INIT_APPS, toClearAll, setBackupMondaySet, setFierceBackupSet, scheduleRef, commitSchedule, runAuthoritativeSchedule, setAppShifts, setPriorCounts, setYear1Counts, setStartMonth, setStartYear, sessionEpochRef, resetBusyRef, pendingSaveRef, setSetupSaveNudge",
       decl("resetAllData", "\n  };\n\n  // ─── Push Notifications"))),
