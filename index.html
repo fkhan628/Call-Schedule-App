@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.10.27a";
+    var APP_VERSION = "2026.10.27b";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -476,6 +476,7 @@ function CallSchedule() {
   const everHadRealDataRef = useRef(false);
   const allowWipeSaveRef = useRef(false);
   const resetBusyRef = useRef(false);
+  const jobClaimRef = useRef(null);
   const loadFailedRef = useRef(false);
   const [vacRequests, setVacRequests] = useState([]);
   const [vacReqSurgeon, setVacReqSurgeon] = useState("");
@@ -1882,7 +1883,7 @@ function CallSchedule() {
   const [reauthSheet, setReauthSheet] = useState(false);
   const [reauthPassword, setReauthPassword] = useState("");
   const [reauthError, setReauthError] = useState("");
-  const schedEditable = job => {
+  const schedEditable = (job, own) => {
     if (!schedSyncRef.current.isSeeded()) {
       showToast("The schedule hasn't loaded yet — nothing was changed. It retries every minute; try again shortly.", "error");
       return false;
@@ -1893,7 +1894,8 @@ function CallSchedule() {
       return false;
     }
     if (job) {
-      const busy = schedSyncRef.current.jobPending();
+      const claimed = jobClaimRef.current && jobClaimRef.current !== own ? jobClaimRef.current.what : null;
+      const busy = schedSyncRef.current.jobPending() || claimed;
       if (busy) {
         showToast(`${schedSyncRef.current.jobLabel(busy)} is still running — wait for it to finish, then try again.`, "error");
         return false;
@@ -2295,166 +2297,174 @@ function CallSchedule() {
       return;
     }
     if (!schedEditable("job")) return;
-    const typed = prompt("⚠ This permanently clears the ENTIRE saved schedule for everyone " + "(schedule, vacations, APP shifts, counts).\n\n" + "APP day-off entries are KEPT (by design — transcribed reference data " + "a schedule reset shouldn't eat); clear them chip-by-chip if needed.\n\n" + "A snapshot is saved first so it can be restored, but you should also " + "Export a JSON backup before doing this.\n\n" + 'Type  RESET  (all caps) to confirm:');
-    if (typed !== "RESET") {
-      setSaveStatus("Reset cancelled");
-      setTimeout(() => setSaveStatus(""), 2000);
-      return;
-    }
-    const resetSnap = await snapshots.capture("reset_all_data", {
-      minWeeks: Object.keys(schedSyncRef.current.knownSchedule()).length ? 1 : 0
-    });
-    if (sessionEpochRef.current !== ep) return;
-    if (!resetSnap.ok) {
-      showToast("Couldn't save a backup snapshot — reset cancelled. Nothing was deleted.", "error");
-      setSaveStatus("Reset cancelled");
-      setTimeout(() => setSaveStatus(""), 2000);
-      return;
-    }
-    if (!schedEditable("job")) {
-      setSaveStatus("Reset cancelled");
-      setTimeout(() => setSaveStatus(""), 2000);
-      return;
-    }
-    logAudit("system.factory_reset", "⚠ FACTORY RESET — wiped all schedule data back to defaults");
-    allowWipeSaveRef.current = true;
-    everHadRealDataRef.current = false;
-    const unarm = () => {
-      resetBusyRef.current = false;
-      allowWipeSaveRef.current = false;
-      everHadRealDataRef.current = true;
-      if (pendingSaveRef.current) setSetupSaveNudge(n => n + 1);
+    const claim = {
+      what: "reset"
     };
-    const resetSetupHere = () => {
-      setSurgeons(INIT_SURGEONS);
-      setApps(INIT_APPS);
-      setBackupMondaySet(new Set());
-      setFierceBackupSet(new Set());
-      setPriorCounts({});
-      setYear1Counts({});
-      setStartMonth(4);
-      setStartYear(2026);
-    };
-    const clearRow = async (table, data) => {
-      try {
-        const {
-          error
-        } = await supabase.from(table).upsert({
-          id: "main",
-          data,
-          updated_at: new Date().toISOString()
-        });
-        return error ? {
-          ok: false,
-          error
-        } : {
-          ok: true
-        };
-      } catch (e) {
-        return {
-          ok: false,
-          error: e,
-          unanswered: true
-        };
-      }
-    };
-    const CLEAR_WAIT_MS = 20000;
-    const bounded = (p, onLate) => {
-      let settled = false;
-      p.then(() => {
-        settled = true;
-      });
-      return Promise.race([p, new Promise(r => setTimeout(() => {
-        if (settled) return;
-        r({
-          ok: false,
-          unanswered: true,
-          error: `no answer in ${CLEAR_WAIT_MS / 1000} s`
-        });
-        if (onLate) p.then(x => {
-          if (x && x.ok && sessionEpochRef.current === ep) onLate();
-        });
-      }, CLEAR_WAIT_MS))]);
-    };
-    const lateBlob = () => setSetupSaveNudge(n => n + 1),
-      lateTimeOff = () => {
-        everHadRealDataRef.current = false;
-      };
-    resetBusyRef.current = true;
-    const blobClear = await bounded(clearRow("call_schedule_data", {
-      _intentionalClear: true
-    }), lateBlob);
-    if (sessionEpochRef.current !== ep) {
-      unarm();
-      return;
-    }
-    const appClear = blobClear.ok ? await bounded(clearRow("app_shifts_data", {})) : null;
-    if (sessionEpochRef.current !== ep) {
-      unarm();
-      return;
-    }
-    if (!blobClear.ok || !appClear.ok) {
-      console.error("Factory reset: clearing stored data failed:", (blobClear.ok ? appClear : blobClear).error);
-      unarm();
-      if (blobClear.ok) {
-        resetSetupHere();
-        showToast("Factory reset: the setup was reset, but clearing the APP shifts " + (appClear.unanswered ? "got no answer — so the APP shifts may have been cleared, and the" : "failed — so the") + " time off and the schedule weeks were left as they are. Run the reset again, or restore the \"Before factory reset\" snapshot.", "error");
-        return;
-      }
-      showToast(blobClear.unanswered ? "Couldn't clear the stored data — reset cancelled. The server didn't answer, so the setup may have been reset; nothing else was. Run the reset again, or restore the \"Before factory reset\" snapshot." : "Couldn't clear the stored data — reset cancelled. Nothing was changed.", "error");
-      setSaveStatus("Reset cancelled");
-      setTimeout(() => setSaveStatus(""), 2000);
-      return;
-    }
-    const toClear = await bounded(toClearAll(undefined, {
-      quiet: true
-    }), lateTimeOff);
-    if (sessionEpochRef.current !== ep || !toClear || !toClear.ok) {
-      resetSetupHere();
-      setAppShifts({});
-    }
-    if (sessionEpochRef.current !== ep) {
-      unarm();
-      return;
-    }
-    if (!toClear || !toClear.ok) {
-      console.error("Factory reset: clearing the time off failed", toClear && toClear.unanswered ? "(no answer)" : "");
-      unarm();
-      showToast(toClear && toClear.unanswered ? "Factory reset: the setup and the APP shifts were reset, but the time-off clear got no answer — so the time off may have been cleared, and the schedule weeks were left as they are. Run the reset again, or restore the \"Before factory reset\" snapshot." : "Factory reset: the setup and the APP shifts were reset, but clearing the time off failed — so the time off and the schedule weeks were left as they are. Run the reset again, or restore the \"Before factory reset\" snapshot.", "error");
-      return;
-    }
-    resetBusyRef.current = false;
-    everHadRealDataRef.current = false;
-    resetSetupHere();
-    setAppShifts({});
-    const weeksNotCleared = r => {
-      if (!r || r.ok) return null;
-      const why = r.error && String(r.error).replace(/ — nothing was changed\./, ".").replace(/ Nothing was changed\./, "");
-      return why ? `Factory reset: the setup, APP shifts and time off were reset, but the schedule weeks were NOT cleared: ${why} Run the reset again, or restore the "Before factory reset" snapshot.` : "Factory reset: the schedule wasn't fully cleared. " + (r.notice || `${schedSyncRef.current.pending().length} week(s) not deleted yet — retrying automatically.`);
-    };
-    const tellWeeks = r => {
-      if (sessionEpochRef.current !== ep) return;
-      if (r.skipped === "reset" || r.skipped === "cancelled") return;
-      if (r.running) {
-        showToast(r.error, "info");
-        return;
-      }
-      if (r.ok) {
-        setSaveStatus("Reset complete");
+    jobClaimRef.current = claim;
+    try {
+      const typed = prompt("⚠ This permanently clears the ENTIRE saved schedule for everyone " + "(schedule, vacations, APP shifts, counts).\n\n" + "APP day-off entries are KEPT (by design — transcribed reference data " + "a schedule reset shouldn't eat); clear them chip-by-chip if needed.\n\n" + "A snapshot is saved first so it can be restored, but you should also " + "Export a JSON backup before doing this.\n\n" + 'Type  RESET  (all caps) to confirm:');
+      if (typed !== "RESET") {
+        setSaveStatus("Reset cancelled");
         setTimeout(() => setSaveStatus(""), 2000);
         return;
       }
-      showToast(weeksNotCleared(r), "error");
-    };
-    const busyJob = schedSyncRef.current.jobPending();
-    if (busyJob) tellWeeks({
-      ok: false,
-      wrote: false,
-      error: `${schedSyncRef.current.jobLabel(busyJob)} is still running — wait for it to finish.`
-    });else {
-      const before = scheduleRef.current;
-      commitSchedule({});
-      runAuthoritativeSchedule({}, "reset", null, before, weeksNotCleared).then(tellWeeks);
+      const resetSnap = await snapshots.capture("reset_all_data", {
+        minWeeks: Object.keys(schedSyncRef.current.knownSchedule()).length ? 1 : 0
+      });
+      if (sessionEpochRef.current !== ep) return;
+      if (!resetSnap.ok) {
+        showToast("Couldn't save a backup snapshot — reset cancelled. Nothing was deleted.", "error");
+        setSaveStatus("Reset cancelled");
+        setTimeout(() => setSaveStatus(""), 2000);
+        return;
+      }
+      if (!schedEditable("job", claim)) {
+        setSaveStatus("Reset cancelled");
+        setTimeout(() => setSaveStatus(""), 2000);
+        return;
+      }
+      logAudit("system.factory_reset", "⚠ FACTORY RESET — wiped all schedule data back to defaults");
+      allowWipeSaveRef.current = true;
+      everHadRealDataRef.current = false;
+      const unarm = () => {
+        resetBusyRef.current = false;
+        allowWipeSaveRef.current = false;
+        everHadRealDataRef.current = true;
+        if (pendingSaveRef.current) setSetupSaveNudge(n => n + 1);
+      };
+      const resetSetupHere = () => {
+        setSurgeons(INIT_SURGEONS);
+        setApps(INIT_APPS);
+        setBackupMondaySet(new Set());
+        setFierceBackupSet(new Set());
+        setPriorCounts({});
+        setYear1Counts({});
+        setStartMonth(4);
+        setStartYear(2026);
+      };
+      const clearRow = async (table, data) => {
+        try {
+          const {
+            error
+          } = await supabase.from(table).upsert({
+            id: "main",
+            data,
+            updated_at: new Date().toISOString()
+          });
+          return error ? {
+            ok: false,
+            error
+          } : {
+            ok: true
+          };
+        } catch (e) {
+          return {
+            ok: false,
+            error: e,
+            unanswered: true
+          };
+        }
+      };
+      const CLEAR_WAIT_MS = 20000;
+      const bounded = (p, onLate) => {
+        let settled = false;
+        p.then(() => {
+          settled = true;
+        });
+        return Promise.race([p, new Promise(r => setTimeout(() => {
+          if (settled) return;
+          r({
+            ok: false,
+            unanswered: true,
+            error: `no answer in ${CLEAR_WAIT_MS / 1000} s`
+          });
+          if (onLate) p.then(x => {
+            if (x && x.ok && sessionEpochRef.current === ep) onLate();
+          });
+        }, CLEAR_WAIT_MS))]);
+      };
+      const lateBlob = () => setSetupSaveNudge(n => n + 1),
+        lateTimeOff = () => {
+          everHadRealDataRef.current = false;
+        };
+      resetBusyRef.current = true;
+      const blobClear = await bounded(clearRow("call_schedule_data", {
+        _intentionalClear: true
+      }), lateBlob);
+      if (sessionEpochRef.current !== ep) {
+        unarm();
+        return;
+      }
+      const appClear = blobClear.ok ? await bounded(clearRow("app_shifts_data", {})) : null;
+      if (sessionEpochRef.current !== ep) {
+        unarm();
+        return;
+      }
+      if (!blobClear.ok || !appClear.ok) {
+        console.error("Factory reset: clearing stored data failed:", (blobClear.ok ? appClear : blobClear).error);
+        unarm();
+        if (blobClear.ok) {
+          resetSetupHere();
+          showToast("Factory reset: the setup was reset, but clearing the APP shifts " + (appClear.unanswered ? "got no answer — so the APP shifts may have been cleared, and the" : "failed — so the") + " time off and the schedule weeks were left as they are. Run the reset again, or restore the \"Before factory reset\" snapshot.", "error");
+          return;
+        }
+        showToast(blobClear.unanswered ? "Couldn't clear the stored data — reset cancelled. The server didn't answer, so the setup may have been reset; nothing else was. Run the reset again, or restore the \"Before factory reset\" snapshot." : "Couldn't clear the stored data — reset cancelled. Nothing was changed.", "error");
+        setSaveStatus("Reset cancelled");
+        setTimeout(() => setSaveStatus(""), 2000);
+        return;
+      }
+      const toClear = await bounded(toClearAll(undefined, {
+        quiet: true
+      }), lateTimeOff);
+      if (sessionEpochRef.current !== ep || !toClear || !toClear.ok) {
+        resetSetupHere();
+        setAppShifts({});
+      }
+      if (sessionEpochRef.current !== ep) {
+        unarm();
+        return;
+      }
+      if (!toClear || !toClear.ok) {
+        console.error("Factory reset: clearing the time off failed", toClear && toClear.unanswered ? "(no answer)" : "");
+        unarm();
+        showToast(toClear && toClear.unanswered ? "Factory reset: the setup and the APP shifts were reset, but the time-off clear got no answer — so the time off may have been cleared, and the schedule weeks were left as they are. Run the reset again, or restore the \"Before factory reset\" snapshot." : "Factory reset: the setup and the APP shifts were reset, but clearing the time off failed — so the time off and the schedule weeks were left as they are. Run the reset again, or restore the \"Before factory reset\" snapshot.", "error");
+        return;
+      }
+      resetBusyRef.current = false;
+      everHadRealDataRef.current = false;
+      resetSetupHere();
+      setAppShifts({});
+      const weeksNotCleared = r => {
+        if (!r || r.ok) return null;
+        const why = r.error && String(r.error).replace(/ — nothing was changed\./, ".").replace(/ Nothing was changed\./, "");
+        return why ? `Factory reset: the setup, APP shifts and time off were reset, but the schedule weeks were NOT cleared: ${why} Run the reset again, or restore the "Before factory reset" snapshot.` : "Factory reset: the schedule wasn't fully cleared. " + (r.notice || `${schedSyncRef.current.pending().length} week(s) not deleted yet — retrying automatically.`);
+      };
+      const tellWeeks = r => {
+        if (sessionEpochRef.current !== ep) return;
+        if (r.skipped === "reset" || r.skipped === "cancelled") return;
+        if (r.running) {
+          showToast(r.error, "info");
+          return;
+        }
+        if (r.ok) {
+          setSaveStatus("Reset complete");
+          setTimeout(() => setSaveStatus(""), 2000);
+          return;
+        }
+        showToast(weeksNotCleared(r), "error");
+      };
+      const busyJob = schedSyncRef.current.jobPending();
+      if (busyJob) tellWeeks({
+        ok: false,
+        wrote: false,
+        error: `${schedSyncRef.current.jobLabel(busyJob)} is still running — wait for it to finish.`
+      });else {
+        const before = scheduleRef.current;
+        commitSchedule({});
+        runAuthoritativeSchedule({}, "reset", null, before, weeksNotCleared).then(tellWeeks);
+      }
+    } finally {
+      if (jobClaimRef.current === claim) jobClaimRef.current = null;
     }
   };
   const sendPushNotif = useCallback(async (title, message, targetIds = null, deepLinkUrl = null, ep = sessionEpochRef.current) => {
@@ -5208,6 +5218,10 @@ function CallSchedule() {
     var _r$blob, _r$blob2;
     if (!(isScheduler || (userProfile === null || userProfile === void 0 ? void 0 : userProfile.role) === "admin")) return;
     if (!schedEditable("job")) return;
+    const claim = {
+      what: "restore"
+    };
+    jobClaimRef.current = claim;
     const ep = sessionEpochRef.current;
     const when = new Date(snap.created_at).toLocaleString(undefined, {
       month: "short",
@@ -5266,7 +5280,7 @@ function CallSchedule() {
         minWeeks: Object.keys(schedSyncRef.current.knownSchedule()).length ? 1 : 0,
         confirm: sched => {
           if (sessionEpochRef.current !== ep) return false;
-          if (!schedEditable("job")) return false;
+          if (!schedEditable("job", claim)) return false;
           const yes = confirm(restoreConfirmText(snapshotReasonLabel(snap.reason), when, sched, schedSyncRef.current.knownSchedule()));
           if (yes) setSaveStatus("Restoring snapshot…");
           return yes;
@@ -5275,6 +5289,7 @@ function CallSchedule() {
       });
     } finally {
       setRestoreBusyId(null);
+      if (jobClaimRef.current === claim) jobClaimRef.current = null;
     }
     if (sessionEpochRef.current !== ep) {
       setSaveStatus("");
