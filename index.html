@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.10.26c";
+    var APP_VERSION = "2026.10.27a";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -342,15 +342,26 @@ function CallSchedule() {
       showToast(`Can't undo — the week${plan.blocked.length === 1 ? "" : "s"} of ${plan.blocked.join(", ")} ${plan.blocked.length === 1 ? "was" : "were"} changed by someone else since. Nothing was changed.`, "error");
       return;
     }
+    const since = step.clear ? plan.touched.filter(k => k in (scheduleRef.current || {})) : [];
+    if (since.length) {
+      showToast(`Can't undo the clear — ${since.length} week${since.length === 1 ? " was" : "s were"} published since. Nothing was changed. To go back to the schedule from before the clear, restore its "Before schedule clear" snapshot in Settings.`, "error");
+      return;
+    }
     commitSchedule(plan.next);
     if (step.counts) {
       setPriorCounts(step.counts.prior || {});
       setYear1Counts(step.counts.y1 || {});
     }
+    if (step.uncounted) {
+      const u = step.uncounted;
+      setPriorCounts(prev => applyCountsDelta(prev, u.back));
+      setYear1Counts(prev => applyCountsDelta(prev, u.back1yr));
+    }
     if (step.counts) {
       setJustPublished(null);
       publishUndoneRef.current++;
     }
+    step.undone = true;
     setScheduleHistory(h => h.slice(0, -1));
   };
   const [previewSchedule, setPreviewSchedule] = useState(null);
@@ -5076,7 +5087,7 @@ function CallSchedule() {
   const clearSchedule = async () => {
     const ep = sessionEpochRef.current;
     if (!schedEditable("job")) return;
-    if (!confirm("Clear the entire generated schedule? Holiday assignments and setup data will be kept.\n\nThis cannot be undone.")) return;
+    if (!confirm("Clear the entire generated schedule? Holiday assignments and setup data will be kept. The cleared weeks from May 4, 2026 on come off the running totals.\n\nThis cannot be undone.")) return;
     const clearSnap = await snapshots.capture("clear_schedule", {
       minWeeks: Object.keys(schedSyncRef.current.knownSchedule()).length ? 1 : 0
     });
@@ -5087,19 +5098,22 @@ function CallSchedule() {
     }
     if (!schedEditable("job")) return;
     const undoStep = Object.keys(scheduleRef.current).length > 0 ? pushUndo() : null;
+    if (undoStep) undoStep.clear = true;
     const before = scheduleRef.current;
     commitSchedule({});
-    const cr = await runAuthoritativeSchedule({}, "clear", undoStep, before);
-    if (sessionEpochRef.current !== ep) return;
-    if (cr.skipped === "reset" || cr.skipped === "cancelled") return;
-    if (cr.running) showToast(cr.error, "info");else if (!cr.ok) {
-      showToast(cr.error ? "The schedule was NOT cleared — " + cr.error : "The schedule wasn't fully cleared. " + (cr.notice || `${schedSyncRef.current.pending().length} week(s) not deleted yet — retrying automatically.`), "error");
-      if (cr.error) return;
-    } else {
-      setSaveStatus("Schedule cleared");
-      setTimeout(() => setSaveStatus(""), 2000);
-    }
-    (async () => {
+    const stood = r => !!r && !r.running && !r.skipped && !!(r.ok || r.wrote || !(r.error || r.internal));
+    const uncount = r => {
+      if (!undoStep || undoStep.undone || !stood(r) || sessionEpochRef.current !== ep) return null;
+      const shown = scheduleRef.current || {};
+      const latest = stateBundleRef.current();
+      const off = uncountWeeks(Object.fromEntries(Object.entries(before).filter(([mStr]) => !(mStr in shown))), {
+        prior: latest.priorCounts,
+        y1: latest.year1Counts
+      });
+      if (off) undoStep.uncounted = off;
+      return off;
+    };
+    const saveCleared = off => (async () => {
       try {
         if (!setupReadRef.current || !auth.getSession()) return;
         const ts = new Date().toISOString();
@@ -5108,10 +5122,13 @@ function CallSchedule() {
           at: ts,
           sig: setupBaseRef.current.sig
         };
-        const blobData = stateBundleRef.current({
+        const blobData = stateBundleRef.current(Object.assign({
           schedule: {},
           _intentionalClear: true
-        });
+        }, off ? {
+          priorCounts: off.prior,
+          year1Counts: off.y1
+        } : {}));
         delete blobData.schedule;
         delete blobData.vacations;
         delete blobData.noCallDays;
@@ -5128,6 +5145,22 @@ function CallSchedule() {
         if (sessionEpochRef.current === ep) showToast("Couldn't save the cleared state — check your connection.", "error");
       }
     })();
+    const cr = await runAuthoritativeSchedule({}, "clear", undoStep, before, r => {
+      const off = uncount(r);
+      if (off) saveCleared(off);
+      return null;
+    });
+    if (sessionEpochRef.current !== ep) return;
+    if (cr.skipped === "reset" || cr.skipped === "cancelled") return;
+    const off = uncount(cr);
+    if (cr.running) showToast(cr.error, "info");else if (!cr.ok) {
+      showToast(cr.error ? "The schedule was NOT cleared — " + cr.error : "The schedule wasn't fully cleared. " + (cr.notice || `${schedSyncRef.current.pending().length} week(s) not deleted yet — retrying automatically.`), "error");
+      if (cr.error) return;
+    } else {
+      setSaveStatus("Schedule cleared");
+      setTimeout(() => setSaveStatus(""), 2000);
+    }
+    saveCleared(off);
   };
   const [snapshotList, setSnapshotList] = useState(null);
   const [snapshotsLoading, setSnapshotsLoading] = useState(false);
@@ -5365,9 +5398,9 @@ function CallSchedule() {
     });
     return out;
   };
+  const COUNTS_FLOOR = "2026-05-04";
   const rollForwardCounts = useCallback((sched, replaced) => {
     if (!sched || Object.keys(sched).length === 0) return null;
-    const COUNTS_FLOOR = "2026-05-04";
     sched = Object.fromEntries(Object.entries(sched).filter(([mStr]) => mStr >= COUNTS_FLOOR));
     if (Object.keys(sched).length === 0) return null;
     const old = Object.fromEntries(Object.entries(replaced || {}).filter(([mStr]) => mStr >= COUNTS_FLOOR && sched[mStr]));
@@ -5381,6 +5414,25 @@ function CallSchedule() {
       delta,
       delta1yr,
       replacedCounted: Object.keys(old).length
+    };
+  }, [surgeons]);
+  const uncountWeeks = useCallback((weeks, from) => {
+    const gone = Object.fromEntries(Object.entries(weeks || {}).filter(([mStr]) => mStr >= COUNTS_FLOOR));
+    if (Object.keys(gone).length === 0) return null;
+    const none = countsOfWeeks({});
+    const back = countsOfWeeks(gone),
+      delta = netCounts(none, back);
+    setPriorCounts(prev => applyCountsDelta(prev, delta));
+    const currentYear = new Date().getFullYear();
+    const inYear = mStr => parse(mStr).getFullYear() === currentYear;
+    const back1yr = countsOfWeeks(gone, inYear),
+      delta1yr = netCounts(none, back1yr);
+    setYear1Counts(prev => applyCountsDelta(prev, delta1yr));
+    return {
+      back,
+      back1yr,
+      prior: applyCountsDelta(from.prior, delta),
+      y1: applyCountsDelta(from.y1, delta1yr)
     };
   }, [surgeons]);
   const previewNeedsOk = useMemo(() => {
