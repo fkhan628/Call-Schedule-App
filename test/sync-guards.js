@@ -805,8 +805,9 @@ check("authoritative jobs start at exactly 2 sites — runAuthoritativeSchedule 
     && count("const runPublish = (weeks) => {") === 1 && count('return schedSyncRef.current.authoritative(weeks, false, "publish", Object.keys(weeks), { late })') === 1 && count("runPublish(") === 2 && count("const job = runPublish(") === 2
     // (clear and restore hand it their Undo step, taken back when the job wrote nothing — executed in SE-G; all three
     // hand it `before`, the screen as it was before their commit, which a refused job puts back — 17/n P2, executed in SE-X10)
-    // (19/n P8: the factory reset and the restore also hand it their words for an outcome after the deadline — late(r), executed in SE-X16)
-    && count('runAuthoritativeSchedule({}, "clear", undoStep, before)') === 1 && count('runAuthoritativeSchedule({}, "reset", null, before, weeksNotCleared)') === 1 && count('runAuthoritativeSchedule(sched, "restore", undoStep, before, weeksNotRestored)') === 1
+    // (19/n P8: the factory reset and the restore also hand it their words for an outcome after the deadline — late(r), executed in SE-X16;
+    // 2026-10-26: the clear hands it a late() too — the counts of one that ends after its deadline, executed in CW8)
+    && count('runAuthoritativeSchedule({}, "clear", undoStep, before, (r) => { const off = uncount(r); if (off) saveCleared(off); return null; })') === 1 && count('runAuthoritativeSchedule({}, "reset", null, before, weeksNotCleared)') === 1 && count('runAuthoritativeSchedule(sched, "restore", undoStep, before, weeksNotRestored)') === 1
     && count("schedSyncRef.current.authoritative(target, true, what, null, { before, late })") === 1,
   `.authoritative( ×${count(".authoritative(")}, runAuthoritativeSchedule( ×${count("runAuthoritativeSchedule(")}`);
 
@@ -6737,6 +6738,381 @@ ${fssSrc}
     !!basisF && crs.length === 4 && crs.every((c) => c >= 4.5) && nsrcCV.split('data-swap-basis="1"').length - 1 === 1, J({ found: !!basisM, stops, crs }));
 }
 
+// ─── CW. ✕ Clear takes the cleared weeks off the counts once it stands; ↩ Undo puts them back (2026-10-26) ───
+// rollForwardCounts adds every published week (from the counts floor on) to priorCounts / year1Counts at its publish,
+// net of the published versions it replaces. ✕ Clear deleted the weeks but never took them off, so clearing a period
+// and publishing it again counted it twice. Owner request (Faraz, 2026-10-26): the clear takes the cleared weeks (from
+// the floor) off both tiers, and ↩ Undo puts them back. They come off once the clear STANDS — its job not refused with
+// nothing written (the complement of runAuthoritativeSchedule's put-back), in its session — in time, or when a job
+// still running at its deadline ends (its late()); and only the weeks still off the screen then (one put back by ↩ Undo
+// or adopted back after a conflict stays counted), unless ↩ Undo took the clear's step back meanwhile. Never at the
+// tap, where the setup autosave would save them within a second for a clear that may yet be refused, fenced by a
+// sign-out or cut short. The clear's Undo step records exactly what came off (`uncounted`) and ↩ Undo puts exactly
+// that back on — a change, never the counts as they were — and it is refused once something was published into the
+// emptied schedule (the Undo would write the cleared weeks over that publish). SYNTHETIC data; the clock at Oct 26, 2026.
+//   CW0  the real pushUndo / undoLastChange, countsOfWeeks … rollForwardCounts (+ uncountWeeks), publishWeeks,
+//        runAuthoritativeSchedule and clearSchedule slice and compile together (on main too — it has no uncountWeeks)
+//   CW1  publish two periods (one week in 2027), then ✕ Clear: both tiers EXACTLY the counts before either publish
+//        (main: unchanged); nothing set while its job ran; a week before the floor never comes off; the step records
+//        what came off and carries no counts of its own
+//   CW2  clear → publish the same two periods again: ONE publish of each (main: twice)
+//   CW3  ↩ Undo of the clear: the weeks and the counts back exactly, its step used up; clear again → off again
+//   CW4  refused in time with nothing written (the engine puts the screen back): the counts never move, the step is
+//        taken back, "The schedule was NOT cleared", no setup save
+//   CW5  the clear's own setup save writes the counts without the cleared weeks (main: with them)
+//   CW6  ↩ Undo while the job runs: the weeks are back on screen, so nothing comes off — after the job, and in its
+//        setup save; publishUndoneRef untouched (a clear step is not a publish step)
+//   CW7  a session change during the job (fenced: skipped "reset"; or cancelled): no counts set at all, nothing said
+//   CW8  still running at its deadline: nothing off at that answer (its setup save carries the counts before); landed
+//        later → off then, and saved again (main: never), and ↩ Undo then puts them back; refused later → never off,
+//        no second save, and a later ↩ Undo of its kept step leaves the counts alone; ↩ Undo after the deadline, then
+//        landed → never off
+//   CW9  a clear that stands without "ok" — partly written, or its writes failed and retried — takes them off; a bug
+//        mid-job doesn't (the engine then shows the table, not `before`); for every in-time answer the counts move
+//        exactly when its Undo step stays (runAuthoritativeSchedule's put-back)
+//   CW10 hand-tallied: a week holding a departed surgeon — only the roster's slots come off, no key for the departed;
+//        only a week before the floor → nothing off and nothing recorded; clear → publish into the emptied schedule
+//        (the same period again, or other weeks) → ↩ Undo of the clear is refused whole: schedule, counts and step
+//        untouched, one toast (main: it wrote the cleared weeks back over the publish, counting the period twice);
+//        an empty schedule → no step
+//   CW14 ↩ Undo twice while the clear's job runs (its step, then the publish step before it): the clear takes nothing
+//        off — the publish's own Undo already took its weeks' counts off — exactly the counts after the first publish
+//   CW11 counts adopted from another device during the snapshot's await, or during the job: the un-count and its save
+//        start from THOSE (the latest render's), and ↩ Undo puts back exactly what came off
+//   CW12 a delete that met someone else's change and was adopted back (on screen again): that week stays counted
+//   CW13 the words and the wiring: the confirm names the floor; ONE COUNTS_FLOOR; uncountWeeks right after
+//        rollForwardCounts, called once; runAuthoritativeSchedule never sets the counts; the clear hands it a late()
+console.log("\nCW. ✕ Clear takes the cleared weeks off the counts once it stands; ↩ Undo puts them back");
+await (async () => {
+  const nsrcCW = src.replace(/\r\n/g, "\n"), J = JSON.stringify, clone = (o) => JSON.parse(JSON.stringify(o));
+  const countCW = (s) => nsrcCW.split(s).length - 1;
+  const onceAt = (a) => { const i = nsrcCW.indexOf(a); return i >= 0 && nsrcCW.indexOf(a, i + 1) === -1 ? i : -1; };
+  const endAt = (b, from) => { if (from < 0) return -1; const j = nsrcCW.indexOf(b, from); return j < 0 ? -1 : j + b.length; };
+  const END_CB = "\n  }, [surgeons]);";
+  const iU = onceAt("  const pushUndo = useCallback((counts) => {"), eU = iU < 0 ? -1 : nsrcCW.indexOf("\n  // ─── What-If Preview ───", iU);
+  const iC = onceAt("  const countsOfWeeks = (weeks, pick) => {"), kR = iC < 0 ? -1 : nsrcCW.indexOf("  const rollForwardCounts = useCallback((sched, replaced) => {", iC);
+  const eR = endAt(END_CB, kR);
+  const kUn = onceAt("  const uncountWeeks = useCallback((weeks, from) => {"); // (main: none — the slice then ends at rollForwardCounts)
+  const eC = kUn > eR && eR > 0 ? endAt(END_CB, kUn) : eR;
+  const iP = onceAt("  const publishWeeks = (newWeeks, how) => {"), eP = iP < 0 ? -1 : nsrcCW.indexOf("\n\n  // ─── Load a schedule from JSON", iP);
+  const iA = onceAt("  const runAuthoritativeSchedule = async (target, what, undoStep, before, late) => {"), eA = endAt("\n  };", iA);
+  const iL = onceAt("  const clearSchedule = async () => {"), eL = iL < 0 ? -1 : endAt("\n  };", nsrcCW.indexOf("\n  };\n\n  // ─── Snapshot restore", iL));
+  const NAMES = "surgeons, parse, Date, useCallback, scheduleRef, commitSchedule, schedSyncRef, schedEditable, showToast, priorCounts, year1Counts, setPriorCounts, setYear1Counts, scheduleHistory, setScheduleHistory, logAudit, setJustPublished, publishUndoneRef, sessionEpochRef, confirm, snapshots, setSaveStatus, setTimeout, lastSyncRef, stateBundleRef, setupReadRef, auth, supabase, console, setupBaseRef";
+  let factory = null, whyNot = null;
+  if ([iU, eU, iC, kR, eR, eC, iP, eP, iA, eA, iL, eL].every((x) => x >= 0)) {
+    try {
+      factory = vm.runInContext(`(function (env) { const { ${NAMES} } = env;
+${nsrcCW.slice(iU, eU)}
+${nsrcCW.slice(iC, eC)}
+${nsrcCW.slice(iP, eP)}
+${nsrcCW.slice(iA, eA)}
+${nsrcCW.slice(iL, eL)}
+  return { pushUndo, undoLastChange, publishWeeks, clearSchedule };
+})`, sandbox, { filename: "cw-clear.js" });
+    } catch (ex) { whyNot = String(ex).slice(0, 200); }
+  } else whyNot = J({ iU, eU, iC, kR, eR, eC, iP, eP, iA, eA, iL, eL });
+  check("CW0 the real pushUndo / undoLastChange, countsOfWeeks … rollForwardCounts (+ uncountWeeks), publishWeeks, runAuthoritativeSchedule and clearSchedule slice and compile together",
+    !!factory, whyNot);
+  if (!factory) return;
+  const H = vm.runInContext("({ parse })", sandbox);
+  const Oct26 = class extends Date { constructor(...a) { if (a.length) super(...a); else super(2026, 9, 26, 12, 0, 0); } };
+  const SURG = [{ id: "s1", name: "S1" }, { id: "s2", name: "S2" }, { id: "s3", name: "S3" }];
+  const K = ["dc", "nights", "wknd", "off", "dcB", "nightsB", "wkndB", "offB", "totalDays", "totalDaysB"];
+  const norm = (t) => J(Object.keys(t || {}).sort().map((id) => [id, K.map((k) => (t[id] && t[id][k]) || 0)]));
+  const sameC = (a, b) => !!a && !!b && norm(a.prior) === norm(b.prior) && norm(a.y1) === norm(b.y1);
+  const PR_0 = {
+    s1: { dc: 30, nights: 150, wknd: 30, off: 20, dcB: 2, nightsB: 10, wkndB: 2, offB: 1, totalDays: 390, totalDaysB: 30 },
+    s2: { dc: 29, nights: 145, wknd: 29, off: 18, dcB: 1, nightsB: 12, wkndB: 1, offB: 2, totalDays: 380, totalDaysB: 22 },
+    s3: { dc: 28, nights: 148, wknd: 28, off: 21, dcB: 2, nightsB: 9, wkndB: 3, offB: 0, totalDays: 385, totalDaysB: 32 },
+  };
+  const Y1_0 = {
+    s1: { dc: 5, nights: 30, wknd: 5, off: 4, dcB: 1, nightsB: 3, wkndB: 1, offB: 0, totalDays: 80, totalDaysB: 13 },
+    s2: { dc: 6, nights: 28, wknd: 6, off: 3, dcB: 0, nightsB: 4, wkndB: 0, offB: 1, totalDays: 88, totalDaysB: 4 },
+    s3: { dc: 4, nights: 33, wknd: 4, off: 5, dcB: 1, nightsB: 2, wkndB: 1, offB: 0, totalDays: 70, totalDaysB: 9 },
+  };
+  const wk = (dc, off, n, bk) => ({ dayCall: dc, off, nights: { mon: n[0], tue: n[1], wed: n[2], thu: n[3], wknd: n[4] }, isBackup: !!bk });
+  const OLD = { "2026-04-27": wk("s2", "s3", ["s1", "s3", "s1", "s3", "s1"]) }; // before the floor: inside the seeds already
+  const E = { "2026-11-30": wk("s3", "s1", ["s1", "s1", "s2", "s2", "s3"]) };
+  const P = {
+    "2026-12-14": wk("s1", "s2", ["s2", "s3", "s1", "s2", "s3"]),
+    "2026-12-21": wk("s2", "s3", ["s3", "s1", "s2", "s3", "s1"]),
+    "2026-12-28": wk("s3", "s1", ["s1", "s2", "s3", "s1", "s2"], true),
+    "2027-01-04": wk("s1", "s2", ["s2", "s3", "s1", "s2", "s3"]), // 2027: Multi-Year only (1-Year takes this calendar year's)
+  };
+  const Q = { "2027-02-01": wk("s2", "s1", ["s3", "s3", "s1", "s2", "s1"]), "2027-02-08": wk("s3", "s2", ["s1", "s2", "s2", "s3", "s2"]) }; // published after a clear
+  // The engine's put-back (E4): a clear / reset / restore refused with nothing written — refuse(), a not-started
+  // deadline cancel — puts the screen back as it was (`before`); one fenced by a session change does not, and a bug
+  // mid-job shows what the table holds (showKnown without `before` — here: the weeks it deleted stay off).
+  const engPutsBack = (r) => !r.ok && !r.wrote && !r.running && !r.skipped && !!r.error;
+  // one app session: the component's state, its render (the REAL slices with that render's values), a stub engine.
+  // o.adopt / o.adoptJob: counts adopted from another device during the clear's snapshot await / during its job.
+  // stateBundleRef is the LATEST RENDER's, as in the app: `flush()` is a render — at each render(), and wherever React
+  // would have rendered between tasks (after the snapshot's await, inside the job's awaits) — never between a setter
+  // and the next line. eng.adoptBack: weeks a delete met someone else's change for — adopted back on screen.
+  const app = (sched, o = {}) => {
+    const st = { schedule: clone(sched), prior: clone(PR_0), y1: clone(Y1_0), history: [], toasts: [], audits: [], blob: [], sets: [], jp: [], ep: { current: 7 }, undone: { current: 0 } };
+    const flush = () => { st.rendered = { prior: clone(st.prior), y1: clone(st.y1) }; };
+    flush();
+    const ref = { current: st.schedule };
+    const eng = { jobs: [], answer: null, during: null, phase: "idle", opts: null, adoptBack: null };
+    const commit = (v) => { st.schedule = v; ref.current = v; };
+    const upd = (k) => (f) => { st[k] = typeof f === "function" ? f(st[k]) : f; if (k !== "history") st.sets.push(k + "@" + st.ep.current + ":" + eng.phase); };
+    const adopt = (c) => { st.prior = clone(c.prior); st.y1 = clone(c.y1); };
+    const sync = { current: {
+      // (undoPlan as the engine's: `touched`, every week the snapshot and the screen differ on; none adopted from elsewhere)
+      epochNow: () => 3, undoPlan: (snap) => ({ next: clone(snap), touched: [...new Set([...Object.keys(snap), ...Object.keys(st.schedule)])].filter((k) => J(snap[k]) !== J(st.schedule[k])).sort(), blocked: [] }),
+      knownSchedule: () => clone(st.schedule), pending: () => [], jobPending: () => null,
+      authoritative: async (target, grant, what, keys, opts) => {
+        eng.jobs.push(what); eng.opts = opts; eng.phase = "job";
+        await null; flush();
+        if (o.adoptJob) { adopt(o.adoptJob); await null; flush(); }
+        if (eng.during) { await eng.during(); await null; flush(); }
+        const r = eng.answer || { ok: true, wrote: true };
+        if (r.running) return r; // still running at its deadline: eng.finish(r2) ends it (A5(f))
+        if (engPutsBack(r) && opts && opts.before && !eng.handedOver) commit(clone(opts.before)); // (handedOver: a stacked job takes the put-back over — G6)
+        if (eng.adoptBack && opts && opts.before) commit(Object.assign({}, ref.current, Object.fromEntries(eng.adoptBack.map((k) => [k, clone(opts.before[k])]))));
+        eng.phase = "after";
+        await null; return r;
+      } } };
+    // the job, still running at its deadline, ends: a refusal puts the screen back (refuse → showKnown), then the
+    // engine tells the caller's late() (tellLate — never for one fenced by a session change)
+    eng.finish = async (r2) => {
+      await null; flush(); // (time passed since the deadline answer: renders happened)
+      if (engPutsBack(r2) && eng.opts && eng.opts.before) commit(clone(eng.opts.before));
+      eng.phase = "after";
+      if (!(r2.skipped === "reset" || r2.skipped === "cancelled") && eng.opts && typeof eng.opts.late === "function") eng.lateSaid = eng.opts.late(r2);
+      for (let i = 0; i < 4; i++) await null;
+    };
+    const render = () => { flush(); return factory({ surgeons: SURG, parse: H.parse, Date: Oct26, useCallback: (f) => f, scheduleRef: ref, commitSchedule: commit, schedSyncRef: sync, schedEditable: () => true,
+      showToast: (m) => st.toasts.push(String(m)), priorCounts: st.prior, year1Counts: st.y1, setPriorCounts: upd("prior"), setYear1Counts: upd("y1"),
+      scheduleHistory: st.history, setScheduleHistory: upd("history"), logAudit: (a, msg, meta) => st.audits.push({ a, msg, meta }), setJustPublished: (v) => st.jp.push(v), publishUndoneRef: st.undone,
+      sessionEpochRef: st.ep, confirm: () => true, setSaveStatus: () => {}, setTimeout: () => 0, lastSyncRef: { current: null },
+      snapshots: { capture: async () => { await null; if (o.adopt) adopt(o.adopt); await null; flush(); return { ok: true }; } },
+      stateBundleRef: { current: (x) => Object.assign({ priorCounts: st.rendered.prior, year1Counts: st.rendered.y1 }, x || {}) }, setupReadRef: { current: true }, auth: { getSession: () => ({ access_token: "TOK" }) },
+      supabase: { from: () => ({ upsert: async (row) => { st.blob.push(clone(row.data)); return { error: null }; } }) }, console: { error() {}, log() {}, warn() {}, info() {} }, setupBaseRef: { current: null } }); };
+    const snap = () => ({ prior: clone(st.prior), y1: clone(st.y1) });
+    return { st, eng, snap, publish: (w) => render().publishWeeks(clone(w), { label: "cw", meta: {} }), undo: () => render().undoLastChange(),
+      saved: (i) => { const b = st.blob[i]; return b ? { prior: b.priorCounts, y1: b.year1Counts } : null; },
+      clear: async () => { await render().clearSchedule(); for (let i = 0; i < 4; i++) await null; } }; // (its setup save runs on after it returns)
+  };
+  const tryCW = async (fn) => { try { return await fn(); } catch (ex) { return { threw: String((ex && ex.message) || ex).slice(0, 200) }; } };
+  const C0 = { prior: PR_0, y1: Y1_0 };
+  const d = (a, b, tier, id, k) => ((a[tier][id] || {})[k] || 0) - ((b[tier][id] || {})[k] || 0);
+  const published = (o) => { const a = app(OLD, o); a.publish(E); const cE = a.snap(); a.publish(P); return { a, cE, c1: a.snap(), sch1: J(a.st.schedule), h1: a.st.history.length }; };
+  const jobSets = (a) => a.st.sets.filter((s) => s.endsWith(":job")); // the counts set while the clear's job ran
+  const shift = (c, n) => { const w = clone(c); w.prior.s1.dc += n; w.y1.s1.dc += n; return w; }; // a synthetic correction from another device
+
+  // CW1 — two publishes, then the clear: back to the counts before either
+  const cw1 = await tryCW(async () => {
+    const { a, c1, h1 } = published(); const n0 = a.st.sets.length;
+    await a.clear();
+    const step = a.st.history[a.st.history.length - 1];
+    return { a, c1, h1, cleared: a.snap(), sched: J(a.st.schedule), jobs: a.eng.jobs.join(), during: jobSets(a), h: a.st.history.length, stepCounts: step ? step.counts : "none", rec: !!(step && step.uncounted), clearSets: a.st.sets.slice(n0) };
+  });
+  const ok1 = !cw1.threw && !sameC(cw1.c1, C0) && d(cw1.c1, C0, "prior", "s1", "dc") === 2 && d(cw1.c1, C0, "y1", "s1", "dc") === 1;
+  check("CW1 publish two periods (one week in 2027 — Multi-Year only), then ✕ Clear: both tiers are EXACTLY the counts before either publish (main: still both periods' — a re-publish then counted them twice); nothing was set while its job ran — they came off once it had landed; a week before the floor never comes off; its Undo step records what came off and carries no counts of its own",
+    ok1 && sameC(cw1.cleared, C0) && cw1.sched === "{}" && cw1.jobs === "clear" && cw1.during.length === 0 && cw1.clearSets.length === 2 && cw1.h === cw1.h1 + 1 && cw1.stepCounts === null && cw1.rec,
+    J(cw1.threw ? cw1 : { ok1, s1: { pub: cw1.c1.prior.s1, cleared: cw1.cleared.prior.s1 }, sched: cw1.sched, jobs: cw1.jobs, during: cw1.during, sets: cw1.clearSets, h: [cw1.h1, cw1.h], rec: cw1.rec }).slice(0, 700));
+
+  // CW2 — clear, then publish the same periods again: once each
+  const cw2 = cw1.threw ? cw1 : await tryCW(async () => { cw1.a.publish(E); cw1.a.publish(P); return { again: cw1.a.snap() }; });
+  check("CW2 ✕ Clear → publish the same two periods again: the counts are ONE publish of each, exactly as before the clear (main: twice — every column)",
+    ok1 && !cw2.threw && sameC(cw2.again, cw1.c1), J(cw2.threw ? cw2 : { s1: cw2.again.prior.s1, want: cw1.c1.prior.s1 }).slice(0, 500));
+
+  // CW3 — ↩ Undo of the clear: the weeks and the counts back; clear again → off again
+  const cw3 = await tryCW(async () => {
+    const { a, c1, sch1, h1 } = published();
+    await a.clear(); const hc = a.st.history.length;
+    const jp0 = a.st.jp.length;
+    a.undo();
+    const back = { c: a.snap(), sched: J(a.st.schedule), h: a.st.history.length, n: a.st.undone.current, jp: a.st.jp.slice(jp0) };
+    await a.clear();
+    return { c1, sch1, h1, hc, back, again: a.snap() };
+  });
+  check("CW3 ↩ Undo of the clear puts the weeks AND their counts back exactly (its step used up) — and, not being a publish step, neither counts in publishUndoneRef nor takes the 📣 banner down; ✕ Clear again takes them off again",
+    !cw3.threw && cw3.hc === cw3.h1 + 1 && sameC(cw3.back.c, cw3.c1) && cw3.back.sched === cw3.sch1 && cw3.back.h === cw3.h1 && cw3.back.n === 0 && cw3.back.jp.length === 0 && sameC(cw3.again, C0),
+    J(cw3.threw ? cw3 : { hc: cw3.hc, h1: cw3.h1, back: { h: cw3.back.h, s1: cw3.back.c.prior.s1, same: cw3.back.sched === cw3.sch1 }, again: cw3.again.prior.s1 }).slice(0, 600));
+
+  // CW4 — refused in time, nothing written: the counts never move
+  const cw4 = await tryCW(async () => {
+    const { a, c1, sch1, h1 } = published(); const n0 = a.st.sets.length;
+    a.eng.answer = { ok: false, wrote: false, error: "Couldn't read the saved schedule — nothing was changed." };
+    await a.clear();
+    return { c1, sch1, h1, c: a.snap(), sched: J(a.st.schedule), h: a.st.history.length, toasts: a.st.toasts, blob: a.st.blob.length, sets: a.st.sets.slice(n0) };
+  });
+  check("CW4 a clear refused in time with nothing written (its whole-table read fails; the engine puts the screen back): the counts never move — nothing set at all — its Undo step is taken back, \"The schedule was NOT cleared\", no setup save",
+    !cw4.threw && sameC(cw4.c, cw4.c1) && cw4.sets.length === 0 && cw4.sched === cw4.sch1 && cw4.h === cw4.h1 && /^The schedule was NOT cleared/.test(cw4.toasts.join(" ")) && cw4.blob === 0,
+    J(cw4.threw ? cw4 : { sets: cw4.sets, h: [cw4.h1, cw4.h], toasts: cw4.toasts, blob: cw4.blob }).slice(0, 600));
+
+  // CW5 — the clear's own setup save carries the counts without the cleared weeks
+  const row5 = !cw1.threw && cw1.a.st.blob.length ? cw1.a.st.blob[0] : null;
+  check("CW5 the clear's own setup save, after its job, writes the counts WITHOUT the cleared weeks — both tiers, exactly the counts before the publishes (main: with them)",
+    !!row5 && sameC({ prior: row5.priorCounts, y1: row5.year1Counts }, C0) && row5._intentionalClear === true && !("schedule" in row5),
+    J(row5 ? { s1: row5.priorCounts && row5.priorCounts.s1, clear: row5._intentionalClear } : { blob: cw1.threw ? cw1 : 0 }).slice(0, 400));
+
+  // CW6 — ↩ Undo while the job runs: the weeks are back on screen, so nothing comes off
+  const cw6 = await tryCW(async () => {
+    const { a, c1, sch1 } = published(); const n0 = a.st.sets.length;
+    a.eng.during = async () => { a.undo(); };
+    await a.clear();
+    return { c1, sch1, c: a.snap(), sched: J(a.st.schedule), saved: a.saved(a.st.blob.length - 1), undone: a.st.undone.current, sets: a.st.sets.slice(n0) };
+  });
+  check("CW6 ↩ Undo while the clear's job still runs (its weeks back on screen): nothing comes off the counts — after the job they and the weeks are as before the clear, exactly, nothing set at all, and its setup save writes those counts; publishUndoneRef untouched (a clear step isn't a publish step)",
+    !cw6.threw && sameC(cw6.c, cw6.c1) && cw6.sched === cw6.sch1 && sameC(cw6.saved, cw6.c1) && cw6.undone === 0 && cw6.sets.length === 0,
+    J(cw6.threw ? cw6 : { s1: cw6.c.prior.s1.dc, want: cw6.c1.prior.s1.dc, saved: cw6.saved && cw6.saved.prior.s1.dc, undone: cw6.undone, sets: cw6.sets }).slice(0, 500));
+
+  // CW7 — a session change during the job: nothing set, said or saved
+  const cw7 = await tryCW(async () => Promise.all([
+    { ok: false, wrote: false, skipped: "reset" }, // started, fenced by the boundary
+    { ok: false, wrote: false, skipped: "cancelled", error: "It was cancelled before its turn came — nothing was changed." }, // queued, never ran
+  ].map(async (ans) => {
+    const { a } = published(); const n0 = a.st.sets.length;
+    a.eng.during = async () => { a.st.ep.current++; }; // signed out (or another account) during the job: the session moves on
+    a.eng.answer = ans;
+    await a.clear();
+    return { sets: a.st.sets.slice(n0), toasts: a.st.toasts.slice(), blob: a.st.blob.length };
+  })));
+  check("CW7 a session change during the clear's job (fenced: skipped \"reset\"; or cancelled before its turn): no counts are set at all — neither as this session nor as the next — nothing said, no setup save",
+    !cw7.threw && cw7.every((r) => r.sets.length === 0 && r.toasts.length === 0 && r.blob === 0), J(cw7).slice(0, 500));
+
+  // CW8 — still running at its deadline
+  const RUN = { ok: false, wrote: false, running: true, reason: "timeout", error: "Clearing the schedule is taking longer than expected. It's still running — keep the app open; you'll see a message when it ends." };
+  const late8 = async (end, undoFirst, undoAfter) => {
+    const { a, c1, sch1 } = published(); const n0 = a.st.sets.length;
+    a.eng.answer = RUN;
+    await a.clear();
+    const atDeadline = { c: a.snap(), sets: a.st.sets.slice(n0), blob: a.st.blob.length, saved: a.saved(0), toasts: a.st.toasts.slice() };
+    if (undoFirst) a.undo();
+    await a.eng.finish(end);
+    const ended = a.snap(), sched = J(a.st.schedule), blob = a.st.blob.length, savedLast = a.saved(a.st.blob.length - 1);
+    // landed: ↩ Undo then puts back what came off; refused: another device's correction adopted since, then ↩ Undo of
+    // the clear's kept step — nothing of the clear to put back, the correction stands
+    let afterUndo = null;
+    if (undoAfter === "landed") { a.undo(); afterUndo = { cq: c1, c: a.snap(), sched: J(a.st.schedule) }; }
+    else if (undoAfter) { const cq = shift(a.snap(), 3); a.st.prior = clone(cq.prior); a.st.y1 = clone(cq.y1); a.undo(); afterUndo = { cq, c: a.snap(), sched: J(a.st.schedule) }; }
+    return { c1, sch1, atDeadline, c: ended, sched, blob, savedLast, lateSaid: a.eng.lateSaid, late: typeof (a.eng.opts && a.eng.opts.late), afterUndo };
+  };
+  const cw8 = await tryCW(async () => ({
+    landed: await late8({ ok: true, wrote: true }, false, "landed"),
+    refused: await late8({ ok: false, wrote: false, error: "Couldn't read the saved schedule — nothing was changed." }, false, true),
+    undone: await late8({ ok: true, wrote: true }, true),
+  }));
+  const dl = (x) => x && sameC(x.atDeadline.c, x.c1) && x.atDeadline.sets.length === 0 && x.atDeadline.blob === 1 && sameC(x.atDeadline.saved, x.c1) && /taking longer than expected/.test(x.atDeadline.toasts.join(" "));
+  check("CW8 a clear still running at its deadline: at that answer nothing is off (its setup save carries the counts before the clear); landed later → they come off then and are saved again, exactly the counts before the publishes (main: never), and ↩ Undo then puts the weeks and exactly those counts back; refused later → the weeks back, never off, no second save, and a later ↩ Undo of its kept step leaves the counts alone; ↩ Undo after the deadline, then landed → never off; the engine's own words tell how it ended (late() returns none)",
+    !cw8.threw && dl(cw8.landed) && sameC(cw8.landed.c, C0) && cw8.landed.blob === 2 && sameC(cw8.landed.savedLast, C0) && cw8.landed.late === "function" && cw8.landed.lateSaid === null
+      && !!cw8.landed.afterUndo && sameC(cw8.landed.afterUndo.c, cw8.landed.c1) && cw8.landed.afterUndo.sched === cw8.landed.sch1
+      && dl(cw8.refused) && sameC(cw8.refused.c, cw8.refused.c1) && cw8.refused.sched === cw8.refused.sch1 && cw8.refused.blob === 1 && !!cw8.refused.afterUndo && sameC(cw8.refused.afterUndo.c, cw8.refused.afterUndo.cq)
+      && dl(cw8.undone) && sameC(cw8.undone.c, cw8.undone.c1) && cw8.undone.blob === 1,
+    J(cw8.threw ? cw8 : Object.fromEntries(Object.entries(cw8).map(([k, x]) => [k, { atDl: { sets: x.atDeadline.sets, blob: x.atDeadline.blob }, s1: x.c.prior.s1.dc, want0: C0.prior.s1.dc, want1: x.c1.prior.s1.dc, blob: x.blob, late: x.late, said: x.lateSaid, undo: x.afterUndo && [x.afterUndo.c.prior.s1.dc, x.afterUndo.cq.prior.s1.dc] }]))).slice(0, 800));
+
+  // CW9 — stands without "ok"; a bug doesn't; moved ⇔ the step kept
+  const ANS = {
+    landed: { ok: true, wrote: true },
+    partial: { ok: false, wrote: true, notice: "1 week not deleted yet — retrying automatically." },
+    retried: { ok: false, wrote: false, results: [{ k: "2026-12-14", outcome: "pending" }] },
+    refused: { ok: false, wrote: false, error: "Couldn't read the saved schedule — nothing was changed." },
+    bug: { ok: false, internal: "boom" },
+    stuck: { ok: false, wrote: false, reason: "timeout", error: "The sync is stuck behind an earlier save — nothing was changed. The schedule on screen is as it was; try again in a minute." },
+    // refused, and the screen NOT put back by it: a clear / reset / restore stacked behind takes its put-back over (G6)
+    handedOver: { ok: false, wrote: false, error: "Couldn't read the saved schedule — nothing was changed." },
+  };
+  const cw9 = await tryCW(async () => {
+    const out = {};
+    for (const [k, ans] of Object.entries(ANS)) {
+      const { a, c1, h1 } = published();
+      a.eng.answer = ans; a.eng.handedOver = k === "handedOver";
+      await a.clear();
+      const c = a.snap();
+      out[k] = { moved: !sameC(c, c1), off: sameC(c, C0), kept: a.st.history.length === h1 + 1, toasts: a.st.toasts.slice(), blob: a.st.blob.length };
+    }
+    return out;
+  });
+  const WANT9 = { landed: true, partial: true, retried: true, refused: false, bug: false, stuck: false, handedOver: false };
+  check("CW9 a clear that stands without \"ok\" — partly written (a notice), or its writes failed and are retried — takes the weeks off (exactly the counts before the publishes) and saves; a bug mid-job, a refusal (even one whose put-back a stacked job took over, the screen left cleared) or a not-started deadline cancel doesn't; for every in-time answer the counts move exactly when its Undo step stays (runAuthoritativeSchedule's put-back) — main: never",
+    !cw9.threw && Object.entries(WANT9).every(([k, m]) => cw9[k].moved === m && cw9[k].kept === m && (!m || cw9[k].off)) && cw9.partial.blob === 1 && /wasn't fully cleared/.test(cw9.partial.toasts.join(" ")),
+    J(cw9.threw ? cw9 : Object.fromEntries(Object.entries(cw9).map(([k, x]) => [k, { moved: x.moved, off: x.off, kept: x.kept, blob: x.blob }]))).slice(0, 700));
+
+  // CW10 — hand-tallied edges
+  const D = { "2026-12-07": wk("s9", "s1", ["s9", "s2", "s2", "s3", "s9"]) }; // s9: no longer on the roster
+  // the same period published again with other holders (P2): the owner's "clear, regenerate, prefer the old one, ↩ Undo"
+  const P2 = Object.fromEntries(Object.entries(P).map(([m, w]) => [m, Object.assign(clone(w), { dayCall: w.dayCall === "s1" ? "s2" : w.dayCall === "s2" ? "s3" : "s1" })]));
+  const cw10 = await tryCW(async () => {
+    const a = app(Object.assign({}, OLD, D)); await a.clear();
+    const b = app(OLD); await b.clear(); const bStep = b.st.history[0];
+    const bAfter = b.snap();
+    // after a clear, a publish into the emptied schedule pushes no step of its own — then ↩ Undo of the clear
+    const undoAfter = (x) => { const c = x.snap(), sched = J(x.st.schedule), h = x.st.history.length, n0 = x.st.toasts.length; x.undo(); return { c, sched, h, after: x.snap(), schedAfter: J(x.st.schedule), hAfter: x.st.history.length, toasts: x.st.toasts.slice(n0), n: x.st.undone.current }; };
+    b.publish(Q); const bu = undoAfter(b);
+    const g = published(); await g.a.clear(); g.a.publish(P2); const gu = undoAfter(g.a); // the same period again
+    const q = published(); await q.a.clear(); q.a.publish(Q); const qu = undoAfter(q.a); // other weeks
+    const e = app({}); await e.clear();
+    return { a: a.snap(), b: { after: bAfter, rec: bStep ? bStep.uncounted : "no step", u: bu }, g: { c1: g.c1, u: gu }, q: { u: qu }, e: { c: e.snap(), h: e.st.history.length } };
+  });
+  const minus = (t, ch) => { const o = clone(t); Object.entries(ch).forEach(([id, v]) => Object.entries(v).forEach(([k, n]) => { o[id][k] -= n; })); return o; };
+  const WANT10 = { s1: { off: 1 }, s2: { nights: 2, totalDays: 2 }, s3: { nights: 1, totalDays: 1 } }; // D's roster slots, by hand (an off week adds no days)
+  const refusedWhole = (u, nWeeks) => !!u && sameC(u.after, u.c) && u.schedAfter === u.sched && u.hAfter === u.h && u.h >= 1 && u.n === 0 && u.toasts.length === 1
+    && u.toasts[0] === `Can't undo the clear — ${nWeeks} week${nWeeks === 1 ? " was" : "s were"} published since. Nothing was changed. To go back to the schedule from before the clear, restore its "Before schedule clear" snapshot in Settings.`;
+  check("CW10 hand-tallied: a cleared week holding a departed surgeon takes off only the roster's slots — S1 off −1, S2 nights −2, S3 nights −1 (days −2 / −1), in both tiers — and adds no key for the departed; only a week before the floor → nothing off and nothing recorded; clear → publish into the emptied schedule (the same period again with other holders, or other weeks; one with only pre-floor weeks cleared too) → ↩ Undo of the clear is refused WHOLE — the schedule, the counts (the publish counted once) and the step untouched, one toast pointing at the snapshot (main: it wrote the cleared weeks back over the publish and kept both counted); an empty schedule → no Undo step",
+    !cw10.threw && sameC(cw10.a, { prior: minus(PR_0, WANT10), y1: minus(Y1_0, WANT10) }) && !("s9" in cw10.a.prior) && !("s9" in cw10.a.y1)
+      && sameC(cw10.b.after, C0) && cw10.b.rec === undefined && refusedWhole(cw10.b.u, 2)
+      && refusedWhole(cw10.g.u, 4) && !sameC(cw10.g.u.c, cw10.g.c1) && refusedWhole(cw10.q.u, 2)
+      && sameC(cw10.e.c, C0) && cw10.e.h === 0,
+    J(cw10.threw ? cw10 : { a: { s1: cw10.a.prior.s1, s2: cw10.a.prior.s2, keys: Object.keys(cw10.a.prior) }, b: { rec: cw10.b.rec, h: cw10.b.u.h, toasts: cw10.b.u.toasts },
+      g: { h: [cw10.g.u.h, cw10.g.u.hAfter], same: cw10.g.u.schedAfter === cw10.g.u.sched, toasts: cw10.g.u.toasts }, q: { toasts: cw10.q.u.toasts }, e: cw10.e.h }).slice(0, 800));
+
+  // CW14 — ↩ Undo twice while the job runs: the clear's step, then the publish step before it
+  const cw14 = await tryCW(async () => {
+    const { a, cE } = published();
+    a.eng.during = async () => { a.undo(); a.undo(); };
+    await a.clear();
+    return { cE, c: a.snap(), sched: Object.keys(a.st.schedule).sort(), saved: a.saved(a.st.blob.length - 1), h: a.st.history.length };
+  });
+  check("CW14 ↩ Undo twice while the clear's job runs — its step, then the publish step before it: the clear takes NOTHING off (its step was taken back), so the publish's own Undo is the only change — exactly the counts after the first publish, its weeks on screen, and that in the clear's setup save",
+    !cw14.threw && sameC(cw14.c, cw14.cE) && J(cw14.sched) === J(Object.keys(Object.assign({}, OLD, E)).sort()) && sameC(cw14.saved, cw14.cE) && cw14.h === 1,
+    J(cw14.threw ? cw14 : { s1: cw14.c.prior.s1.dc, want: cw14.cE.prior.s1.dc, sched: cw14.sched, h: cw14.h }).slice(0, 400));
+
+  // CW11 — counts adopted from another device during the snapshot await / during the job: the latest render's win
+  const cw11 = await tryCW(async () => {
+    const out = {};
+    for (const when of ["adopt", "adoptJob"]) {
+      const base = published();
+      const a = app(OLD, { [when]: shift(base.c1, 5) }); a.publish(E); a.publish(P);
+      await a.clear();
+      const after = a.snap(), saved = a.saved(0);
+      a.undo();
+      out[when] = { adopted: shift(base.c1, 5), after, saved, undone: a.snap() };
+    }
+    return out;
+  });
+  check("CW11 counts adopted from another device during the clear's snapshot await, or during its job: the clear takes its weeks off THOSE — the latest render's — and its setup save writes that; ↩ Undo puts back exactly what came off, so the adopted counts stand (main: nothing off)",
+    !cw11.threw && ["adopt", "adoptJob"].every((w) => sameC(cw11[w].after, shift(C0, 5)) && sameC(cw11[w].saved, shift(C0, 5)) && sameC(cw11[w].undone, cw11[w].adopted)),
+    J(cw11.threw ? cw11 : Object.fromEntries(Object.entries(cw11).map(([w, x]) => [w, { after: x.after.prior.s1.dc, saved: x.saved && x.saved.prior.s1.dc, undone: x.undone.prior.s1.dc, want: [C0.prior.s1.dc + 5, x.adopted.prior.s1.dc] }]))).slice(0, 500));
+
+  // CW12 — a delete adopted back (someone else's change): that week stays counted
+  const cw12 = await tryCW(async () => {
+    const { a, cE } = published();
+    a.eng.answer = { ok: false, wrote: true, notice: "The week of 2026-11-30 was changed by someone else — their version is shown." };
+    a.eng.adoptBack = ["2026-11-30"];
+    await a.clear();
+    return { cE, c: a.snap(), sched: Object.keys(a.st.schedule), saved: a.saved(0) };
+  });
+  check("CW12 a clear whose delete of one week met someone else's change (their copy adopted back on screen): that week stays counted — the counts are exactly those with only it published — and its setup save writes that",
+    !cw12.threw && J(cw12.sched) === J(["2026-11-30"]) && sameC(cw12.c, cw12.cE) && sameC(cw12.saved, cw12.cE),
+    J(cw12.threw ? cw12 : { sched: cw12.sched, s1: cw12.c.prior.s1, want: cw12.cE.prior.s1 }).slice(0, 500));
+
+  // CW13 — the words and the wiring
+  const raBodyCW = iA >= 0 ? nsrcCW.slice(iA, eA) : "";
+  const floorM = nsrcCW.match(/\n  const COUNTS_FLOOR = "(\d{4}-\d{2}-\d{2})";/);
+  check("CW13 the confirm says the cleared weeks from the floor's date (May 4, 2026 = COUNTS_FLOOR) on come off the running totals; ONE counts floor, read by rollForwardCounts and uncountWeeks; uncountWeeks sits right after rollForwardCounts and is called once; runAuthoritativeSchedule never sets the counts; ✕ Clear hands it a late(); ↩ Undo puts back a clear step's `uncounted`",
+    countCW("Holiday assignments and setup data will be kept. The cleared weeks from May 4, 2026 on come off the running totals.") === 1 && !!floorM && floorM[1] === "2026-05-04"
+      && countCW("const COUNTS_FLOOR = ") === 1 && countCW("mStr >= COUNTS_FLOOR") === 3 && kUn > eR && kUn - eR < 900 && countCW("uncountWeeks(") === 1
+      && !/setPriorCounts|setYear1Counts/.test(raBodyCW) && countCW('const cr = await runAuthoritativeSchedule({}, "clear", undoStep, before, (r) => {') === 1
+      && countCW("if (step.uncounted) {") === 1 && countCW("if (off) undoStep.uncounted = off;") === 1
+      && countCW("if (undoStep) undoStep.clear = true;") === 1 && countCW("const since = step.clear ? plan.touched.filter(k => k in (scheduleRef.current || {})) : [];") === 1
+      && countCW("    step.undone = true;") === 1 && countCW("if (!undoStep || undoStep.undone || !stood(r) || sessionEpochRef.current !== ep) return null;") === 1,
+    J({ floor: floorM && floorM[1], decl: countCW("const COUNTS_FLOOR = "), reads: countCW("mStr >= COUNTS_FLOOR"), gap: kUn - eR, calls: countCW("uncountWeeks("), raSets: /setPriorCounts|setYear1Counts/.test(raBodyCW) }));
+})().catch((ex) => check("CW harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
+
 // ─── BC. Generate & Publish asks once; Stats → Billing opens on the newest months (UX audit 2026-10-19) ───
 // Generate & Publish ran on the tap and a publish pushes and emails everyone,
 // so one mis-tap published. Stats → Billing listed its months oldest first, so
@@ -10924,7 +11300,7 @@ await (async () => {
   // the REAL ✕ Clear end to end, over the REAL runAuthoritativeSchedule, from Regenerate's banner (raised by the REAL
   // doRegenerate): o.cancel — "Cancel" at its question; o.job — the engine job's answer
   const clBody = bodyCH("  const clearSchedule = async () => {", "\n  };\n\n  // ─── Snapshot restore");
-  const clMk = fnCH("schedEditable, confirm, snapshots, schedSyncRef, showToast, scheduleRef, pushUndo, commitSchedule, setSaveStatus, runAuthoritativeSchedule, setTimeout, lastSyncRef, stateBundleRef, setupReadRef, auth, supabase, console, sessionEpochRef, setupBaseRef",
+  const clMk = fnCH("schedEditable, confirm, snapshots, schedSyncRef, showToast, scheduleRef, pushUndo, commitSchedule, setSaveStatus, runAuthoritativeSchedule, setTimeout, lastSyncRef, stateBundleRef, setupReadRef, auth, supabase, console, sessionEpochRef, setupBaseRef, uncountWeeks",
     clBody === null ? null : "async () => {" + clBody + "\n  }");
   const clear5 = async (o = {}) => {
     if (!clMk || !raMk || !rgMk) return { threw: "not extractable: " + J({ cl: !!clMk, ra: !!raMk, rg: !!rgMk }) };
@@ -10937,7 +11313,7 @@ await (async () => {
       await clMk({ schedEditable: () => true, confirm: () => { w.asked++; return !o.cancel; }, snapshots: { capture: async () => ({ ok: true }) }, schedSyncRef: sync, showToast: (m) => w.toasts.push(String(m)),
         scheduleRef: sched, pushUndo: () => ({}), commitSchedule: (s) => { sched.current = s; }, setSaveStatus: () => {}, runAuthoritativeSchedule: ra, setTimeout: () => 0, lastSyncRef: { current: null },
         stateBundleRef: { current: (x) => Object.assign({}, x) }, setupReadRef: { current: true }, auth: { getSession: () => ({ access_token: "TOK" }) }, sessionEpochRef: c.ep, setupBaseRef: { current: null },
-        supabase: { from: () => ({ upsert: async () => ({ error: null }) }) }, console: { error() {}, log() {}, warn() {} } })();
+        supabase: { from: () => ({ upsert: async () => ({ error: null }) }) }, console: { error() {}, log() {}, warn() {} }, uncountWeeks: () => null })(); // (the counts: CW)
       await null; await null;
       w.after = c.state; w.log = c.log.slice();
       if (c.state) { await c.tap(); w.tapLog = c.log.slice(); }
@@ -16788,7 +17164,7 @@ await (async () => {
   // notified yet" banner down, in its own session; CH5 runs that, these runs give it a no-op)
   const raFn = raSrc && fnC("schedSyncRef, commitSchedule, setScheduleHistory, sessionEpochRef, setJustPublished", raSrc + "\n  }");
   const clSrc = after("  const clearSchedule = async () => {", "\n  };\n\n  // ─── Snapshot restore");
-  const clFn = clSrc && fnC("schedEditable, confirm, snapshots, schedSyncRef, showToast, scheduleRef, pushUndo, commitSchedule, setSaveStatus, runAuthoritativeSchedule, setTimeout, lastSyncRef, stateBundleRef, setupReadRef, auth, supabase, console, sessionEpochRef, setupBaseRef", "async () => {" + clSrc + "\n  }");
+  const clFn = clSrc && fnC("schedEditable, confirm, snapshots, schedSyncRef, showToast, scheduleRef, pushUndo, commitSchedule, setSaveStatus, runAuthoritativeSchedule, setTimeout, lastSyncRef, stateBundleRef, setupReadRef, auth, supabase, console, sessionEpochRef, setupBaseRef, uncountWeeks", "async () => {" + clSrc + "\n  }"); // (+ the counts once it stands — CW runs them)
   const pnSrc = after("  const publishNotLanded = (pr, what) => {", "\n  };\n");
   const pnFn = pnSrc && fnC("showToast", "(pr, what) => {" + pnSrc + "\n  }");
   if (!raFn || !clFn || !pnFn) check("SE-C runAuthoritativeSchedule / clearSchedule / publishNotLanded are extractable", false, JSON.stringify({ ra: !!raFn, cl: !!clFn, pn: !!pnFn }));
@@ -16808,7 +17184,7 @@ await (async () => {
       await clFn({ schedEditable: () => true, confirm: () => true, snapshots: { capture: async () => ({ ok: true }) }, schedSyncRef: { current: { knownSchedule: () => ({}), pending: () => ["a", "b"] } }, showToast: (m, t) => w.toasts.push([String(m), t]),
         scheduleRef: { current: {} }, pushUndo: () => {}, commitSchedule: () => {}, setSaveStatus: (s) => w.status.push(s), runAuthoritativeSchedule: async () => cr, setTimeout: () => 0, lastSyncRef: { current: null },
         stateBundleRef: { current: (x) => Object.assign({}, x) }, setupReadRef: { current: true }, auth: { getSession: () => ({ access_token: "TOK" }) }, sessionEpochRef: { current: 0 }, setupBaseRef: { current: null },
-        supabase: { from: () => ({ upsert: async () => { w.upserts++; return { error: null }; } }) }, console: watchC.console })();
+        supabase: { from: () => ({ upsert: async () => { w.upserts++; return { error: null }; } }) }, console: watchC.console, uncountWeeks: () => null })();
       await null; await null;
       return w;
     };
@@ -17181,7 +17557,7 @@ await (async () => {
 
   // ── (2) Clear: the gate, the Undo step, one message ──
   const clSrc = after("  const clearSchedule = async () => {", "\n  };\n\n  // ─── Snapshot restore");
-  const clF = clSrc && fnG("schedEditable, confirm, snapshots, schedSyncRef, showToast, scheduleRef, pushUndo, commitSchedule, setSaveStatus, runAuthoritativeSchedule, setTimeout, lastSyncRef, stateBundleRef, setupReadRef, auth, supabase, console, sessionEpochRef, setupBaseRef", "async () => {" + clSrc + "\n  }");
+  const clF = clSrc && fnG("schedEditable, confirm, snapshots, schedSyncRef, showToast, scheduleRef, pushUndo, commitSchedule, setSaveStatus, runAuthoritativeSchedule, setTimeout, lastSyncRef, stateBundleRef, setupReadRef, auth, supabase, console, sessionEpochRef, setupBaseRef, uncountWeeks", "async () => {" + clSrc + "\n  }");
   if (!clF) check("SE-G clearSchedule is extractable", false, "anchor / compile");
   else {
     const clear = async (a, o = {}) => {
@@ -17191,7 +17567,8 @@ await (async () => {
         schedSyncRef: a.schedSyncRef, showToast: a.showToast, scheduleRef: a.ref, pushUndo: a.pushUndo, commitSchedule: a.commitSchedule, setSaveStatus: (s) => w.status.push(s),
         runAuthoritativeSchedule: a.runAuthoritativeSchedule, setTimeout: () => 0, lastSyncRef: { current: null }, stateBundleRef: { current: (x) => Object.assign({}, x) },
         setupReadRef: { current: true }, auth: { getSession: () => (a.token ? { access_token: a.token } : null) },
-        supabase: { from: () => ({ upsert: async () => { w.upserts++; return { error: null }; } }) }, console: { error: (...x) => a.errors.push(x.map(String).join(" ")), warn: () => {} } })();
+        supabase: { from: () => ({ upsert: async () => { w.upserts++; return { error: null }; } }) }, console: { error: (...x) => a.errors.push(x.map(String).join(" ")), warn: () => {} },
+        uncountWeeks: () => null })(); // (the counts: CW)
       await a.settle();
       return w;
     };
