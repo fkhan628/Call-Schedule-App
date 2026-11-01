@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.10.27b";
+    var APP_VERSION = "2026.11.01a";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -108,9 +108,9 @@
   </script>
   <script type="text/javascript">
 function ownKeys(e, r) { var t = Object.keys(e); if (Object.getOwnPropertySymbols) { var o = Object.getOwnPropertySymbols(e); r && (o = o.filter(function (r) { return Object.getOwnPropertyDescriptor(e, r).enumerable; })), t.push.apply(t, o); } return t; }
-function _objectSpread(e) { for (var r = 1; r < arguments.length; r++) { var t = null != arguments[r] ? arguments[r] : {}; r % 2 ? ownKeys(Object(t), !0).forEach(function (r) { _defineProperty(e, r, t[r]); }) : Object.getOwnPropertyDescriptors ? Object.defineProperties(e, Object.getOwnPropertyDescriptors(t)) : ownKeys(Object(t)).forEach(function (r) { Object.defineProperty(e, r, Object.getOwnPropertyDescriptor(t, r)); }); } return e; }
-function _defineProperty(e, r, t) { return (r = _toPropertyKey(r)) in e ? Object.defineProperty(e, r, { value: t, enumerable: !0, configurable: !0, writable: !0 }) : e[r] = t, e; }
-function _toPropertyKey(t) { var i = _toPrimitive(t, "string"); return "symbol" == typeof i ? i : i + ""; }
+function _objectSpread(r) { for (var t = 1; t < arguments.length; t++) { var o = null != arguments[t] ? arguments[t] : {}; t % 2 ? ownKeys(Object(o), !0).forEach(function (t) { _defineProperty(r, t, o[t]); }) : Object.getOwnPropertyDescriptors ? Object.defineProperties(r, Object.getOwnPropertyDescriptors(o)) : ownKeys(Object(o)).forEach(function (e) { Object.defineProperty(r, e, Object.getOwnPropertyDescriptor(o, e)); }); } return r; }
+function _defineProperty(r, t, o) { return (t = _toPropertyKey(t)) in r ? Object.defineProperty(r, t, { value: o, enumerable: !0, configurable: !0, writable: !0 }) : r[t] = o, r; }
+function _toPropertyKey(r) { var o = _toPrimitive(r, "string"); return "symbol" == typeof o ? o : o + ""; }
 function _toPrimitive(t, e) { if ("object" != typeof t || !t) return t; var r; if ("undefined" != typeof Symbol && void 0 !== (r = t[Symbol.toPrimitive])) { var i = r.call(t, e || "default"); if ("object" != typeof i) return i; throw new TypeError("@@toPrimitive must return a primitive value."); } return ("string" === e ? String : Number)(t); }
 const {
   useState,
@@ -457,6 +457,13 @@ function CallSchedule() {
   };
   const [bkMonday, setBkMonday] = useState(mondayOfToday);
   const snapBkMonday = () => setBkMonday(v => /^[1-9]\d{3}-\d\d-\d\d$/.test(v) ? fmt(monOf(parse(v))) : v);
+  const [fiercePaste, setFiercePaste] = useState(() => ({
+    open: false,
+    year: new Date().getFullYear() + 1,
+    text: "",
+    preview: null,
+    applied: null
+  }));
   const [appDate, setAppDate] = useState(() => fmt(new Date()));
   const [appPerson, setAppPerson] = useState("");
   const [scanning, setScanning] = useState(false);
@@ -5450,6 +5457,98 @@ function CallSchedule() {
       y1: applyCountsDelta(from.y1, delta1yr)
     };
   }, [surgeons]);
+  const flipWatchRef = useRef({});
+  const flagNet = (m, wk, from, to) => {
+    if (!wk || m < COUNTS_FLOOR || !!from === !!to) return null;
+    const now = {
+        [m]: Object.assign({}, wk, {
+          isBackup: !!to
+        })
+      },
+      was = {
+        [m]: Object.assign({}, wk, {
+          isBackup: !!from
+        })
+      };
+    const currentYear = new Date().getFullYear();
+    const inYear = mStr => parse(mStr).getFullYear() === currentYear;
+    return {
+      delta: netCounts(countsOfWeeks(now), countsOfWeeks(was)),
+      delta1yr: netCounts(countsOfWeeks(now, inYear), countsOfWeeks(was, inYear))
+    };
+  };
+  const watchBackupFlip = (m, on) => {
+    settleFlips();
+    const wk = scheduleRef.current[m];
+    const net = wk ? flagNet(m, wk, wk.isBackup, on) : null;
+    if (net && !flipWatchRef.current[m]) flipWatchRef.current[m] = {
+      counted: !!wk.isBackup,
+      ep: schedSyncRef.current.epochNow(),
+      sess: sessionEpochRef.current
+    };
+    return net;
+  };
+  const settleFlips = () => {
+    const watch = flipWatchRef.current,
+      ms = Object.keys(watch).sort();
+    if (!ms.length) return;
+    const eng = schedSyncRef.current,
+      pending = new Set(eng.pending()),
+      ep = sessionEpochRef.current;
+    let prior = null,
+      y1 = null;
+    ms.forEach(m => {
+      const w = watch[m];
+      if (w.sess === ep && pending.has(m)) return;
+      delete watch[m];
+      const saved = eng.knownData(m);
+      if (w.sess !== ep || !saved || eng.changedSince([m], w.ep).length) return;
+      const net = flagNet(m, saved, w.counted, saved.isBackup);
+      if (!net) return;
+      if (!prior) {
+        const latest = stateBundleRef.current();
+        prior = latest.priorCounts;
+        y1 = latest.year1Counts;
+      }
+      prior = applyCountsDelta(prior, net.delta);
+      y1 = applyCountsDelta(y1, net.delta1yr);
+      setPriorCounts(prev => applyCountsDelta(prev, net.delta));
+      setYear1Counts(prev => applyCountsDelta(prev, net.delta1yr));
+    });
+    if (prior) saveFlipCounts(prior, y1, ep);
+  };
+  const saveFlipCounts = (prior, y1, ep) => (async () => {
+    try {
+      if (!setupReadRef.current || !auth.getSession() || sessionEpochRef.current !== ep) return;
+      const ts = new Date().toISOString();
+      lastSyncRef.current = ts;
+      if (setupBaseRef.current) setupBaseRef.current = {
+        at: ts,
+        sig: setupBaseRef.current.sig
+      };
+      const blobData = stateBundleRef.current({
+        priorCounts: prior,
+        year1Counts: y1
+      });
+      delete blobData.schedule;
+      delete blobData.vacations;
+      delete blobData.noCallDays;
+      const {
+        error: flipErr
+      } = await supabase.from("call_schedule_data").upsert({
+        id: "main",
+        data: blobData,
+        updated_at: ts
+      });
+      if (flipErr) throw new Error(`backup-flip counts save failed: ${String(flipErr).slice(0, 200)}`);
+    } catch (e) {
+      console.error("Immediate save failed:", e);
+      if (sessionEpochRef.current === ep) showToast("Couldn't save the counts the Backup change moved — check your connection.", "error");
+    }
+  })();
+  useEffect(() => {
+    settleFlips();
+  }, [schedSync]);
   const previewNeedsOk = useMemo(() => {
     if (!previewSchedule) return {
       cost: 0,
@@ -6580,57 +6679,109 @@ function CallSchedule() {
       });
     });
   };
+  const markWeek = (kind, m, on, via) => {
+    const bk = kind === "backup",
+      flagKey = bk ? "isBackup" : "isFierceBackup";
+    (bk ? setBackupMondaySet : setFierceBackupSet)(p => {
+      const n = new Set(p);
+      if (on) n.add(m);else n.delete(m);
+      return n;
+    });
+    const net = bk ? watchBackupFlip(m, on) : null;
+    setWeekFlag(m, flagKey, on);
+    scheduleHistory.forEach(st => {
+      if (!st.counts && !st.clear && st.sched && st.sched[m]) st.sched[m] = Object.assign({}, st.sched[m], {
+        [flagKey]: on
+      });
+    });
+    const t = net ? netCountsText(net.delta) : "",
+      t1 = net ? netCountsText(net.delta1yr) : "";
+    logAudit(`schedule.${bk ? "backup" : "fierce"}_${on ? "mark" : "unmark"}`, (bk ? on ? `Marked week of ${m} as Backup (Fierce primary)` : `Removed Backup mark from week of ${m}` : on ? `Marked week of ${m} as Fierce Backup` : `Removed Fierce Backup mark from week of ${m}`) + (via === "paste" ? " — from Fierce's pasted schedule" : "") + (net ? ` — counts net: ${t}${t1 !== t ? ` (this year's tally: ${t1})` : ""}` : ""), Object.assign({
+      week: m
+    }, via ? {
+      via
+    } : {}, net ? {
+      net: net.delta,
+      net1yr: net.delta1yr
+    } : {}));
+  };
   const markBackupWeek = () => {
     if (!bkMonday) return;
     if (!schedEditable()) return;
-    setBackupMondaySet(p => {
-      const n = new Set(p);
-      n.add(bkMonday);
-      return n;
-    });
-    setWeekFlag(bkMonday, "isBackup", true);
-    logAudit("schedule.backup_mark", `Marked week of ${bkMonday} as Backup (Fierce primary)`, {
-      week: bkMonday
-    });
+    markWeek("backup", bkMonday, true);
     setBkMonday(mondayOfToday());
   };
   const unmarkBackupWeek = m => {
     if (!schedEditable()) return;
-    setBackupMondaySet(p => {
-      const n = new Set(p);
-      n.delete(m);
-      return n;
-    });
-    setWeekFlag(m, "isBackup", false);
-    logAudit("schedule.backup_unmark", `Removed Backup mark from week of ${m}`, {
-      week: m
-    });
+    markWeek("backup", m, false);
   };
   const markFierceBackupWeek = () => {
     if (!bkMonday) return;
     if (!schedEditable()) return;
-    setFierceBackupSet(p => {
-      const n = new Set(p);
-      n.add(bkMonday);
-      return n;
-    });
-    setWeekFlag(bkMonday, "isFierceBackup", true);
-    logAudit("schedule.fierce_mark", `Marked week of ${bkMonday} as Fierce Backup`, {
-      week: bkMonday
-    });
+    markWeek("fierce", bkMonday, true);
     setBkMonday(mondayOfToday());
   };
   const unmarkFierceBackupWeek = m => {
     if (!schedEditable()) return;
-    setFierceBackupSet(p => {
-      const n = new Set(p);
-      n.delete(m);
-      return n;
-    });
-    setWeekFlag(m, "isFierceBackup", false);
-    logAudit("schedule.fierce_unmark", `Removed Fierce Backup mark from week of ${m}`, {
-      week: m
-    });
+    markWeek("fierce", m, false);
+  };
+  const previewFiercePaste = () => {
+    if (typeof parseFierceWeeks !== "function" || typeof planFierceWeeks !== "function") {
+      showToast("This needs the app's latest files — reload the app, then paste again.", "error");
+      return;
+    }
+    const parsed = parseFierceWeeks(fiercePaste.text, fiercePaste.year);
+    const plan = parsed.refused.length || !parsed.rows.length ? null : planFierceWeeks(parsed.rows, [...backupMondaySet], [...fierceBackupSet]);
+    setFiercePaste(p => Object.assign({}, p, {
+      preview: {
+        year: p.year,
+        parsed,
+        plan,
+        sig: plan ? JSON.stringify(plan) : ""
+      },
+      applied: null
+    }));
+  };
+  const applyFiercePaste = () => {
+    const pv = fiercePaste.preview;
+    if (!pv || !pv.plan) return;
+    if (!schedEditable()) return;
+    const plan = planFierceWeeks(pv.parsed.rows, [...backupMondaySet], [...fierceBackupSet]);
+    if (JSON.stringify(plan) !== pv.sig) {
+      showToast("The marks changed since this preview — nothing was applied. Preview again.", "error");
+      setFiercePaste(p => Object.assign({}, p, {
+        preview: null
+      }));
+      return;
+    }
+    const n = plan.backup.add.length + plan.backup.remove.length + plan.fierce.add.length + plan.fierce.remove.length;
+    if (!n) {
+      showToast("Nothing to change — every week in the paste is already marked as it says.", "info");
+      return;
+    }
+    plan.backup.add.forEach(m => markWeek("backup", m, true, "paste"));
+    plan.backup.remove.forEach(m => markWeek("backup", m, false, "paste"));
+    plan.fierce.add.forEach(m => markWeek("fierce", m, true, "paste"));
+    plan.fierce.remove.forEach(m => markWeek("fierce", m, false, "paste"));
+    setFiercePaste(p => Object.assign({}, p, {
+      preview: null,
+      applied: {
+        year: pv.year,
+        plan
+      }
+    }));
+    const pm = o => `+${o.add.length}${o.remove.length ? ` −${o.remove.length}` : ""}`;
+    showToast(`Fierce's ${pv.year} weeks applied — Backup ${pm(plan.backup)}, Fierce Backup ${pm(plan.fierce)}.`, "success");
+  };
+  const fierceChangeTag = (kind, m, on) => {
+    const wk = scheduleRef.current[m];
+    if (!wk) return "not generated yet — the generator marks it";
+    if (kind !== "backup") return on ? "published — the label goes on" : "published — the label comes off";
+    const net = flagNet(m, wk, wk.isBackup, on);
+    if (!net) return m < COUNTS_FLOOR ? "published, before the counts floor — no counts move" : "published — the week already shows it";
+    const t = netCountsText(net.delta),
+      t1 = netCountsText(net.delta1yr);
+    return `published — ${on ? "becomes 2nd call" : "back to our own call"}; counts: ${t}${t1 !== t ? ` (1-Year: ${t1})` : ""}`;
   };
   const generateShareHTML = () => {
     const colors = surgeons.map((s, i) => {
@@ -10546,7 +10697,228 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       margin: "0 0 10px",
       lineHeight: 1.5
     }
-  }, "Marking a week here updates the stored schedule too — an already-generated week flips immediately; a week not yet generated picks the mark up when it's generated."), React.createElement("div", {
+  }, "Marking a week here updates the stored schedule too — an already-generated week flips immediately and its counts move with it; a week not yet generated picks the mark up when it's generated."), React.createElement("div", {
+    style: {
+      marginBottom: 12
+    }
+  }, React.createElement("button", {
+    onClick: () => setFiercePaste(p => _objectSpread(_objectSpread({}, p), {}, {
+      open: !p.open
+    })),
+    "aria-expanded": fiercePaste.open,
+    style: _objectSpread(_objectSpread({}, css.btn(false)), {}, {
+      padding: "6px 12px"
+    })
+  }, "📋 Paste Fierce's schedule"), fiercePaste.open && (() => {
+    const fp = fiercePaste,
+      pv = fp.preview,
+      y0 = new Date().getFullYear();
+    const sub = dk ? "#9aa0b8" : "#5a6a78",
+      txt = dk ? "#c8d2dc" : "#3a4a58",
+      plus = dk ? "#7fd09a" : "#1a7a40",
+      minus = dk ? "#f0a0a0" : "#a83232";
+    const tag = fierceChangeTag;
+    const group = (title, kind, o) => React.createElement("div", {
+      style: {
+        marginTop: 8
+      }
+    }, React.createElement("div", {
+      style: {
+        fontSize: 12,
+        fontWeight: 700,
+        color: txt
+      }
+    }, title, ": +", o.add.length, " · −", o.remove.length, " · ", o.same.length, " unchanged"), o.add.map(m => React.createElement("div", {
+      key: "a" + m,
+      style: {
+        fontSize: 11.5,
+        color: txt,
+        margin: "3px 0 0 8px",
+        lineHeight: 1.45,
+        overflowWrap: "anywhere"
+      }
+    }, React.createElement("span", {
+      style: {
+        color: plus,
+        fontWeight: 800
+      }
+    }, "+"), " ", React.createElement("span", {
+      style: {
+        fontFamily: mono
+      }
+    }, "Wk of ", m), " — ", tag(kind, m, true))), o.remove.map(m => React.createElement("div", {
+      key: "r" + m,
+      style: {
+        fontSize: 11.5,
+        color: txt,
+        margin: "3px 0 0 8px",
+        lineHeight: 1.45,
+        overflowWrap: "anywhere"
+      }
+    }, React.createElement("span", {
+      style: {
+        color: minus,
+        fontWeight: 800
+      }
+    }, "−"), " ", React.createElement("span", {
+      style: {
+        fontFamily: mono
+      }
+    }, "Wk of ", m), " — ", tag(kind, m, false))), o.same.length > 0 && React.createElement("div", {
+      style: {
+        fontSize: 11,
+        color: sub,
+        margin: "3px 0 0 8px",
+        lineHeight: 1.45,
+        overflowWrap: "anywhere"
+      }
+    }, "unchanged: ", o.same.join(", ")));
+    const n = pv && pv.plan ? pv.plan.backup.add.length + pv.plan.backup.remove.length + pv.plan.fierce.add.length + pv.plan.fierce.remove.length : 0;
+    return React.createElement("div", {
+      "data-fierce-paste": "1",
+      style: {
+        marginTop: 8,
+        padding: 12,
+        borderRadius: 8,
+        border: `1px solid ${dk ? "#2a3a5e" : "#d0dce8"}`,
+        background: dk ? "#16213e" : "#f6f9fc"
+      }
+    }, React.createElement("p", {
+      style: {
+        fontSize: 12,
+        color: sub,
+        margin: "0 0 8px",
+        lineHeight: 1.5
+      }
+    }, "Copy his table — Week, Primary, Backup — from the workbook and paste it here. Only cells that say \"Fierce\" are read: Fierce as Primary marks a Backup week, as Backup a Fierce Backup week. The other names are placeholders and are never read. Weeks the paste doesn't list are left as they are."), React.createElement("label", {
+      style: {
+        fontSize: 12,
+        color: sub,
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 6,
+        marginBottom: 6
+      }
+    }, "Year of the table", React.createElement("select", {
+      value: fp.year,
+      onChange: e => {
+        const v = Number(e.target.value);
+        setFiercePaste(p => _objectSpread(_objectSpread({}, p), {}, {
+          year: v,
+          preview: null,
+          applied: null
+        }));
+      },
+      style: _objectSpread(_objectSpread(_objectSpread({}, css.inp), dkInp), {}, {
+        padding: "4px 8px"
+      })
+    }, [y0 - 1, y0, y0 + 1, y0 + 2].map(yy => React.createElement("option", {
+      key: yy,
+      value: yy
+    }, yy)))), React.createElement("textarea", {
+      value: fp.text,
+      onChange: e => {
+        const v = e.target.value;
+        setFiercePaste(p => _objectSpread(_objectSpread({}, p), {}, {
+          text: v,
+          preview: null,
+          applied: null
+        }));
+      },
+      rows: 6,
+      "aria-label": "Fierce's schedule, pasted",
+      placeholder: "Week\tPrimary\tBackup\nJan 04-10\tFierce\t…",
+      style: _objectSpread(_objectSpread(_objectSpread({}, css.inp), dkInp), {}, {
+        display: "block",
+        width: "100%",
+        boxSizing: "border-box",
+        fontFamily: mono,
+        fontSize: 12,
+        resize: "vertical"
+      })
+    }), React.createElement("div", {
+      style: {
+        display: "flex",
+        gap: 6,
+        marginTop: 8,
+        flexWrap: "wrap"
+      }
+    }, React.createElement("button", {
+      onClick: previewFiercePaste,
+      disabled: !fp.text.trim(),
+      style: _objectSpread(_objectSpread({}, css.btn(true)), {}, {
+        opacity: fp.text.trim() ? 1 : 0.5
+      })
+    }, "Preview")), fp.applied && React.createElement("div", {
+      role: "status",
+      style: {
+        marginTop: 8,
+        fontSize: 12,
+        fontWeight: 600,
+        color: plus
+      }
+    }, "✓ Applied Fierce's ", fp.applied.year, " weeks — a published week's counts move once its change is saved."), pv && pv.parsed.refused.length > 0 && React.createElement("div", {
+      role: "alert",
+      style: {
+        marginTop: 8,
+        padding: "8px 10px",
+        borderRadius: 6,
+        border: `1px solid ${dk ? "#5a2a2a" : "#e8c0c0"}`,
+        background: dk ? "#2a1a1a" : "#fdf0f0",
+        color: dk ? "#f0b0b0" : "#8a3030",
+        fontSize: 12,
+        lineHeight: 1.5
+      }
+    }, React.createElement("div", {
+      style: {
+        fontWeight: 700
+      }
+    }, "⚠ ", pv.parsed.refused.length, " line", pv.parsed.refused.length === 1 ? "" : "s", " can't be read — nothing is applied until ", pv.parsed.refused.length === 1 ? "it's" : "they're", " fixed:"), pv.parsed.refused.map((r, i) => React.createElement("div", {
+      key: i,
+      style: {
+        overflowWrap: "anywhere"
+      }
+    }, "Line ", r.line, r.label ? ` (${r.label})` : "", ": ", r.why)), pv.parsed.refused.some(r => / is a [A-Z][a-z]+day$/.test(r.why)) && React.createElement("div", {
+      style: {
+        marginTop: 4
+      }
+    }, "Is the year right? Pick the table's year above.")), pv && !pv.parsed.refused.length && !pv.plan && React.createElement("div", {
+      style: {
+        marginTop: 8,
+        fontSize: 12,
+        color: sub
+      }
+    }, "No weeks found in the paste."), pv && pv.plan && React.createElement("div", {
+      "data-fierce-preview": "1",
+      style: {
+        marginTop: 8
+      }
+    }, React.createElement("div", {
+      style: {
+        fontSize: 12,
+        color: sub
+      }
+    }, pv.parsed.rows.length, " week", pv.parsed.rows.length === 1 ? "" : "s", " of ", pv.year, " read", pv.parsed.header ? " (with its header row)" : "", "."), group("Backup weeks (Fierce primary)", "backup", pv.plan.backup), group("Fierce Backup weeks", "fierce", pv.plan.fierce), React.createElement("div", {
+      style: {
+        display: "flex",
+        gap: 6,
+        marginTop: 10,
+        flexWrap: "wrap",
+        alignItems: "center"
+      }
+    }, React.createElement("button", {
+      onClick: applyFiercePaste,
+      disabled: !n,
+      style: _objectSpread(_objectSpread({}, css.btn(true)), {}, {
+        opacity: n ? 1 : 0.5
+      })
+    }, n ? `Apply ${n} change${n === 1 ? "" : "s"}` : "Nothing to change"), !n && React.createElement("span", {
+      style: {
+        fontSize: 11.5,
+        color: sub
+      }
+    }, "Every week in the paste is already marked as it says."))));
+  })()), React.createElement("div", {
     style: {
       display: "flex",
       gap: 6,
