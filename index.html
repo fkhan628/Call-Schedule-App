@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.11.01a";
+    var APP_VERSION = "2026.11.01b";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -323,6 +323,8 @@ function CallSchedule() {
     }
   }, [darkMode]);
   const [scheduleHistory, setScheduleHistory] = useState([]);
+  const scheduleHistoryRef = useRef([]);
+  scheduleHistoryRef.current = scheduleHistory;
   const publishUndoneRef = useRef(0);
   const pushUndo = useCallback(counts => {
     const snap = {
@@ -337,6 +339,13 @@ function CallSchedule() {
     if (scheduleHistory.length === 0) return;
     if (!schedEditable()) return;
     const step = scheduleHistory[scheduleHistory.length - 1];
+    if (step.counts || step.clear) {
+      const flipWhy = flipGate();
+      if (flipWhy) {
+        showToast(flipWhy, "error");
+        return;
+      }
+    }
     const plan = schedSyncRef.current.undoPlan(step.sched, step.epoch);
     if (plan.blocked.length) {
       showToast(`Can't undo — the week${plan.blocked.length === 1 ? "" : "s"} of ${plan.blocked.join(", ")} ${plan.blocked.length === 1 ? "was" : "were"} changed by someone else since. Nothing was changed.`, "error");
@@ -484,6 +493,13 @@ function CallSchedule() {
   const allowWipeSaveRef = useRef(false);
   const resetBusyRef = useRef(false);
   const jobClaimRef = useRef(null);
+  const flipSettlesRef = useRef(0);
+  const flipSettlesSeen = flipSettlesRef.current;
+  const flipSavesRef = useRef({});
+  const setupWritesRef = useRef({
+    seq: 0,
+    n: 0
+  });
   const loadFailedRef = useRef(false);
   const [vacRequests, setVacRequests] = useState([]);
   const [vacReqSurgeon, setVacReqSurgeon] = useState("");
@@ -1640,11 +1656,13 @@ function CallSchedule() {
     })();
     const refreshScheduleRow = async () => {
       try {
+        const seq0 = setupWritesRef.current.seq;
         const {
           data: row
         } = await supabase.from("call_schedule_data").select("data,updated_at").eq("id", "main").single();
         loadFailedRef.current = false;
         if (!(row !== null && row !== void 0 && row.data)) return;
+        if (setupWritesRef.current.n || setupWritesRef.current.seq !== seq0) return;
         if (row.updated_at === lastSyncRef.current) return;
         lastSyncRef.current = row.updated_at;
         const d = typeof row.data === "string" ? JSON.parse(row.data) : row.data;
@@ -1901,10 +1919,16 @@ function CallSchedule() {
       return false;
     }
     if (job) {
+      if (!setupEditable()) return false;
       const claimed = jobClaimRef.current && jobClaimRef.current !== own ? jobClaimRef.current.what : null;
       const busy = schedSyncRef.current.jobPending() || claimed;
       if (busy) {
         showToast(`${schedSyncRef.current.jobLabel(busy)} is still running — wait for it to finish, then try again.`, "error");
+        return false;
+      }
+      const flipWhy = flipGate();
+      if (flipWhy) {
+        showToast(flipWhy, "error");
         return false;
       }
     }
@@ -4952,8 +4976,13 @@ function CallSchedule() {
       setPreviewOrigin("generated");
       previewEpochRef.current = genEpoch;
       setShowPreview(true);
-      if (JSON.stringify(clickLocks || []) !== JSON.stringify(pendingLocks || [])) showToast("The locks changed during the search — this preview used the earlier ones. Re-roll to use the new ones.", "error");
+      if (JSON.stringify(clickLocks || []) !== JSON.stringify(pendingLocks || [])) showToast("The locks changed during the search — this preview used the earlier ones. Re-roll to use the new ones.", "error");else if (previewMarksMoved(result).length) showToast("The Backup marks changed during the search — this preview used the earlier ones, and ✓ Accept & Publish won't take it. Re-roll to use the new ones.", "error");
       return "preview";
+    }
+    const marksMovedG = previewMarksMoved(result);
+    if (marksMovedG.length) {
+      showToast(marksMovedText(marksMovedG, "publish"), "error");
+      return "moved";
     }
     const inPreview = view === "generate" ? "in the preview below" : "in the preview on the Generate tab";
     if (genInputsSig() !== clickSig) {
@@ -4961,7 +4990,7 @@ function CallSchedule() {
       setPreviewOrigin("generated");
       previewEpochRef.current = genEpoch;
       setShowPreview(true);
-      showToast(`Time off, a lock, a holiday card or the Generate settings changed during the search — review the result ${inPreview} before publishing.`, "error");
+      showToast(`Time off, a lock, a holiday card, a Backup mark or the Generate settings changed during the search — review the result ${inPreview} before publishing.`, "error");
       return "review";
     }
     const needsOkN = (() => {
@@ -5019,6 +5048,12 @@ function CallSchedule() {
         const movedWeeks = schedSyncRef.current.changedSince(Object.keys(result), genEpoch);
         if (movedWeeks.length) {
           showToast(`The week${movedWeeks.length === 1 ? "" : "s"} of ${movedWeeks.join(", ")} changed while generating — nothing was published. Generate again.`, "error");
+          setSaveStatus("");
+          return "moved";
+        }
+        const marksMoved2 = previewMarksMoved(result);
+        if (marksMoved2.length) {
+          showToast(marksMovedText(marksMoved2, "publish"), "error");
           setSaveStatus("");
           return "moved";
         }
@@ -5477,34 +5512,76 @@ function CallSchedule() {
       delta1yr: netCounts(countsOfWeeks(now, inYear), countsOfWeeks(was, inYear))
     };
   };
-  const watchBackupFlip = (m, on) => {
+  const watchFlip = (kind, m, on) => {
     settleFlips();
-    const wk = scheduleRef.current[m];
-    const net = wk ? flagNet(m, wk, wk.isBackup, on) : null;
-    if (net && !flipWatchRef.current[m]) flipWatchRef.current[m] = {
-      counted: !!wk.isBackup,
+    const wk = scheduleRef.current[m],
+      flagKey = kind === "backup" ? "isBackup" : "isFierceBackup";
+    if (!wk) return null;
+    const key = kind + ":" + m,
+      w = flipWatchRef.current[key];
+    if (w) w.want = !!on;else if (!!wk[flagKey] !== !!on) flipWatchRef.current[key] = {
+      kind,
+      m,
+      flagKey,
+      want: !!on,
+      counted: !!wk[flagKey],
       ep: schedSyncRef.current.epochNow(),
       sess: sessionEpochRef.current
     };
-    return net;
+    return kind === "backup" ? flagNet(m, wk, wk.isBackup, on) : null;
+  };
+  const stepsHold = (m, flagKey, val) => {
+    const hist = scheduleHistoryRef.current;
+    for (let i = hist.length - 1; i >= 0; i--) {
+      const st = hist[i];
+      if (st.counts || st.clear) break;
+      if (st.sched && st.sched[m]) st.sched[m] = Object.assign({}, st.sched[m], {
+        [flagKey]: val
+      });
+    }
   };
   const settleFlips = () => {
     const watch = flipWatchRef.current,
-      ms = Object.keys(watch).sort();
-    if (!ms.length) return;
+      keys = Object.keys(watch).sort();
+    if (!keys.length) return;
     const eng = schedSyncRef.current,
       pending = new Set(eng.pending()),
       ep = sessionEpochRef.current;
     let prior = null,
       y1 = null;
-    ms.forEach(m => {
-      const w = watch[m];
+    const moved = [];
+    keys.forEach(key => {
+      const w = watch[key],
+        m = w.m;
       if (w.sess === ep && pending.has(m)) return;
-      delete watch[m];
-      const saved = eng.knownData(m);
-      if (w.sess !== ep || !saved || eng.changedSince([m], w.ep).length) return;
-      const net = flagNet(m, saved, w.counted, saved.isBackup);
-      if (!net) return;
+      delete watch[key];
+      if (w.sess !== ep) return;
+      const saved = eng.knownData(m),
+        now = saved ? !!saved[w.flagKey] : null;
+      const back = !!saved && now !== w.want;
+      if (back) {
+        stepsHold(m, w.flagKey, now);
+        (w.kind === "backup" ? setBackupMondaySet : setFierceBackupSet)(p => {
+          const n = new Set(p);
+          if (now) n.add(m);else n.delete(m);
+          return n;
+        });
+      }
+      const why = "didn't save as made (refused, or the week changed elsewhere first)";
+      if (w.kind !== "backup") {
+        if (back) logAudit("schedule.fierce_unsaved", `The Fierce Backup change to week of ${m} ${why} — the label is back as the week is stored`, {
+          week: m
+        });
+        return;
+      }
+      const net = saved && !eng.changedSince([m], w.ep).length ? flagNet(m, saved, w.counted, now) : null;
+      if (!net) {
+        const counted = w.want !== w.counted && m >= COUNTS_FLOOR;
+        if (counted || back) logAudit(counted ? "schedule.backup_counts" : "schedule.backup_unsaved", `The Backup change to week of ${m} ${why}${back ? " — the mark is back as the week is stored" : ""}${counted ? " — counts unchanged" : ""}`, {
+          week: m
+        });
+        return;
+      }
       if (!prior) {
         const latest = stateBundleRef.current();
         prior = latest.priorCounts;
@@ -5512,20 +5589,48 @@ function CallSchedule() {
       }
       prior = applyCountsDelta(prior, net.delta);
       y1 = applyCountsDelta(y1, net.delta1yr);
+      moved.push(m);
       setPriorCounts(prev => applyCountsDelta(prev, net.delta));
       setYear1Counts(prev => applyCountsDelta(prev, net.delta1yr));
     });
-    if (prior) saveFlipCounts(prior, y1, ep);
+    if (prior) {
+      flipSettlesRef.current++;
+      saveFlipCounts(prior, y1, ep, moved);
+    }
   };
-  const saveFlipCounts = (prior, y1, ep) => (async () => {
+  const FLIP_SAVE_HOLD_MS = 20000;
+  const flipsSaving = () => {
+    settleFlips();
+    const ep = sessionEpochRef.current,
+      now = Date.now();
+    const ms = Object.values(flipWatchRef.current).filter(w => w.sess === ep).map(w => w.m);
+    Object.values(flipSavesRef.current).forEach(s => {
+      if (now - s.at < FLIP_SAVE_HOLD_MS) ms.push(...s.ms);
+    });
+    return [...new Set(ms)].sort();
+  };
+  const flipGate = () => {
+    const saving = flipsSaving();
+    if (saving.length) {
+      const rejected = new Set(schedSyncRef.current.status().rejected || []),
+        bad = saving.filter(m => rejected.has(m));
+      if (bad.length) return `The Backup change to the week of ${bad.join(", ")} couldn't be saved — the server refused it. Nothing was changed: remove that mark (or reload the app), then try again.`;
+      return `The Backup change to the week of ${saving.join(", ")} is still being saved — try again once it's saved.`;
+    }
+    if (flipSettlesRef.current !== flipSettlesSeen) return "A Backup change was just saved and moved the counts — nothing was changed. Try again.";
+    return null;
+  };
+  const saveFlipCounts = (prior, y1, ep, ms) => (async () => {
+    if (!setupReadRef.current || !auth.getSession() || sessionEpochRef.current !== ep) return;
+    const w = setupWritesRef.current,
+      id = ++w.seq;
+    w.n++;
+    flipSavesRef.current[id] = {
+      ms: ms || [],
+      at: Date.now()
+    };
     try {
-      if (!setupReadRef.current || !auth.getSession() || sessionEpochRef.current !== ep) return;
       const ts = new Date().toISOString();
-      lastSyncRef.current = ts;
-      if (setupBaseRef.current) setupBaseRef.current = {
-        at: ts,
-        sig: setupBaseRef.current.sig
-      };
       const blobData = stateBundleRef.current({
         priorCounts: prior,
         year1Counts: y1
@@ -5540,10 +5645,20 @@ function CallSchedule() {
         data: blobData,
         updated_at: ts
       });
-      if (flipErr) throw new Error(`backup-flip counts save failed: ${String(flipErr).slice(0, 200)}`);
+      if (flipErr) throw new Error(`backup-flip counts save failed: ${String(flipErr && flipErr.message || flipErr).slice(0, 200)}`);
+      if (sessionEpochRef.current === ep) {
+        lastSyncRef.current = ts;
+        if (setupBaseRef.current) setupBaseRef.current = {
+          at: ts,
+          sig: setupBaseRef.current.sig
+        };
+      }
     } catch (e) {
       console.error("Immediate save failed:", e);
       if (sessionEpochRef.current === ep) showToast("Couldn't save the counts the Backup change moved — check your connection.", "error");
+    } finally {
+      w.n--;
+      delete flipSavesRef.current[id];
     }
   })();
   useEffect(() => {
@@ -5579,6 +5694,17 @@ function CallSchedule() {
       };
     }
   }, [previewSchedule, schedule, surgeons, vacations, noCallDays, holidayAssignments, silvisActive, silvisFakId, silvisDays, pendingLocks]);
+  const previewMarksMoved = weeks => {
+    const b = stateBundleRef.current(),
+      bk = new Set(b.backupMondays || []),
+      fb = new Set(b.fierceBackup || []);
+    return Object.keys(weeks || {}).filter(m => !!weeks[m].isBackup !== bk.has(m) || !!weeks[m].isFierceBackup !== fb.has(m)).sort();
+  };
+  const marksMovedText = (ms, how) => {
+    const wks = `the week${ms.length === 1 ? "" : "s"} of ${ms.join(", ")}`;
+    if (how === "publish") return `The Backup marks changed during Generate & Publish (${wks}) — nothing was published. Run it again to use them.`;
+    return `The Backup marks changed since this preview was made (${wks}) — nothing was published. ${how === "json" ? "Load the file again" : "Generate the preview again"} to use them.`;
+  };
   const acceptPreview = async () => {
     if (publishSearchRunning()) {
       showToast("Generate & Publish is still searching — wait for it to finish.", "error");
@@ -5598,6 +5724,11 @@ function CallSchedule() {
       const moved = schedSyncRef.current.changedSince(Object.keys(previewSchedule), previewEpochRef.current);
       if (moved.length) {
         showToast(`The week${moved.length === 1 ? "" : "s"} of ${moved.join(", ")} changed since this preview was generated — nothing was published. Generate the preview again.`, "error");
+        return;
+      }
+      const marksMoved = previewMarksMoved(previewSchedule);
+      if (marksMoved.length) {
+        showToast(marksMovedText(marksMoved, previewOrigin), "error");
         return;
       }
       const needsOkN = previewNeedsOk.items.length;
@@ -5631,6 +5762,12 @@ function CallSchedule() {
         const moved2 = schedSyncRef.current.changedSince(Object.keys(weeks), previewEpochRef.current);
         if (moved2.length) {
           showToast(`The week${moved2.length === 1 ? "" : "s"} of ${moved2.join(", ")} changed since this preview was generated — nothing was published. Generate the preview again.`, "error");
+          setSaveStatus("");
+          return;
+        }
+        const marksMoved2 = previewMarksMoved(weeks);
+        if (marksMoved2.length) {
+          showToast(marksMovedText(marksMoved2, origin), "error");
           setSaveStatus("");
           return;
         }
@@ -6679,6 +6816,23 @@ function CallSchedule() {
       });
     });
   };
+  const setupEditable = () => {
+    if (setupReadRef.current && !loadFailedRef.current) return true;
+    showToast("The shared setup hasn't loaded yet — nothing was changed. It retries every minute; try again shortly.", "error");
+    return false;
+  };
+  const marksEditable = () => {
+    if (!setupEditable()) return false;
+    const eng = schedSyncRef.current,
+      claim = jobClaimRef.current,
+      job = eng.jobPending();
+    const busy = claim ? eng.jobLabel(claim.what) : job ? eng.jobLabel(job) : publishSearchRunning() ? "Generate & Publish" : publishingRef.current ? eng.jobLabel("publish") : null;
+    if (busy) {
+      showToast(`${busy} is still running — wait for it to finish, then change the Backup Weeks. Nothing was changed.`, "error");
+      return false;
+    }
+    return true;
+  };
   const markWeek = (kind, m, on, via) => {
     const bk = kind === "backup",
       flagKey = bk ? "isBackup" : "isFierceBackup";
@@ -6687,13 +6841,9 @@ function CallSchedule() {
       if (on) n.add(m);else n.delete(m);
       return n;
     });
-    const net = bk ? watchBackupFlip(m, on) : null;
+    const net = watchFlip(kind, m, on);
     setWeekFlag(m, flagKey, on);
-    scheduleHistory.forEach(st => {
-      if (!st.counts && !st.clear && st.sched && st.sched[m]) st.sched[m] = Object.assign({}, st.sched[m], {
-        [flagKey]: on
-      });
-    });
+    stepsHold(m, flagKey, on);
     const t = net ? netCountsText(net.delta) : "",
       t1 = net ? netCountsText(net.delta1yr) : "";
     logAudit(`schedule.${bk ? "backup" : "fierce"}_${on ? "mark" : "unmark"}`, (bk ? on ? `Marked week of ${m} as Backup (Fierce primary)` : `Removed Backup mark from week of ${m}` : on ? `Marked week of ${m} as Fierce Backup` : `Removed Fierce Backup mark from week of ${m}`) + (via === "paste" ? " — from Fierce's pasted schedule" : "") + (net ? ` — counts net: ${t}${t1 !== t ? ` (this year's tally: ${t1})` : ""}` : ""), Object.assign({
@@ -6707,23 +6857,35 @@ function CallSchedule() {
   };
   const markBackupWeek = () => {
     if (!bkMonday) return;
-    if (!schedEditable()) return;
+    if (!schedEditable() || !marksEditable()) return;
     markWeek("backup", bkMonday, true);
     setBkMonday(mondayOfToday());
   };
   const unmarkBackupWeek = m => {
-    if (!schedEditable()) return;
+    if (!schedEditable() || !marksEditable()) return;
     markWeek("backup", m, false);
   };
   const markFierceBackupWeek = () => {
     if (!bkMonday) return;
-    if (!schedEditable()) return;
+    if (!schedEditable() || !marksEditable()) return;
     markWeek("fierce", bkMonday, true);
     setBkMonday(mondayOfToday());
   };
   const unmarkFierceBackupWeek = m => {
-    if (!schedEditable()) return;
+    if (!schedEditable() || !marksEditable()) return;
     markWeek("fierce", m, false);
+  };
+  const storedFlagsOf = rows => {
+    const s = scheduleRef.current || {},
+      o = {};
+    (rows || []).forEach(r => {
+      const wk = s[r.monday];
+      if (wk) o[r.monday] = {
+        isBackup: !!wk.isBackup,
+        isFierceBackup: !!wk.isFierceBackup
+      };
+    });
+    return o;
   };
   const previewFiercePaste = () => {
     if (typeof parseFierceWeeks !== "function" || typeof planFierceWeeks !== "function") {
@@ -6731,7 +6893,7 @@ function CallSchedule() {
       return;
     }
     const parsed = parseFierceWeeks(fiercePaste.text, fiercePaste.year);
-    const plan = parsed.refused.length || !parsed.rows.length ? null : planFierceWeeks(parsed.rows, [...backupMondaySet], [...fierceBackupSet]);
+    const plan = parsed.refused.length || !parsed.rows.length ? null : planFierceWeeks(parsed.rows, [...backupMondaySet], [...fierceBackupSet], storedFlagsOf(parsed.rows));
     setFiercePaste(p => Object.assign({}, p, {
       preview: {
         year: p.year,
@@ -6742,16 +6904,21 @@ function CallSchedule() {
       applied: null
     }));
   };
+  const focusSoon = sel => setTimeout(() => {
+    const el = typeof document !== "undefined" && document.querySelector(sel);
+    if (el && el.focus) el.focus();
+  }, 0);
   const applyFiercePaste = () => {
     const pv = fiercePaste.preview;
     if (!pv || !pv.plan) return;
-    if (!schedEditable()) return;
-    const plan = planFierceWeeks(pv.parsed.rows, [...backupMondaySet], [...fierceBackupSet]);
+    if (!schedEditable() || !marksEditable()) return;
+    const plan = planFierceWeeks(pv.parsed.rows, [...backupMondaySet], [...fierceBackupSet], storedFlagsOf(pv.parsed.rows));
     if (JSON.stringify(plan) !== pv.sig) {
       showToast("The marks changed since this preview — nothing was applied. Preview again.", "error");
       setFiercePaste(p => Object.assign({}, p, {
         preview: null
       }));
+      focusSoon('[data-fierce-preview-btn="1"]');
       return;
     }
     const n = plan.backup.add.length + plan.backup.remove.length + plan.fierce.add.length + plan.fierce.remove.length;
@@ -6770,18 +6937,24 @@ function CallSchedule() {
         plan
       }
     }));
+    focusSoon('[data-fierce-applied="1"]');
     const pm = o => `+${o.add.length}${o.remove.length ? ` −${o.remove.length}` : ""}`;
     showToast(`Fierce's ${pv.year} weeks applied — Backup ${pm(plan.backup)}, Fierce Backup ${pm(plan.fierce)}.`, "success");
   };
   const fierceChangeTag = (kind, m, on) => {
-    const wk = scheduleRef.current[m];
-    if (!wk) return "not generated yet — the generator marks it";
-    if (kind !== "backup") return on ? "published — the label goes on" : "published — the label comes off";
-    const net = flagNet(m, wk, wk.isBackup, on);
-    if (!net) return m < COUNTS_FLOOR ? "published, before the counts floor — no counts move" : "published — the week already shows it";
-    const t = netCountsText(net.delta),
-      t1 = netCountsText(net.delta1yr);
-    return `published — ${on ? "becomes 2nd call" : "back to our own call"}; counts: ${t}${t1 !== t ? ` (1-Year: ${t1})` : ""}`;
+    const wk = scheduleRef.current[m],
+      pw = previewSchedRef.current && previewSchedRef.current[m];
+    const held = pw && !!pw[kind === "backup" ? "isBackup" : "isFierceBackup"] !== !!on ? previewOrigin === "json" ? "in the open preview loaded from a file, made before this — load the file again before publishing" : "in the open Generate preview, made before this — generate it again before publishing" : "";
+    if (!wk) return held || (on ? "not generated yet — the generator marks it" : "not generated yet — the generator no longer marks it");
+    const tag = (() => {
+      if (kind !== "backup") return on ? "published — the label goes on" : "published — the label comes off";
+      const net = flagNet(m, wk, wk.isBackup, on);
+      if (!net) return m < COUNTS_FLOOR ? "published, before the counts floor — no counts move" : "published — the week already shows it";
+      const t = netCountsText(net.delta),
+        t1 = netCountsText(net.delta1yr);
+      return `published — ${on ? "becomes 2nd call" : "back to our own call"}; counts: ${t}${t1 !== t ? ` (1-Year: ${t1})` : ""}`;
+    })();
+    return held ? `${tag}; ${held}` : tag;
   };
   const generateShareHTML = () => {
     const colors = surgeons.map((s, i) => {
@@ -10772,7 +10945,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         lineHeight: 1.45,
         overflowWrap: "anywhere"
       }
-    }, "unchanged: ", o.same.join(", ")));
+    }, "unchanged: ", o.same.map(m => `${m} (${scheduleRef.current[m] ? "published" : "not generated yet"})`).join(", ")));
     const n = pv && pv.plan ? pv.plan.backup.add.length + pv.plan.backup.remove.length + pv.plan.fierce.add.length + pv.plan.fierce.remove.length : 0;
     return React.createElement("div", {
       "data-fierce-paste": "1",
@@ -10844,6 +11017,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         flexWrap: "wrap"
       }
     }, React.createElement("button", {
+      "data-fierce-preview-btn": "1",
       onClick: previewFiercePaste,
       disabled: !fp.text.trim(),
       style: _objectSpread(_objectSpread({}, css.btn(true)), {}, {
@@ -10851,11 +11025,14 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       })
     }, "Preview")), fp.applied && React.createElement("div", {
       role: "status",
+      "data-fierce-applied": "1",
+      tabIndex: -1,
       style: {
         marginTop: 8,
         fontSize: 12,
         fontWeight: 600,
-        color: plus
+        color: plus,
+        outline: "none"
       }
     }, "✓ Applied Fierce's ", fp.applied.year, " weeks — a published week's counts move once its change is saved."), pv && pv.parsed.refused.length > 0 && React.createElement("div", {
       role: "alert",
@@ -10878,7 +11055,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       style: {
         overflowWrap: "anywhere"
       }
-    }, "Line ", r.line, r.label ? ` (${r.label})` : "", ": ", r.why)), pv.parsed.refused.some(r => / is a [A-Z][a-z]+day$/.test(r.why)) && React.createElement("div", {
+    }, "Line ", r.line, r.label ? ` (${r.label})` : "", ": ", r.why)), pv.parsed.refused.filter(r => / is a [A-Z][a-z]+day$/.test(r.why)).length > pv.parsed.rows.length && React.createElement("div", {
       style: {
         marginTop: 4
       }
