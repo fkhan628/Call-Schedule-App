@@ -6241,7 +6241,7 @@ function CallSchedule() {
   };
   // Every watched week the engine no longer has pending is settled. A flip
   // that didn't land as the last tap set it (refused, adopted back) gives the
-  // Undo steps back the flag the table holds. A Backup flip stood when the
+  // Undo steps and its set back the flag the table holds. A Backup flip stood when the
   // saved week's flag isn't the one the counts hold and no copy of someone
   // else's was put on screen since the tap — then the counts move by the net
   // on the week as saved, and are saved at once. Anything else moves nothing:
@@ -6262,11 +6262,19 @@ function CallSchedule() {
       delete watch[key];
       if (w.sess !== ep) return;
       const saved = eng.knownData(m), now = saved ? !!saved[w.flagKey] : null;
-      if (saved && now !== w.want) stepsHold(m, w.flagKey, now);
-      if (w.kind !== "backup") return;
+      const back = !!saved && now !== w.want; // (the flip didn't stand: the table holds the other flag)
+      if (back) {
+        stepsHold(m, w.flagKey, now);
+        // …and the set takes it back too — the set and the flag go together (round 2's completeness review): left
+        // changed, the card listed a week stored regular (or dropped one stored 2nd call) and the autosave saved that set
+        (w.kind === "backup" ? setBackupMondaySet : setFierceBackupSet)(p => { const n = new Set(p); if (now) n.add(m); else n.delete(m); return n; });
+      }
+      const why = "didn't save as made (refused, or the week changed elsewhere first)";
+      if (w.kind !== "backup") { if (back) logAudit("schedule.fierce_unsaved", `The Fierce Backup change to week of ${m} ${why} — the label is back as the week is stored`, { week: m }); return; }
       const net = saved && !eng.changedSince([m], w.ep).length ? flagNet(m, saved, w.counted, now) : null;
       if (!net) {
-        if (w.want !== w.counted && m >= COUNTS_FLOOR) logAudit("schedule.backup_counts", `The Backup change to week of ${m} didn't save as made (refused, or the week changed elsewhere first) — counts unchanged`, { week: m });
+        const counted = w.want !== w.counted && m >= COUNTS_FLOOR; // (the tap's line named a counts net)
+        if (counted || back) logAudit(counted ? "schedule.backup_counts" : "schedule.backup_unsaved", `The Backup change to week of ${m} ${why}${back ? " — the mark is back as the week is stored" : ""}${counted ? " — counts unchanged" : ""}`, { week: m });
         return;
       }
       if (!prior) { const latest = stateBundleRef.current(); prior = latest.priorCounts; y1 = latest.year1Counts; } // (the latest render's)

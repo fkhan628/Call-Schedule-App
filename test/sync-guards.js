@@ -7584,18 +7584,30 @@ ${nsrcX.slice(iM, eM)}
         t.control.fail({ method: "PATCH", week: W14, kind: "403" });
         a.bk = W14; mark(a); await a.land();
         const n0 = a.toasts.length; a.render().undoLastChange(); await a.land(); const st = stored(t);
-        out[kind + "Refused"] = { undone: st[SW].nights.tue === WEEKS0[SW].nights.tue, flag: st[W14][flagKey], toasts: a.toasts.slice(n0).map((x) => x[0]), counts: same(a.counts(), c0), fact: fact(a.counts().prior, st), steps: a.history.length }; }
+        out[kind + "Refused"] = { undone: st[SW].nights.tue === WEEKS0[SW].nights.tue, flag: st[W14][flagKey], toasts: a.toasts.slice(n0).map((x) => x[0]), counts: same(a.counts(), c0), fact: fact(a.counts().prior, st), steps: a.history.length,
+          set: (kind === "backup" ? a.backup : a.fierce).has(W14), acts: a.audits.map((x) => x.act) }; } // (round 2's completeness review: the set takes the refused mark back too, and a line says so)
       { const t = mkTable(), a = await mkApp(t);
         a.render().pushUndo(); a.render().updateSchedule(swapSW); await a.land();
         a.bk = W14; mark(a); await a.land();
         const n0 = a.toasts.length; a.render().undoLastChange(); await a.land(); const st = stored(t);
-        out[kind + "Stood"] = { undone: st[SW].nights.tue === WEEKS0[SW].nights.tue, flag: st[W14][flagKey], toasts: a.toasts.slice(n0).map((x) => x[0]), fact: fact(a.counts().prior, st), steps: a.history.length }; }
+        out[kind + "Stood"] = { undone: st[SW].nights.tue === WEEKS0[SW].nights.tue, flag: st[W14][flagKey], toasts: a.toasts.slice(n0).map((x) => x[0]), fact: fact(a.counts().prior, st), steps: a.history.length,
+          set: (kind === "backup" ? a.backup : a.fierce).has(W14) }; }
     }
+    // (round 2's completeness review) an UNMARK the server refuses, of a Backup mark that had stood: the set gets the week back, the
+    // stored and shown week stays 2nd call, the counts stay as the mark left them, one line says the mark is back
+    { const t = mkTable(), a = await mkApp(t);
+      a.bk = W14; a.render().markBackupWeek(); await a.land(); const c1 = a.counts();
+      t.control.fail({ method: "PATCH", week: W14, kind: "403" }); a.render().unmarkBackupWeek(W14); await a.land();
+      out.unmarkRefused = { set: a.backup.has(W14), flag: stored(t)[W14].isBackup, shown: a.ref.current[W14].isBackup, counts: same(a.counts(), c1), fact: fact(a.counts().prior, stored(t)), audits: a.audits.map((x) => x.act + " " + x.sum) }; }
     return out;
   });
-  check("CX12 (review fix) a mark the server REFUSED (403 — the saved copy put back), then ↩ Undo of an earlier swap: the Undo goes through — the swap undone, the week keeps the flag the table holds, no \"Can't undo … changed by someone else\", the counts untouched, the fact holds — for a Backup and a Fierce Backup mark alike (before the fix: the step kept the refused flag and the Undo was refused over that week); a mark that STOOD stays through the same Undo",
+  check("CX12 (review fix) a mark the server REFUSED (403 — the saved copy put back), then ↩ Undo of an earlier swap: the Undo goes through — the swap undone, the week keeps the flag the table holds, no \"Can't undo … changed by someone else\", the counts untouched, the fact holds — for a Backup and a Fierce Backup mark alike (before the fix: the step kept the refused flag and the Undo was refused over that week); a mark that STOOD stays through the same Undo; (round 2's completeness review) the refused mark's SET takes it back too — the set and the flag together — and a refused unmark puts the week back in the set, still 2nd call, its counts as the mark left them, one line saying so",
     !cx12.threw && ["backup", "fierce"].every((k) => { const r = cx12[k + "Refused"], s = cx12[k + "Stood"];
-      return r.undone && r.flag === false && !r.toasts.some((m) => /Can't undo/.test(m)) && r.counts && r.fact && r.steps === 0 && s.undone && s.flag === true && !s.toasts.some((m) => /Can't undo/.test(m)) && s.fact && s.steps === 0; }),
+      return r.undone && r.flag === false && !r.toasts.some((m) => /Can't undo/.test(m)) && r.counts && r.fact && r.steps === 0 && r.set === false
+        && J(r.acts) === J(k === "backup" ? ["schedule.backup_mark", "schedule.backup_counts"] : ["schedule.fierce_mark", "schedule.fierce_unsaved"])
+        && s.undone && s.flag === true && !s.toasts.some((m) => /Can't undo/.test(m)) && s.fact && s.steps === 0 && s.set === true; })
+      && cx12.unmarkRefused.set === true && cx12.unmarkRefused.flag === true && cx12.unmarkRefused.shown === true && cx12.unmarkRefused.counts && cx12.unmarkRefused.fact
+      && cx12.unmarkRefused.audits.length === 3 && cx12.unmarkRefused.audits[2] === `schedule.backup_counts The Backup change to week of ${W14} didn't save as made (refused, or the week changed elsewhere first) — the mark is back as the week is stored — counts unchanged`,
     J(cx12).slice(0, 900));
 
   // CX12b (round 2) a job's re-check that settles a refused mark in its TAP's closure (the snapshot's await resolving before React
@@ -7817,11 +7829,11 @@ ${nsrcX.slice(iAP, eAP)}
       const t = mkTable([oldRow]), a = await mkApp(t); t.control.fail({ method: "PATCH", week: "2026-04-27", kind: "403" }); a.bk = "2026-04-27"; a.render().markBackupWeek(); await a.land(); out.preFloor = a.audits.map((x) => x.act); }
     return out;
   });
-  check("CX17 (review fix) a Backup mark the server refused: after its tap's line (\"— counts net: …\"), one more — \"The Backup change to week of 2027-01-04 didn't save as made … — counts unchanged\"; a mark that stood, or one flipped back before it saved, adds none; (round 2) one flipped back in a later tap while its PATCH was on the wire leaves no watch, no counts moved or saved, its two tap lines only; a refused mark before the floor (its line named no counts) adds none",
-    !cx17.threw && cx17.refused.length === 2 && /^schedule\.backup_mark Marked week of 2027-01-04 .* — counts net: /.test(cx17.refused[0]) && cx17.refused[1] === "schedule.backup_counts The Backup change to week of 2027-01-04 didn't save as made (refused, or the week changed elsewhere first) — counts unchanged"
+  check("CX17 (review fix) a Backup mark the server refused: after its tap's line (\"— counts net: …\"), one more — \"The Backup change to week of 2027-01-04 didn't save as made … — the mark is back as the week is stored — counts unchanged\"; a mark that stood, or one flipped back before it saved, adds none; (round 2) one flipped back in a later tap while its PATCH was on the wire leaves no watch, no counts moved or saved, its two tap lines only; a refused mark before the floor (its line named no counts) gets a line saying the mark is back, never \"counts unchanged\"",
+    !cx17.threw && cx17.refused.length === 2 && /^schedule\.backup_mark Marked week of 2027-01-04 .* — counts net: /.test(cx17.refused[0]) && cx17.refused[1] === "schedule.backup_counts The Backup change to week of 2027-01-04 didn't save as made (refused, or the week changed elsewhere first) — the mark is back as the week is stored — counts unchanged"
       && J(cx17.stood) === J(["schedule.backup_mark"]) && J(cx17.back) === J(["schedule.backup_mark", "schedule.backup_unmark"])
       && J(cx17.backLater.acts) === J(["schedule.backup_mark", "schedule.backup_unmark"]) && cx17.backLater.watches === 0 && cx17.backLater.same && cx17.backLater.saves === 0 && cx17.backLater.flag === false && cx17.backLater.fact
-      && J(cx17.preFloor) === J(["schedule.backup_mark"]),
+      && J(cx17.preFloor) === J(["schedule.backup_mark", "schedule.backup_unsaved"]),
     J(cx17).slice(0, 900));
 
   // CX18 no mark before the shared setup has been read; CX19 a failed counts save puts the last-sync marks back
