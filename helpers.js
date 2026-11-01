@@ -1216,6 +1216,102 @@ function isNoConnectionError(e) {
   return /failed to fetch|load failed|networkerror|network request failed|network connection was lost|internet connection appears to be offline/i.test(m);
 }
 
+/* ═══ Fierce's trauma weeks: a year's table, pasted (owner 2026-11-01) ═══
+   Nathan Fierce sends the Davenport trauma call weeks as a table "Week |
+   Primary | Backup", one Mon–Sun week a row ("Jan 04-10", "Mar 29-Apr 04",
+   "Dec 27-Jan 02 2028"). Setup's Backup Weeks card takes it pasted — what
+   Excel copies (tab-separated, CRLF or LF), or commas. Only a cell that says
+   "Fierce" matters: Fierce as Primary → a Backup week (backupMondays: our
+   whole week is 2nd call); as Backup → a Fierce Backup week (fierceBackup: a
+   label). Every other name in his table is a placeholder our group fills in
+   from our own schedule — never read, matched or kept here. */
+// parseFierceWeeks(text, year) → { rows, refused, header }
+//   rows:    [{ line, monday ("YYYY-MM-DD"), primary, backup }] — primary /
+//            backup: Fierce is in that column (booleans; nothing else is kept)
+//   refused: [{ line, label, why }] — a line that can't be read (label: its
+//            Week cell). Any refused line → nothing may be applied.
+//   header:  the first row named the columns (Week / Primary / Backup, found by
+//            name in any order); without one they are columns 1 / 2 / 3.
+// A label is "Mon DD-DD" or "Mon DD-Mon DD", with an optional year after it —
+// the END date's ("Dec 27-Jan 02 2028"). The Monday is the start's month and
+// day in `year`, the year picked for the table: it must be a Monday, and its
+// week must end on the label's end date (with no end year, in `year`, or the
+// next one when the label runs past December). Blank lines are skipped; a line
+// without both name columns, a week listed twice, Fierce in both columns or a
+// cell naming him with anything else is refused.
+// Pure: no clock, no state.
+function parseFierceWeeks(text, year) {
+  const out = { rows: [], refused: [], header: false };
+  const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const FULL = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"];
+  const DAY = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  const y = Number(year);
+  if (!Number.isInteger(y) || y < 2000 || y > 2100) { out.refused.push({ line: 0, label: String(year), why: "pick the table's year first" }); return out; }
+  const monthOf = (w) => { const s = String(w).toLowerCase(); return s === "sept" ? 8 : s.length >= 3 ? FULL.findIndex(f => f.indexOf(s) === 0) : -1; };
+  const md = (d) => `${MON[d.getMonth()]} ${String(d.getDate()).padStart(2, "0")} ${d.getFullYear()}`;
+  const LABEL = /^([A-Za-z]{3,9})\.?\s*(\d{1,2})\s*[-–—]\s*(?:([A-Za-z]{3,9})\.?\s*)?(\d{1,2})(?:\s*,?\s*(\d{4}))?$/;
+  const cellsOf = (ln) => (ln.indexOf("\t") >= 0 ? ln.split("\t") : ln.split(",")).map(c => c.trim().replace(/^"(.*)"$/, "$1").trim());
+  const norm = (c) => String(c || "").toLowerCase().replace(/\s+/g, "");
+  const isFierce = (c) => norm(c) === "fierce";
+  let col = { week: 0, primary: 1, backup: 2 }, first = true;
+  const seen = {};
+  const lines = String(text == null ? "" : text).replace(/^﻿/, "").split(/\r\n|\r|\n/);
+  for (let i = 0; i < lines.length; i++) {
+    const line = i + 1, cells = cellsOf(lines[i]);
+    if (cells.every(c => !c)) continue; // a blank line (Excel's trailing ones, a row of empty cells)
+    if (first) {
+      first = false;
+      const names = cells.map(norm);
+      const wk = names.findIndex(n => n.indexOf("week") === 0), pr = names.findIndex(n => n.indexOf("primary") >= 0), bk = names.findIndex(n => n.indexOf("backup") >= 0);
+      if ((wk >= 0 || pr >= 0 || bk >= 0) && !LABEL.test(cells[0])) {
+        out.header = true;
+        const missing = [["Week", wk], ["Primary", pr], ["Backup", bk]].filter(x => x[1] < 0).map(x => x[0]);
+        if (missing.length) { out.refused.push({ line, label: "", why: `the header row has no ${missing.join(" or ")} column` }); return out; }
+        col = { week: wk, primary: pr, backup: bk };
+        continue;
+      }
+    }
+    const label = cells[col.week] || "";
+    const refuse = (why) => { out.refused.push({ line, label, why }); };
+    const m = LABEL.exec(label);
+    if (!m) { refuse(label ? "this isn't a week like \"Jan 04-10\"" : "no week in the Week column"); continue; }
+    const m1 = monthOf(m[1]), m2 = m[3] ? monthOf(m[3]) : m1, d1 = Number(m[2]), d2 = Number(m[4]);
+    if (m1 < 0 || m2 < 0) { refuse(`"${m1 < 0 ? m[1] : m[3]}" isn't a month`); continue; }
+    const start = new Date(y, m1, d1);
+    if (start.getMonth() !== m1 || start.getDate() !== d1) { refuse(`${MON[m1]} ${d1} isn't a date in ${y}`); continue; }
+    if (start.getDay() !== 1) { refuse(`${md(start)} is a ${DAY[start.getDay()]}`); continue; }
+    const sun = addD(start, 6), endY = m[5] ? Number(m[5]) : m2 < m1 ? y + 1 : y;
+    if (sun.getFullYear() !== endY || sun.getMonth() !== m2 || sun.getDate() !== d2) { refuse(`the week of ${md(start)} ends ${md(sun)}, not ${MON[m2]} ${String(d2).padStart(2, "0")} ${endY}`); continue; }
+    // (a line without both columns — only the Week column copied — would read as "Fierce in neither": refused instead)
+    if (cells.length <= Math.max(col.primary, col.backup)) { refuse("this line has no Primary and Backup columns"); continue; }
+    const pc = cells[col.primary], bc = cells[col.backup];
+    // "Fierce" and nothing else: a cell that names him with more ("Fierce/…", "Fierce?") is refused, never guessed
+    const unclear = [["Primary", pc], ["Backup", bc]].filter(x => !isFierce(x[1]) && norm(x[1]).indexOf("fierce") >= 0).map(x => x[0]);
+    if (unclear.length) { refuse(`the ${unclear.join(" and ")} cell names Fierce with something else — it must say just "Fierce"`); continue; }
+    if (isFierce(pc) && isFierce(bc)) { refuse("Fierce is in both Primary and Backup"); continue; }
+    const monday = fmt(start);
+    if (seen[monday]) { refuse(`the week of ${monday} is listed twice (line ${seen[monday]} too)`); continue; }
+    seen[monday] = line;
+    out.rows.push({ line, monday, primary: isFierce(pc), backup: isFierce(bc) });
+  }
+  return out;
+}
+// planFierceWeeks(rows, backupMondays, fierceMondays) → what a paste changes:
+//   { backup: { add, remove, same }, fierce: { add, remove, same } } — Mondays,
+//   sorted. The paste is the truth for the weeks it lists, and only those: a
+//   listed week is marked when Fierce is in its column and unmarked when he
+//   isn't; a week it doesn't list is left alone (a partial paste never clears
+//   the rest of the year). `same`: listed weeks already marked as it says.
+// Pure: the sets are read, never changed.
+function planFierceWeeks(rows, backupMondays, fierceMondays) {
+  const bk = new Set(backupMondays || []), fb = new Set(fierceMondays || []);
+  const out = { backup: { add: [], remove: [], same: [] }, fierce: { add: [], remove: [], same: [] } };
+  const one = (m, want, have, o) => { if (want && !have) o.add.push(m); else if (!want && have) o.remove.push(m); else if (want) o.same.push(m); };
+  (rows || []).forEach(r => { one(r.monday, !!r.primary, bk.has(r.monday), out.backup); one(r.monday, !!r.backup, fb.has(r.monday), out.fierce); });
+  [out.backup, out.fierce].forEach(o => { o.add.sort(); o.remove.sort(); o.same.sort(); });
+  return out;
+}
+
 /* ═══ ICS Calendar Generation ═══ */
 // ALL-DAY events (2026-09-25, same format as the calendar-sync v15 feed): a
 // service week is one Mon–Sat event, each weeknight one event on its date, the

@@ -677,6 +677,11 @@ function CallSchedule() {
   // mid-typing. Tapping "+ Mark" leaves the picker first. Only a whole date
   // (year 1000+) is snapped; anything else is kept as typed.
   const snapBkMonday = () => setBkMonday(v => (/^[1-9]\d{3}-\d\d-\d\d$/.test(v) ? fmt(monOf(parse(v))) : v));
+  // 📋 Paste Fierce's schedule (the Backup Weeks card, owner 2026-11-01):
+  // open, the table's year (next calendar year to start), the pasted text, its
+  // preview ({ year, parsed, plan, sig } — previewFiercePaste) and the last
+  // Apply's plan.
+  const [fiercePaste, setFiercePaste] = useState(() => ({ open: false, year: new Date().getFullYear() + 1, text: "", preview: null, applied: null }));
   const [appDate, setAppDate] = useState(() => fmt(new Date()));
   const [appPerson, setAppPerson] = useState("");
   const [scanning, setScanning] = useState(false);
@@ -6041,8 +6046,9 @@ function CallSchedule() {
   // { delta, delta1yr, replacedCounted } — the net per surgeon after the
   // floor, and how many replaced weeks came off — or null (nothing above the
   // floor). The weeks are replaced as they are stored NOW (the owner's rule):
-  // swaps, edits and flag changes never move the counts, so a week edited
-  // after its first publish nets against the edited version.
+  // swaps and edits never move the counts, so a week edited after its first
+  // publish nets against the edited version. A Backup mark's flip does move
+  // them, once it stands (2026-11-01 — settleFlips, below).
   const countsOfWeeks = (weeks, pick) => {
     const c = {};
     surgeons.forEach(s => { c[s.id] = { dc:0, nights:0, wknd:0, off:0, dcB:0, nightsB:0, wkndB:0, offB:0 }; });
@@ -6130,6 +6136,88 @@ function CallSchedule() {
     setYear1Counts(prev => applyCountsDelta(prev, delta1yr));
     return { back, back1yr, prior: applyCountsDelta(from.prior, delta), y1: applyCountsDelta(from.y1, delta1yr) };
   }, [surgeons]);
+
+  // ─── A Backup flip's counts (owner 2026-11-01) ───
+  // A Backup mark or unmark (the Backup Weeks card, its pasted schedule too)
+  // of a week already published, from the counts floor on, moves the counts
+  // by that week's net: what publishing the week again with the new flag
+  // would do (rollForwardCounts' rule — 1-Year only for this calendar year's
+  // weeks). They move once the flip STANDS: the engine holds the week saved
+  // (no longer pending) with a flag the counts don't hold yet, nobody else's
+  // copy of it put on screen since the tap, in the tap's session. Not at the
+  // tap, for ✕ Clear's reason (#103): the setup autosave saves the counts
+  // within a second, and a flip then refused, adopted back after a conflict
+  // or dropped at a sign-out would leave counts the stored weeks don't match.
+  // Saved at once (saveFlipCounts), as the clear's are. A Monday with no week
+  // yet, a week before the floor and a Fierce Backup mark (a label) move none.
+  // flipWatchRef: Monday → { counted, ep, sess } — the flag the counts hold for
+  // the week (its flag on screen at the first tap not yet settled), and the
+  // engine epoch and the session at that tap.
+  const flipWatchRef = useRef({});
+  // The net of week `m` (as `wk` holds it) flipped from `from` to `to`:
+  // { delta, delta1yr } — or null (before the floor, or no flip).
+  const flagNet = (m, wk, from, to) => {
+    if (!wk || m < COUNTS_FLOOR || !!from === !!to) return null;
+    const now = { [m]: Object.assign({}, wk, { isBackup: !!to }) }, was = { [m]: Object.assign({}, wk, { isBackup: !!from }) };
+    const currentYear = new Date().getFullYear();
+    const inYear = (mStr) => parse(mStr).getFullYear() === currentYear;
+    return { delta: netCounts(countsOfWeeks(now), countsOfWeeks(was)), delta1yr: netCounts(countsOfWeeks(now, inYear), countsOfWeeks(was, inYear)) };
+  };
+  // A Backup flip about to be made (markWeek — before the flag is set): the
+  // week is watched, and the net it moves once it stands is returned — or
+  // null when it moves none (no week yet, before the floor, no flip).
+  const watchBackupFlip = (m, on) => {
+    settleFlips(); // (an earlier flip of it already saved is settled first: this one starts from what that left)
+    const wk = scheduleRef.current[m];
+    const net = wk ? flagNet(m, wk, wk.isBackup, on) : null;
+    if (net && !flipWatchRef.current[m]) flipWatchRef.current[m] = { counted: !!wk.isBackup, ep: schedSyncRef.current.epochNow(), sess: sessionEpochRef.current };
+    return net;
+  };
+  // Every watched week the engine no longer has pending is settled: its flip
+  // stood when the saved week's flag isn't the one the counts hold and no
+  // copy of someone else's was put on screen since the tap — then the counts
+  // move by the net on the week as saved, and are saved at once. Anything
+  // else moves nothing: refused or adopted back (the flag is the counted one,
+  // or the epoch moved), flipped back before it saved, the week deleted,
+  // another session. Run at each tap's watch and after every engine report.
+  const settleFlips = () => {
+    const watch = flipWatchRef.current, ms = Object.keys(watch).sort();
+    if (!ms.length) return;
+    const eng = schedSyncRef.current, pending = new Set(eng.pending()), ep = sessionEpochRef.current;
+    let prior = null, y1 = null;
+    ms.forEach(m => {
+      const w = watch[m];
+      if (w.sess === ep && pending.has(m)) return; // still saving (or retrying): not yet
+      delete watch[m];
+      const saved = eng.knownData(m);
+      if (w.sess !== ep || !saved || eng.changedSince([m], w.ep).length) return;
+      const net = flagNet(m, saved, w.counted, saved.isBackup);
+      if (!net) return;
+      if (!prior) { const latest = stateBundleRef.current(); prior = latest.priorCounts; y1 = latest.year1Counts; } // (the latest render's)
+      prior = applyCountsDelta(prior, net.delta); y1 = applyCountsDelta(y1, net.delta1yr);
+      setPriorCounts(prev => applyCountsDelta(prev, net.delta));
+      setYear1Counts(prev => applyCountsDelta(prev, net.delta1yr));
+    });
+    if (prior) saveFlipCounts(prior, y1, ep);
+  };
+  // The counts a flip moved, saved at once — as ✕ Clear's (saveCleared): from
+  // the state as it is NOW (stateBundleRef: the latest render's) with those
+  // counts (not rendered yet), and never across the session boundary.
+  const saveFlipCounts = (prior, y1, ep) => (async () => {
+    try {
+      if (!setupReadRef.current || !auth.getSession() || sessionEpochRef.current !== ep) return;
+      const ts = new Date().toISOString();
+      lastSyncRef.current = ts;
+      // (Our own write, not a read: the setup as last written or read stays the autosave's baseline — review r3.)
+      if (setupBaseRef.current) setupBaseRef.current = { at: ts, sig: setupBaseRef.current.sig };
+      const blobData = stateBundleRef.current({ priorCounts: prior, year1Counts: y1 }); delete blobData.schedule;
+      delete blobData.vacations; delete blobData.noCallDays; // retired mirror — time_off is the source
+      const { error: flipErr } = await supabase.from("call_schedule_data").upsert({ id: "main", data: blobData, updated_at: ts });
+      if (flipErr) throw new Error(`backup-flip counts save failed: ${String(flipErr).slice(0, 200)}`); // catch toasts; checked autosave retries
+    } catch(e) { console.error("Immediate save failed:", e); if (sessionEpochRef.current === ep) showToast("Couldn't save the counts the Backup change moved — check your connection.", "error"); }
+  })();
+  // A week's save landing changes the engine's status (its pending weeks): settle then.
+  useEffect(() => { settleFlips(); }, [schedSync]);
 
   // "Needs your OK" (owner decision 2026-10-11): every bend, empty slot,
   // time-off placement and crowded day in the preview, from generator.js
@@ -7180,6 +7268,15 @@ function CallSchedule() {
   //    made before the schedule has loaded could miss the week it should flip,
   //    and with the sign-in expired the flag could only wait in memory — the
   //    set and the week flag go together, or neither does.
+  //  - ONE way to mark (owner 2026-11-01): markWeek, for the four buttons
+  //    and the pasted schedule's Apply alike — the set, the week's flag, a
+  //    Backup flip's counts (watchBackupFlip: they move once it stands) and
+  //    one audit line naming the week. Its caller passes the edit gate first.
+  //  - …and ↩ Undo of an EARLIER step (a swap, an edit) never takes a mark
+  //    back: the steps holding the week take its new flag, or the Undo would
+  //    split the set from the flag the same way — and leave counts the stored
+  //    weeks no longer match. A publish step's copy is left as it was: its
+  //    Undo puts back its counts from before it, with that copy.
   const setWeekFlag = (monday, flagKey, val) => {
     updateSchedule(p => {
       const wk = p[monday];
@@ -7187,33 +7284,77 @@ function CallSchedule() {
       return { ...p, [monday]: { ...wk, [flagKey]: val } };
     });
   };
+  const markWeek = (kind, m, on, via) => {
+    const bk = kind === "backup", flagKey = bk ? "isBackup" : "isFierceBackup";
+    (bk ? setBackupMondaySet : setFierceBackupSet)(p => { const n = new Set(p); if (on) n.add(m); else n.delete(m); return n; });
+    const net = bk ? watchBackupFlip(m, on) : null; // (before the flag is set: it reads the week as it was)
+    setWeekFlag(m, flagKey, on);
+    scheduleHistory.forEach(st => { if (!st.counts && !st.clear && st.sched && st.sched[m]) st.sched[m] = Object.assign({}, st.sched[m], { [flagKey]: on }); });
+    const t = net ? netCountsText(net.delta) : "", t1 = net ? netCountsText(net.delta1yr) : "";
+    logAudit(`schedule.${bk ? "backup" : "fierce"}_${on ? "mark" : "unmark"}`,
+      (bk ? (on ? `Marked week of ${m} as Backup (Fierce primary)` : `Removed Backup mark from week of ${m}`) : (on ? `Marked week of ${m} as Fierce Backup` : `Removed Fierce Backup mark from week of ${m}`))
+        + (via === "paste" ? " — from Fierce's pasted schedule" : "")
+        + (net ? ` — counts net: ${t}${t1 !== t ? ` (this year's tally: ${t1})` : ""}` : ""),
+      Object.assign({ week: m }, via ? { via } : {}, net ? { net: net.delta, net1yr: net.delta1yr } : {}));
+  };
   const markBackupWeek = () => {
     if (!bkMonday) return;
     if (!schedEditable()) return;
-    setBackupMondaySet(p => { const n = new Set(p); n.add(bkMonday); return n; });
-    setWeekFlag(bkMonday, "isBackup", true);
-    logAudit("schedule.backup_mark", `Marked week of ${bkMonday} as Backup (Fierce primary)`, { week: bkMonday });
+    markWeek("backup", bkMonday, true);
     setBkMonday(mondayOfToday());
   };
   const unmarkBackupWeek = (m) => {
     if (!schedEditable()) return;
-    setBackupMondaySet(p => { const n = new Set(p); n.delete(m); return n; });
-    setWeekFlag(m, "isBackup", false);
-    logAudit("schedule.backup_unmark", `Removed Backup mark from week of ${m}`, { week: m });
+    markWeek("backup", m, false);
   };
   const markFierceBackupWeek = () => {
     if (!bkMonday) return;
     if (!schedEditable()) return;
-    setFierceBackupSet(p => { const n = new Set(p); n.add(bkMonday); return n; });
-    setWeekFlag(bkMonday, "isFierceBackup", true);
-    logAudit("schedule.fierce_mark", `Marked week of ${bkMonday} as Fierce Backup`, { week: bkMonday });
+    markWeek("fierce", bkMonday, true);
     setBkMonday(mondayOfToday());
   };
   const unmarkFierceBackupWeek = (m) => {
     if (!schedEditable()) return;
-    setFierceBackupSet(p => { const n = new Set(p); n.delete(m); return n; });
-    setWeekFlag(m, "isFierceBackup", false);
-    logAudit("schedule.fierce_unmark", `Removed Fierce Backup mark from week of ${m}`, { week: m });
+    markWeek("fierce", m, false);
+  };
+  // 📋 Paste Fierce's schedule (owner 2026-11-01): his year's table
+  // (helpers.js parseFierceWeeks / planFierceWeeks) → a preview of what it
+  // changes, then ONE Apply that runs every change through markWeek, as the
+  // buttons do. The preview plans from the marks as they were at Preview;
+  // Apply plans again from the marks as they are, and refuses when that
+  // differs (a mark made meanwhile, another device's setup adopted).
+  const previewFiercePaste = () => {
+    if (typeof parseFierceWeeks !== "function" || typeof planFierceWeeks !== "function") { showToast("This needs the app's latest files — reload the app, then paste again.", "error"); return; }
+    const parsed = parseFierceWeeks(fiercePaste.text, fiercePaste.year);
+    const plan = parsed.refused.length || !parsed.rows.length ? null : planFierceWeeks(parsed.rows, [...backupMondaySet], [...fierceBackupSet]);
+    setFiercePaste(p => Object.assign({}, p, { preview: { year: p.year, parsed, plan, sig: plan ? JSON.stringify(plan) : "" }, applied: null }));
+  };
+  const applyFiercePaste = () => {
+    const pv = fiercePaste.preview;
+    if (!pv || !pv.plan) return;
+    if (!schedEditable()) return;
+    const plan = planFierceWeeks(pv.parsed.rows, [...backupMondaySet], [...fierceBackupSet]);
+    if (JSON.stringify(plan) !== pv.sig) { showToast("The marks changed since this preview — nothing was applied. Preview again.", "error"); setFiercePaste(p => Object.assign({}, p, { preview: null })); return; }
+    const n = plan.backup.add.length + plan.backup.remove.length + plan.fierce.add.length + plan.fierce.remove.length;
+    if (!n) { showToast("Nothing to change — every week in the paste is already marked as it says.", "info"); return; }
+    plan.backup.add.forEach(m => markWeek("backup", m, true, "paste"));
+    plan.backup.remove.forEach(m => markWeek("backup", m, false, "paste"));
+    plan.fierce.add.forEach(m => markWeek("fierce", m, true, "paste"));
+    plan.fierce.remove.forEach(m => markWeek("fierce", m, false, "paste"));
+    setFiercePaste(p => Object.assign({}, p, { preview: null, applied: { year: pv.year, plan } }));
+    const pm = (o) => `+${o.add.length}${o.remove.length ? ` −${o.remove.length}` : ""}`;
+    showToast(`Fierce's ${pv.year} weeks applied — Backup ${pm(plan.backup)}, Fierce Backup ${pm(plan.fierce)}.`, "success");
+  };
+  // The preview's words for one change: what it does to its week — published
+  // (a Backup flip: the counts it moves once it stands) or not generated yet.
+  const fierceChangeTag = (kind, m, on) => {
+    const wk = scheduleRef.current[m];
+    if (!wk) return "not generated yet — the generator marks it";
+    if (kind !== "backup") return on ? "published — the label goes on" : "published — the label comes off";
+    const net = flagNet(m, wk, wk.isBackup, on);
+    if (!net) return m < COUNTS_FLOOR ? "published, before the counts floor — no counts move" : "published — the week already shows it";
+    const t = netCountsText(net.delta), t1 = netCountsText(net.delta1yr);
+    return `published — ${on ? "becomes 2nd call" : "back to our own call"}; counts: ${t}${t1 !== t ? ` (1-Year: ${t1})` : ""}`;
   };
 
   // Generate shareable read-only HTML with calendar grid view
@@ -9339,8 +9480,62 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           <div style={css.card}>
             <div style={css.cardT}>Backup Weeks <span style={{fontWeight:400,fontSize:11,color:"#7a8a98"}}>(Fierce = Primary)</span></div>
             <p style={{fontSize:12,color:"#5a6a78",margin:"0 0 10px",lineHeight:1.5}}>
-              Marking a week here updates the stored schedule too — an already-generated week flips immediately; a week not yet generated picks the mark up when it's generated.
+              Marking a week here updates the stored schedule too — an already-generated week flips immediately and its counts move with it; a week not yet generated picks the mark up when it's generated.
             </p>
+
+            {/* 📋 Paste Fierce's schedule (owner 2026-11-01): his year's table → a preview → ONE Apply, through markWeek as the buttons below */}
+            <div style={{marginBottom:12}}>
+              <button onClick={()=>setFiercePaste(p=>({...p,open:!p.open}))} aria-expanded={fiercePaste.open} style={{...css.btn(false),padding:"6px 12px"}}>📋 Paste Fierce's schedule</button>
+              {fiercePaste.open && (() => {
+                const fp = fiercePaste, pv = fp.preview, y0 = new Date().getFullYear();
+                const sub = dk ? "#9aa0b8" : "#5a6a78", txt = dk ? "#c8d2dc" : "#3a4a58", plus = dk ? "#7fd09a" : "#1a7a40", minus = dk ? "#f0a0a0" : "#a83232";
+                const tag = fierceChangeTag;
+                const group = (title, kind, o) => (
+                  <div style={{marginTop:8}}>
+                    <div style={{fontSize:12,fontWeight:700,color:txt}}>{title}: +{o.add.length} · −{o.remove.length} · {o.same.length} unchanged</div>
+                    {o.add.map(m => <div key={"a"+m} style={{fontSize:11.5,color:txt,margin:"3px 0 0 8px",lineHeight:1.45,overflowWrap:"anywhere"}}><span style={{color:plus,fontWeight:800}}>+</span> <span style={{fontFamily:mono}}>Wk of {m}</span> — {tag(kind, m, true)}</div>)}
+                    {o.remove.map(m => <div key={"r"+m} style={{fontSize:11.5,color:txt,margin:"3px 0 0 8px",lineHeight:1.45,overflowWrap:"anywhere"}}><span style={{color:minus,fontWeight:800}}>−</span> <span style={{fontFamily:mono}}>Wk of {m}</span> — {tag(kind, m, false)}</div>)}
+                    {o.same.length > 0 && <div style={{fontSize:11,color:sub,margin:"3px 0 0 8px",lineHeight:1.45,overflowWrap:"anywhere"}}>unchanged: {o.same.join(", ")}</div>}
+                  </div>
+                );
+                const n = pv && pv.plan ? pv.plan.backup.add.length + pv.plan.backup.remove.length + pv.plan.fierce.add.length + pv.plan.fierce.remove.length : 0;
+                return (
+                  <div data-fierce-paste="1" style={{marginTop:8,padding:12,borderRadius:8,border:`1px solid ${dk?"#2a3a5e":"#d0dce8"}`,background:dk?"#16213e":"#f6f9fc"}}>
+                    <p style={{fontSize:12,color:sub,margin:"0 0 8px",lineHeight:1.5}}>Copy his table — Week, Primary, Backup — from the workbook and paste it here. Only cells that say "Fierce" are read: Fierce as Primary marks a Backup week, as Backup a Fierce Backup week. The other names are placeholders and are never read. Weeks the paste doesn't list are left as they are.</p>
+                    <label style={{fontSize:12,color:sub,display:"inline-flex",alignItems:"center",gap:6,marginBottom:6}}>Year of the table
+                      <select value={fp.year} onChange={e=>{const v=Number(e.target.value); setFiercePaste(p=>({...p,year:v,preview:null,applied:null}));}} style={{...css.inp,...dkInp,padding:"4px 8px"}}>
+                        {[y0 - 1, y0, y0 + 1, y0 + 2].map(yy => <option key={yy} value={yy}>{yy}</option>)}
+                      </select>
+                    </label>
+                    <textarea value={fp.text} onChange={e=>{const v=e.target.value; setFiercePaste(p=>({...p,text:v,preview:null,applied:null}));}} rows={6} aria-label="Fierce's schedule, pasted"
+                      placeholder={"Week\tPrimary\tBackup\nJan 04-10\tFierce\t…"} style={{...css.inp,...dkInp,display:"block",width:"100%",boxSizing:"border-box",fontFamily:mono,fontSize:12,resize:"vertical"}}/>
+                    <div style={{display:"flex",gap:6,marginTop:8,flexWrap:"wrap"}}>
+                      <button onClick={previewFiercePaste} disabled={!fp.text.trim()} style={{...css.btn(true),opacity:fp.text.trim()?1:0.5}}>Preview</button>
+                    </div>
+                    {fp.applied && <div role="status" style={{marginTop:8,fontSize:12,fontWeight:600,color:plus}}>✓ Applied Fierce's {fp.applied.year} weeks — a published week's counts move once its change is saved.</div>}
+                    {pv && pv.parsed.refused.length > 0 && (
+                      <div role="alert" style={{marginTop:8,padding:"8px 10px",borderRadius:6,border:`1px solid ${dk?"#5a2a2a":"#e8c0c0"}`,background:dk?"#2a1a1a":"#fdf0f0",color:dk?"#f0b0b0":"#8a3030",fontSize:12,lineHeight:1.5}}>
+                        <div style={{fontWeight:700}}>⚠ {pv.parsed.refused.length} line{pv.parsed.refused.length === 1 ? "" : "s"} can't be read — nothing is applied until {pv.parsed.refused.length === 1 ? "it's" : "they're"} fixed:</div>
+                        {pv.parsed.refused.map((r, i) => <div key={i} style={{overflowWrap:"anywhere"}}>Line {r.line}{r.label ? ` (${r.label})` : ""}: {r.why}</div>)}
+                        {pv.parsed.refused.some(r => / is a [A-Z][a-z]+day$/.test(r.why)) && <div style={{marginTop:4}}>Is the year right? Pick the table's year above.</div>}
+                      </div>
+                    )}
+                    {pv && !pv.parsed.refused.length && !pv.plan && <div style={{marginTop:8,fontSize:12,color:sub}}>No weeks found in the paste.</div>}
+                    {pv && pv.plan && (
+                      <div data-fierce-preview="1" style={{marginTop:8}}>
+                        <div style={{fontSize:12,color:sub}}>{pv.parsed.rows.length} week{pv.parsed.rows.length === 1 ? "" : "s"} of {pv.year} read{pv.parsed.header ? " (with its header row)" : ""}.</div>
+                        {group("Backup weeks (Fierce primary)", "backup", pv.plan.backup)}
+                        {group("Fierce Backup weeks", "fierce", pv.plan.fierce)}
+                        <div style={{display:"flex",gap:6,marginTop:10,flexWrap:"wrap",alignItems:"center"}}>
+                          <button onClick={applyFiercePaste} disabled={!n} style={{...css.btn(true),opacity:n?1:0.5}}>{n ? `Apply ${n} change${n === 1 ? "" : "s"}` : "Nothing to change"}</button>
+                          {!n && <span style={{fontSize:11.5,color:sub}}>Every week in the paste is already marked as it says.</span>}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+            </div>
 
             <div style={{display:"flex",gap:6,alignItems:"end",flexWrap:"wrap",marginBottom:12}}>
               <div>
