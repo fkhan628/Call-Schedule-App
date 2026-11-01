@@ -18190,8 +18190,9 @@ await (async () => {
   // ── (1) the backup / fierce marks: the edit gate before the set changes ──
   const flSrc = after("  const setWeekFlag = (monday, flagKey, val) => {", "\n\n  // Generate shareable read-only HTML");
   // (Changed ON PURPOSE 2026-11-01: the handlers mark through markWeek, which also watches a Backup flip's counts and
-  // keeps the mark in earlier Undo steps — stubbed here, executed in CX.)
-  const flF = flSrc && fnG("schedEditable, updateSchedule, bkMonday, setBackupMondaySet, setFierceBackupSet, logAudit, setBkMonday, mondayOfToday, watchFlip, stepsHold, netCountsText, scheduleHistory, setupEditable",
+  // keeps the mark in earlier Undo steps — stubbed here, executed in CX. The setup-read gate, setupEditable, is in this
+  // slice and runs for real: the setup here has been read — CX18 covers the setup not read yet.)
+  const flF = flSrc && fnG("schedEditable, updateSchedule, bkMonday, setBackupMondaySet, setFierceBackupSet, logAudit, setBkMonday, mondayOfToday, watchFlip, stepsHold, netCountsText, scheduleHistory, setupReadRef, loadFailedRef",
     "(() => { const setWeekFlag = (monday, flagKey, val) => {" + flSrc + "\n  return { markBackupWeek, unmarkBackupWeek, markFierceBackupWeek, unmarkFierceBackupWeek }; })()");
   if (!flF) check("SE-G the backup / fierce mark handlers (with setWeekFlag) are extractable", false, "anchor / compile");
   else {
@@ -18200,7 +18201,7 @@ await (async () => {
       r.h = flF({ schedEditable: a.schedEditable, updateSchedule: a.updateSchedule, bkMonday: WG[0],
         setBackupMondaySet: (f) => { r.setCalls++; r.backup = f(r.backup); }, setFierceBackupSet: (f) => { r.setCalls++; r.fierce = f(r.fierce); },
         logAudit: (x) => r.audits.push(x), setBkMonday: () => { r.picker++; }, mondayOfToday: () => "2026-10-12",
-        watchFlip: () => null, stepsHold: () => {}, netCountsText: () => "no change", scheduleHistory: [], setupEditable: () => true });
+        watchFlip: () => null, stepsHold: () => {}, netCountsText: () => "no change", scheduleHistory: [], setupReadRef: { current: true }, loadFailedRef: { current: false } });
       return r;
     };
     const all4 = (m) => { m.h.markBackupWeek(); m.h.unmarkBackupWeek(WG[0]); m.h.markFierceBackupWeek(); m.h.unmarkFierceBackupWeek(WG[0]); };
