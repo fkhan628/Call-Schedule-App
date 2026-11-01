@@ -1239,6 +1239,12 @@ function isNoConnectionError(e) {
 // next one when the label runs past December). Blank lines are skipped; a line
 // without both name columns, a week listed twice, Fierce in both columns or a
 // cell naming him with anything else is refused.
+// (Review fixes 2026-11-01:) a quoted cell is kept whole — tabs or commas in
+// it are part of the cell; on a comma line a label's own ", 2028" is joined
+// back to it; a line with more cells than the table has columns ("Smith, J"
+// unquoted), or "Fierce" in a column that isn't Primary or Backup, is refused
+// — never read one column off; a week that starts in the December before the
+// table's year is refused with that reason.
 // Pure: no clock, no state.
 function parseFierceWeeks(text, year) {
   const out = { rows: [], refused: [], header: false };
@@ -1250,14 +1256,31 @@ function parseFierceWeeks(text, year) {
   const monthOf = (w) => { const s = String(w).toLowerCase(); return s === "sept" ? 8 : s.length >= 3 ? FULL.findIndex(f => f.indexOf(s) === 0) : -1; };
   const md = (d) => `${MON[d.getMonth()]} ${String(d.getDate()).padStart(2, "0")} ${d.getFullYear()}`;
   const LABEL = /^([A-Za-z]{3,9})\.?\s*(\d{1,2})\s*[-–—]\s*(?:([A-Za-z]{3,9})\.?\s*)?(\d{1,2})(?:\s*,?\s*(\d{4}))?$/;
-  const cellsOf = (ln) => (ln.indexOf("\t") >= 0 ? ln.split("\t") : ln.split(",")).map(c => c.trim().replace(/^"(.*)"$/, "$1").trim());
+  // A line's cells: split on tabs (what a spreadsheet copies) or, on a line
+  // with none, on commas — either way keeping a quoted cell whole (its
+  // separators kept, "" one quote), as Excel and CSV writers quote a cell that
+  // holds one. A quote left open (a cell running onto the next line) keeps its
+  // opening quote, so that cell never reads as just "Fierce".
+  const cellsOf = (ln) => {
+    const sep = ln.indexOf("\t") >= 0 ? "\t" : ",", cells = [];
+    let cur = "", q = false;
+    for (let j = 0; j < ln.length; j++) {
+      const ch = ln[j];
+      if (q) { if (ch !== '"') cur += ch; else if (ln[j + 1] === '"') { cur += '"'; j++; } else q = false; }
+      else if (ch === '"' && !cur.trim()) { q = true; cur = ""; }
+      else if (ch === sep) { cells.push(cur.trim()); cur = ""; }
+      else cur += ch;
+    }
+    cells.push((q ? '"' + cur : cur).trim());
+    return { cells, sep };
+  };
   const norm = (c) => String(c || "").toLowerCase().replace(/\s+/g, "");
   const isFierce = (c) => norm(c) === "fierce";
-  let col = { week: 0, primary: 1, backup: 2 }, first = true;
+  let col = { week: 0, primary: 1, backup: 2 }, width = 3, first = true;
   const seen = {};
   const lines = String(text == null ? "" : text).replace(/^﻿/, "").split(/\r\n|\r|\n/);
   for (let i = 0; i < lines.length; i++) {
-    const line = i + 1, cells = cellsOf(lines[i]);
+    const line = i + 1, split = cellsOf(lines[i]), cells = split.cells;
     if (cells.every(c => !c)) continue; // a blank line (Excel's trailing ones, a row of empty cells)
     if (first) {
       first = false;
@@ -1268,9 +1291,12 @@ function parseFierceWeeks(text, year) {
         const missing = [["Week", wk], ["Primary", pr], ["Backup", bk]].filter(x => x[1] < 0).map(x => x[0]);
         if (missing.length) { out.refused.push({ line, label: "", why: `the header row has no ${missing.join(" or ")} column` }); return out; }
         col = { week: wk, primary: pr, backup: bk };
+        width = Math.max(3, cells.reduce((w, c, k) => (c ? k + 1 : w), 0)); // (the header's last named column)
         continue;
       }
     }
+    // On a comma line a label's own year ("Dec 27-Jan 02, 2028") was split off into the next cell: joined back
+    if (split.sep === "," && /^\d{4}$/.test(cells[col.week + 1] || "") && LABEL.test(cells[col.week] + ", " + cells[col.week + 1])) cells.splice(col.week, 2, cells[col.week] + ", " + cells[col.week + 1]);
     const label = cells[col.week] || "";
     const refuse = (why) => { out.refused.push({ line, label, why }); };
     const m = LABEL.exec(label);
@@ -1279,11 +1305,19 @@ function parseFierceWeeks(text, year) {
     if (m1 < 0 || m2 < 0) { refuse(`"${m1 < 0 ? m[1] : m[3]}" isn't a month`); continue; }
     const start = new Date(y, m1, d1);
     if (start.getMonth() !== m1 || start.getDate() !== d1) { refuse(`${MON[m1]} ${d1} isn't a date in ${y}`); continue; }
-    if (start.getDay() !== 1) { refuse(`${md(start)} is a ${DAY[start.getDay()]}`); continue; }
+    if (start.getDay() !== 1) {
+      // A week that runs into the table's year from the December before ("Dec 28-Jan 03 2027") starts the year before: that year's table holds it
+      const prev = new Date(y - 1, m1, d1), prevSun = addD(prev, 6);
+      if (m2 < m1 && prev.getDay() === 1 && prevSun.getFullYear() === y && prevSun.getMonth() === m2 && prevSun.getDate() === d2 && (!m[5] || Number(m[5]) === y)) { refuse(`this week starts ${md(prev)} — it belongs to ${y - 1}'s table; leave this line out, or mark that week with the buttons`); continue; }
+      refuse(`${md(start)} is a ${DAY[start.getDay()]}`); continue;
+    }
     const sun = addD(start, 6), endY = m[5] ? Number(m[5]) : m2 < m1 ? y + 1 : y;
     if (sun.getFullYear() !== endY || sun.getMonth() !== m2 || sun.getDate() !== d2) { refuse(`the week of ${md(start)} ends ${md(sun)}, not ${MON[m2]} ${String(d2).padStart(2, "0")} ${endY}`); continue; }
     // (a line without both columns — only the Week column copied — would read as "Fierce in neither": refused instead)
     if (cells.length <= Math.max(col.primary, col.backup)) { refuse("this line has no Primary and Backup columns"); continue; }
+    // (more cells than the table has columns — a comma inside a name, unquoted — would shift Primary / Backup: refused, never read one column off)
+    if (cells.slice(width).some(c => c)) { refuse(split.sep === "," ? "this line has more cells than the table has columns — a comma inside a name? Copy the rows from the spreadsheet, or put that name in quotes" : "this line has more cells than the table has columns — paste the table with its header row"); continue; }
+    if (cells.some((c, k) => k !== col.primary && k !== col.backup && isFierce(c))) { refuse("\"Fierce\" is in a column that isn't Primary or Backup — paste the table with its header row"); continue; }
     const pc = cells[col.primary], bc = cells[col.backup];
     // "Fierce" and nothing else: a cell that names him with more ("Fierce/…", "Fierce?") is refused, never guessed
     const unclear = [["Primary", pc], ["Backup", bc]].filter(x => !isFierce(x[1]) && norm(x[1]).indexOf("fierce") >= 0).map(x => x[0]);

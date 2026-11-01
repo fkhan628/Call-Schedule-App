@@ -4936,12 +4936,14 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
     publishUndoneRef: env.publishUndoneRef || { current: 0 }, // (2026-10-25: ↩ Undo of a publish counts it; a late publish's banner checks it — sync-guards CO4)
     uncountWeeks: env.uncountWeeks || (() => null), // (2026-10-26: ✕ Clear takes its weeks off the counts — these runs move none; sync-guards CW runs the real one)
     jobClaimRef: env.jobClaimRef || (env.schedSyncRef && env.schedSyncRef.jobClaimRef) || { current: null }, // (2026-10-27, P7: a reset / restore is a pending job from its tap — the app session's own, which its gate reads; SE-X15 (f))
+    previewMarksMoved: env.previewMarksMoved || (() => []), marksMovedText: env.marksMovedText || (() => ""), // (2026-11-01: Accept & Publish refuses a preview whose Backup marks changed since it was made — none here; sync-guards CX runs it)
     timeOffLoadSeqRef: env.timeOffLoadSeqRef || { current: { read: 0, del: 0, shown: 0 } } })) : mk); // (deleteTimeOff counts its answers for the time-off reads — review r7 fix-2)
   const HX = appHelpers();
   const F = {
     wire: fnX("isPublicMode, userProfile, showToast, setEditWeekModal, swapSuggestions, swapTarget, setSwapSuggestions, setSwapTarget, schedSyncBridgeRef, useRef, createSchedSync, scheduleRef, commitSchedule, fetch, SUPABASE_URL, dbAuthHeaders, dbReadHeaders, dbHeaders, auth, setSchedSync, console",
       wrap("(() => { schedSyncBridgeRef.current = { canWrite:", after("  schedSyncBridgeRef.current = { canWrite:", "\n\n  // The edit gates"), "\n  return schedSyncRef; })()")),
-    gate: fnX("schedSyncRef, showToast, setReauthNeeded, jobClaimRef", wrap("", after("  const schedEditable = ", "\n  };\n"), "\n  }")),
+    // (2026-11-01: the job gate also refuses while a Backup mark's week is still saving — flipsSaving; none here, sync-guards CX runs it)
+    gate: fnX("schedSyncRef, showToast, setReauthNeeded, jobClaimRef, flipsSaving", wrap("", after("  const schedEditable = ", "\n  };\n"), "\n  }")),
     pushUndo: fnX("scheduleRef, schedSyncRef, setScheduleHistory", wrap("(counts) => {", after("  const pushUndo = useCallback((counts) => {", "\n  }, []);"), "\n  }")),
     update: fnX("scheduleRef, commitSchedule", wrap("(fn) => {", after("  const updateSchedule = useCallback((fn) => {", "\n  }, [commitSchedule]);"), "\n  }")),
     // (2026-10-20, review R1: ↩ Undo of a publish takes the Calendar's "nobody notified yet" banner down — sess() gives
@@ -4961,7 +4963,7 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
     openEditor: fnX("scheduleRef, parse, addD, fmt, appShifts, appShiftsLoaded, setEditWeekModal, schedSyncRef", wrap("(mondayStr) => {", after("  const openWeekEditor = useCallback((mondayStr) => {", "\n  }, [appShifts, appShiftsLoaded]);"), "\n  }")),
     saveEditor: fnX("editWeekModal, schedule, appShifts, appShiftsLoaded, openWeekEditor, setEditWeekModal, silvisActive, silvisFakId, silvisDays, silvisBlock, silvisRefuse, sfSlotDays, confirm, pushUndo, updateSchedule, scheduleRef, schedEditable, schedSyncRef, mergeEditorEdits, SHIFT_LABELS, backupMondaySet, fierceBackupSet, surgeons, showToast, APP_SHIFTS_NOT_LOADED, setAppShifts, saveAppShifts, logAudit, nameOf, aMap, sMap, schedulerAdminIds, addNotification, sendEmailNotif, setTimeout",
       wrap("(openAfter) => {", after("  const saveWeekEdits = useCallback((openAfter) => {", "\n  }, [editWeekModal,"), "\n  }")),
-    acceptPreview: sess(fnX("publishSearchRunning, showToast, cancelSearch, previewSchedule, previewNeedsOk, previewAck, publishingRef, schedEditable, schedSyncRef, previewEpochRef, previewOrigin, startMonth, startYear, numWeeks, setPublishing, setSaveStatus, snapshots, previewSchedRef, publishWeeks, MO, runPublish, setPreviewSchedule, setShowPreview, setCalMonth, setCalYear, setView, setTimeout, publishNotLanded, sessionEpochRef, setJustPublished",
+    acceptPreview: sess(fnX("publishSearchRunning, showToast, cancelSearch, previewSchedule, previewNeedsOk, previewAck, publishingRef, schedEditable, schedSyncRef, previewEpochRef, previewOrigin, startMonth, startYear, numWeeks, setPublishing, setSaveStatus, snapshots, previewSchedRef, publishWeeks, MO, runPublish, setPreviewSchedule, setShowPreview, setCalMonth, setCalYear, setView, setTimeout, publishNotLanded, sessionEpochRef, setJustPublished, previewMarksMoved, marksMovedText",
       wrap("async () => {", after("  const acceptPreview = async () => {", "\n  };\n"), "\n  }"))),
     notLanded: fnX("showToast", wrap("(pr, what) => {", after("  const publishNotLanded = (pr, what) => {", "\n  };\n"), "\n  }")),
     // (2026-10-25: runPublish hands the engine a late() — the Calendar's 📣 banner for a publish that lands after its
@@ -5088,7 +5090,7 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
     a.eng = a.schedSyncRef.current;
     a.schedSyncRef.sessionEpochRef = a.sessionEpochRef; // (the harness: this session's identity, for every slice wired to it — sess)
     a.schedSyncRef.jobClaimRef = a.jobClaimRef = { current: null }; // (the reset / restore claim this session's gate reads — P7, 2026-10-27; sess)
-    a.schedEditable = F.gate({ schedSyncRef: a.schedSyncRef, showToast: a.showToast, setReauthNeeded: () => { a.reauth++; }, jobClaimRef: a.jobClaimRef });
+    a.schedEditable = F.gate({ schedSyncRef: a.schedSyncRef, showToast: a.showToast, setReauthNeeded: () => { a.reauth++; }, jobClaimRef: a.jobClaimRef, flipsSaving: () => [] });
     a.setScheduleHistory = (f) => { a.history = typeof f === "function" ? f(a.history) : f; };
     a.pushUndo = F.pushUndo({ scheduleRef: a.ref, schedSyncRef: a.schedSyncRef, setScheduleHistory: a.setScheduleHistory });
     a.updateSchedule = F.update({ scheduleRef: a.ref, commitSchedule: a.commitSchedule });
