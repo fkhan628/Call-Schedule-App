@@ -1245,6 +1245,16 @@ function isNoConnectionError(e) {
 // unquoted), or "Fierce" in a column that isn't Primary or Backup, is refused
 // — never read one column off; a week that starts in the December before the
 // table's year is refused with that reason.
+// (Round 2:) the ", 2028" is joined back only when that cell can't be one of
+// the table's columns — no header, more cells than the header names, or a
+// year where Primary or Backup should be (never a Year / FY / Pager column).
+// A TAB line's columns can't shift: its extra cells are ignored, and so is
+// "Fierce" in a column the header names as something else (Notes); on a
+// comma line, or without a header, both are refused. A quote left open (a
+// cell holding a line break) is refused with that reason, and the next line
+// says it looks like the rest of that cell. An empty Primary or Backup cell
+// right under "Fierce" — a merged cell, copied into its first row only — is
+// refused, never read as "Fierce in neither".
 // Pure: no clock, no state.
 function parseFierceWeeks(text, year) {
   const out = { rows: [], refused: [], header: false };
@@ -1272,11 +1282,11 @@ function parseFierceWeeks(text, year) {
       else cur += ch;
     }
     cells.push((q ? '"' + cur : cur).trim());
-    return { cells, sep };
+    return { cells, sep, open: q };
   };
   const norm = (c) => String(c || "").toLowerCase().replace(/\s+/g, "");
   const isFierce = (c) => norm(c) === "fierce";
-  let col = { week: 0, primary: 1, backup: 2 }, width = 3, first = true;
+  let col = { week: 0, primary: 1, backup: 2 }, width = 3, first = true, hdr = [], prevCells = null, openAt = 0;
   const seen = {};
   const lines = String(text == null ? "" : text).replace(/^﻿/, "").split(/\r\n|\r|\n/);
   for (let i = 0; i < lines.length; i++) {
@@ -1292,15 +1302,24 @@ function parseFierceWeeks(text, year) {
         if (missing.length) { out.refused.push({ line, label: "", why: `the header row has no ${missing.join(" or ")} column` }); return out; }
         col = { week: wk, primary: pr, backup: bk };
         width = Math.max(3, cells.reduce((w, c, k) => (c ? k + 1 : w), 0)); // (the header's last named column)
+        hdr = cells.slice();
         continue;
       }
     }
-    // On a comma line a label's own year ("Dec 27-Jan 02, 2028") was split off into the next cell: joined back
-    if (split.sep === "," && /^\d{4}$/.test(cells[col.week + 1] || "") && LABEL.test(cells[col.week] + ", " + cells[col.week + 1])) cells.splice(col.week, 2, cells[col.week] + ", " + cells[col.week + 1]);
+    // On a comma line a label's own year ("Dec 27-Jan 02, 2028") was split off into the next cell: joined back —
+    // only when that cell can't be a column of the table (no header, more cells than it names, or a year where
+    // Primary / Backup should be): a Year / FY / Pager column right after Week stays a column
+    const filled = cells.reduce((w, c, k) => (c ? k + 1 : w), 0);
+    if (split.sep === "," && /^\d{4}$/.test(cells[col.week + 1] || "") && LABEL.test(cells[col.week] + ", " + cells[col.week + 1])
+      && (!out.header || filled > width || col.week + 1 === col.primary || col.week + 1 === col.backup)) cells.splice(col.week, 2, cells[col.week] + ", " + cells[col.week + 1]);
     const label = cells[col.week] || "";
     const refuse = (why) => { out.refused.push({ line, label, why }); };
+    const above = prevCells, afterOpen = openAt === line - 1;
+    prevCells = cells;
+    // A quote left open: a cell holding a line break (Excel / Sheets copy it as a quoted cell over two lines) — the real cause, said
+    if (split.open) { openAt = line; refuse("a quote in this line isn't closed — does a cell hold a line break? Put that cell on one line in the spreadsheet, then copy again"); continue; }
     const m = LABEL.exec(label);
-    if (!m) { refuse(label ? "this isn't a week like \"Jan 04-10\"" : "no week in the Week column"); continue; }
+    if (!m) { refuse(afterOpen ? `this looks like the rest of a cell from line ${line - 1} (a line break inside a cell) — put that cell on one line` : label ? "this isn't a week like \"Jan 04-10\"" : "no week in the Week column"); continue; }
     const m1 = monthOf(m[1]), m2 = m[3] ? monthOf(m[3]) : m1, d1 = Number(m[2]), d2 = Number(m[4]);
     if (m1 < 0 || m2 < 0) { refuse(`"${m1 < 0 ? m[1] : m[3]}" isn't a month`); continue; }
     const start = new Date(y, m1, d1);
@@ -1315,9 +1334,20 @@ function parseFierceWeeks(text, year) {
     if (sun.getFullYear() !== endY || sun.getMonth() !== m2 || sun.getDate() !== d2) { refuse(`the week of ${md(start)} ends ${md(sun)}, not ${MON[m2]} ${String(d2).padStart(2, "0")} ${endY}`); continue; }
     // (a line without both columns — only the Week column copied — would read as "Fierce in neither": refused instead)
     if (cells.length <= Math.max(col.primary, col.backup)) { refuse("this line has no Primary and Backup columns"); continue; }
-    // (more cells than the table has columns — a comma inside a name, unquoted — would shift Primary / Backup: refused, never read one column off)
-    if (cells.slice(width).some(c => c)) { refuse(split.sep === "," ? "this line has more cells than the table has columns — a comma inside a name? Copy the rows from the spreadsheet, or put that name in quotes" : "this line has more cells than the table has columns — paste the table with its header row"); continue; }
-    if (cells.some((c, k) => k !== col.primary && k !== col.backup && isFierce(c))) { refuse("\"Fierce\" is in a column that isn't Primary or Backup — paste the table with its header row"); continue; }
+    // (more cells than the table has columns on a COMMA line — a comma inside a name, unquoted — would shift Primary / Backup:
+    // refused, never read one column off. A TAB line's columns can't shift — a tab in a cell is quoted: its extra cells are left out)
+    if (split.sep === "," && cells.slice(width).some(c => c)) { refuse("this line has more cells than the table has columns — a comma inside a name? Copy the rows from the spreadsheet, or put that name in quotes"); continue; }
+    // ("Fierce" in another column: a TAB line with a header reads it as that column — Notes, say — and leaves it; otherwise refused)
+    const other = cells.findIndex((c, k) => k !== col.primary && k !== col.backup && isFierce(c));
+    if (other >= 0 && !(split.sep === "\t" && out.header && hdr[other])) {
+      refuse(!out.header ? "\"Fierce\" is in a column that isn't Primary or Backup — paste the table with its header row"
+        : split.sep === "," ? `"Fierce" is in ${hdr[other] ? `the ${hdr[other]} column` : "a column the header doesn't name"}, not Primary or Backup — a comma inside a name may have moved it: copy the rows from the spreadsheet, or put that name in quotes`
+        : "\"Fierce\" is in a column the header doesn't name — name that column in the header, or leave it out of the copy");
+      continue;
+    }
+    // (a merged cell copies its value into its first row only: an empty Primary / Backup cell right under "Fierce" is refused, never read as "Fierce in neither")
+    const merged = [["Primary", col.primary], ["Backup", col.backup]].filter(x => !cells[x[1]] && above && isFierce(above[x[1]])).map(x => x[0]);
+    if (merged.length) { refuse(`the ${merged.join(" and ")} cell is empty right under "Fierce" — a merged cell? Unmerge it in the spreadsheet (a name in every week), then copy again`); continue; }
     const pc = cells[col.primary], bc = cells[col.backup];
     // "Fierce" and nothing else: a cell that names him with more ("Fierce/…", "Fierce?") is refused, never guessed
     const unclear = [["Primary", pc], ["Backup", bc]].filter(x => !isFierce(x[1]) && norm(x[1]).indexOf("fierce") >= 0).map(x => x[0]);
@@ -1330,18 +1360,31 @@ function parseFierceWeeks(text, year) {
   }
   return out;
 }
-// planFierceWeeks(rows, backupMondays, fierceMondays) → what a paste changes:
-//   { backup: { add, remove, same }, fierce: { add, remove, same } } — Mondays,
-//   sorted. The paste is the truth for the weeks it lists, and only those: a
-//   listed week is marked when Fierce is in its column and unmarked when he
-//   isn't; a week it doesn't list is left alone (a partial paste never clears
-//   the rest of the year). `same`: listed weeks already marked as it says.
+// planFierceWeeks(rows, backupMondays, fierceMondays, stored) → what a paste
+//   changes: { backup: { add, remove, same }, fierce: { add, remove, same } } —
+//   Mondays, sorted. The paste is the truth for the weeks it lists, and only
+//   those: a listed week is marked when Fierce is in its column and unmarked
+//   when he isn't; a week it doesn't list is left alone (a partial paste never
+//   clears the rest of the year). `same`: listed weeks already marked as it
+//   says. `stored` (optional, round 2): { Monday: { isBackup, isFierceBackup } }
+//   for the listed weeks already published — a week whose stored flag says
+//   otherwise than the paste is a change too, even when its set agrees (a
+//   split a refused write or an ↩ Undo left: pasting again repairs it).
 // Pure: the sets are read, never changed.
-function planFierceWeeks(rows, backupMondays, fierceMondays) {
-  const bk = new Set(backupMondays || []), fb = new Set(fierceMondays || []);
+function planFierceWeeks(rows, backupMondays, fierceMondays, stored) {
+  const bk = new Set(backupMondays || []), fb = new Set(fierceMondays || []), st = stored || {};
   const out = { backup: { add: [], remove: [], same: [] }, fierce: { add: [], remove: [], same: [] } };
-  const one = (m, want, have, o) => { if (want && !have) o.add.push(m); else if (!want && have) o.remove.push(m); else if (want) o.same.push(m); };
-  (rows || []).forEach(r => { one(r.monday, !!r.primary, bk.has(r.monday), out.backup); one(r.monday, !!r.backup, fb.has(r.monday), out.fierce); });
+  // have: in the set; flag: the stored week's flag (undefined — no week yet: the set alone decides)
+  const one = (m, want, have, flag, o) => {
+    if (want && !(have && flag !== false)) o.add.push(m);
+    else if (!want && (have || flag === true)) o.remove.push(m);
+    else if (want) o.same.push(m);
+  };
+  (rows || []).forEach(r => {
+    const s = st[r.monday];
+    one(r.monday, !!r.primary, bk.has(r.monday), s ? !!s.isBackup : undefined, out.backup);
+    one(r.monday, !!r.backup, fb.has(r.monday), s ? !!s.isFierceBackup : undefined, out.fierce);
+  });
   [out.backup, out.fierce].forEach(o => { o.add.sort(); o.remove.sort(); o.same.sort(); });
   return out;
 }

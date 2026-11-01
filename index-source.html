@@ -465,6 +465,11 @@ function CallSchedule() {
 
   // ─── Undo History ───
   const [scheduleHistory, setScheduleHistory] = useState([]);
+  // The history as last rendered, for code that runs in an older render's
+  // closure after an await (stepsHold, reached from a job's re-check —
+  // 2026-11-01 review fix: the tap's copy missed steps pushed meanwhile).
+  const scheduleHistoryRef = useRef([]);
+  scheduleHistoryRef.current = scheduleHistory;
   // How many publish steps ↩ Undo has taken back (2026-10-25): a publish
   // raises its 📣 banner (or sends Generate & Publish's notice) only if none
   // was since its tap — Undo is last-in-first-out, so one after the publish
@@ -494,6 +499,9 @@ function CallSchedule() {
     if (scheduleHistory.length === 0) return;
     if (!schedEditable()) return;
     const step = scheduleHistory[scheduleHistory.length - 1];
+    // A publish's or clear's step sets the counts: never while a Backup Weeks mark, or the counts a flip moved, is still
+    // being saved — that flip's net would land on top of the counts from before it (flipGate; review fix 2026-11-01, round 2).
+    if (step.counts || step.clear) { const flipWhy = flipGate(); if (flipWhy) { showToast(flipWhy, "error"); return; } }
     const plan = schedSyncRef.current.undoPlan(step.sched, step.epoch);
     if (plan.blocked.length) {
       showToast(`Can't undo — the week${plan.blocked.length === 1 ? "" : "s"} of ${plan.blocked.join(", ")} ${plan.blocked.length === 1 ? "was" : "were"} changed by someone else since. Nothing was changed.`, "error");
@@ -746,6 +754,24 @@ function CallSchedule() {
   // publish tapped meanwhile is refused at its tap. The holder's own
   // re-checks hand it in as `own`.
   const jobClaimRef = useRef(null);
+  // A Backup flip's counts and the jobs (2026-11-01 review fix, round 2):
+  // flipSettlesRef counts the settles that moved them (settleFlips), and
+  // flipSettlesSeen is its value at THIS render. The job gate refuses a tap or
+  // re-check whose render came before a flip moved the counts — the counts
+  // that job took from its render (a publish's ↩ Undo step, a clear's) would
+  // miss that flip's net. flipSavesRef: the counts saves still on the wire
+  // (id → { ms, at }); the gate waits for them too, or a job's snapshot would
+  // hold the flipped week without its net.
+  const flipSettlesRef = useRef(0);
+  const flipSettlesSeen = flipSettlesRef.current;
+  const flipSavesRef = useRef({});
+  // This session's immediate setup saves on the wire that move lastSyncRef
+  // only once they land (a Backup flip's counts — saveFlipCounts): seq counts
+  // those started, n those not answered yet. refreshScheduleRow skips a row
+  // read while one was out, or sent before one started: it may be older than
+  // that save, and adopting it would put back the counts the save moved
+  // (2026-11-01 review fix). The next read takes the row.
+  const setupWritesRef = useRef({ seq: 0, n: 0 });
   // loadFailedRef is true when the initial read THREW (network/transient error),
   // as opposed to returning an empty row. A session that couldn't read the row
   // must not autosave — otherwise a privileged session with degraded state could
@@ -2065,9 +2091,11 @@ function CallSchedule() {
     // Realtime handler and safety-net poll)
     const refreshScheduleRow = async () => {
       try {
+        const seq0 = setupWritesRef.current.seq;
         const { data: row } = await supabase.from("call_schedule_data").select("data,updated_at").eq("id", "main").single();
         loadFailedRef.current = false; // a read succeeded — writes are safe again
         if (!row?.data) return;
+        if (setupWritesRef.current.n || setupWritesRef.current.seq !== seq0) return; // one of our immediate setup saves was out meanwhile: this row may be older (setupWritesRef) — the next read takes it
         if (row.updated_at === lastSyncRef.current) return; // nothing new
         lastSyncRef.current = row.updated_at;
         const d = typeof row.data === "string" ? JSON.parse(row.data) : row.data;
@@ -2310,7 +2338,8 @@ function CallSchedule() {
   //    only once its weeks job is registered (jobClaimRef): one overlapping
   //    a clear set the counts to {} while the clear was about to take its
   //    weeks off them (negative counts saved). It also refuses while a
-  //    Backup mark's week is still saving (flipsSaving, 2026-11-01).
+  //    Backup Weeks mark is still saving (flipGate, 2026-11-01), and before
+  //    this session has read the shared setup (setupEditable).
   const [reauthNeeded, setReauthNeeded] = useState(false);
   const [reauthBusy, setReauthBusy] = useState(false);
   // The SOFT stale-sign-in warning (A7(3)): set on resume when the stored
@@ -2334,12 +2363,13 @@ function CallSchedule() {
       return false;
     }
     if (job) {
+      if (!setupEditable()) return false; // (a job moves the counts and saves the setup: never before this session has read it — 2026-11-01 review fix)
       const claimed = jobClaimRef.current && jobClaimRef.current !== own ? jobClaimRef.current.what : null; // a reset / restore not yet registered (never the caller's own)
       const busy = schedSyncRef.current.jobPending() || claimed;
       if (busy) { showToast(`${schedSyncRef.current.jobLabel(busy)} is still running — wait for it to finish, then try again.`, "error"); return false; }
-      // …nor while a Backup mark's week is still saving (its counts move once it's saved — flipsSaving says why)
-      const saving = flipsSaving();
-      if (saving.length) { showToast(`The Backup change to the week of ${saving.join(", ")} is still being saved — try again once it's saved.`, "error"); return false; }
+      // …nor while a Backup Weeks mark, or the counts a Backup flip moved, is still being saved, nor when a flip moved the counts after this render (flipGate says why)
+      const flipWhy = flipGate();
+      if (flipWhy) { showToast(flipWhy, "error"); return false; }
     }
     return true;
   };
@@ -5651,8 +5681,15 @@ function CallSchedule() {
       setPreviewSchedule(result); setPreviewOrigin("generated"); previewEpochRef.current = genEpoch;
       setShowPreview(true);
       if (JSON.stringify(clickLocks || []) !== JSON.stringify(pendingLocks || [])) showToast("The locks changed during the search — this preview used the earlier ones. Re-roll to use the new ones.", "error");
+      else if (previewMarksMoved(result).length) showToast("The Backup marks changed during the search — this preview used the earlier ones, and ✓ Accept & Publish won't take it. Re-roll to use the new ones.", "error"); // (round 2)
       return "preview";
     }
+    // A Backup mark changed during the search (another device's — this one's
+    // marks wait for a running Generate & Publish): the result holds the old
+    // flags, so ✓ Accept & Publish would refuse it — not offered for review,
+    // and nothing published (review fix 2026-11-01, round 2).
+    const marksMovedG = previewMarksMoved(result);
+    if (marksMovedG.length) { showToast(marksMovedText(marksMovedG, "publish"), "error"); return "moved"; }
     // Generate & Publish skips the preview — unless something it depends on
     // changed during the search (time off, locks, holidays, the settings…), or
     // the result has anything in "Needs your OK" (2026-10-11), judged on
@@ -5713,6 +5750,8 @@ function CallSchedule() {
           setSaveStatus("");
           return "moved";
         }
+        const marksMoved2 = previewMarksMoved(result); // (…nor a Backup mark during the snapshot's await — as ✓ Accept & Publish's twin check; review fix 2026-11-01, round 2)
+        if (marksMoved2.length) { showToast(marksMovedText(marksMoved2, "publish"), "error"); setSaveStatus(""); return "moved"; }
         const out = await genCommitRef.current(result, via); // with the state as it is NOW (after the snapshot's await)
         // "undone" (2026-10-26): it landed, but ↩ Undo took it back while it ran — no notice, e-mail or 📣 for it
         return out && out.ok ? (out.undone ? "undone" : "published") : "not-published";
@@ -6190,9 +6229,12 @@ function CallSchedule() {
   // comment says why). An older step is undone only after that one, whose
   // Undo puts back the week as it was with the counts from before it — a
   // patched older step would then turn the flag on again with no counts.
+  // (The history as last rendered: a job's re-check settles in its tap's
+  // closure, whose copy misses steps pushed since — review fix, round 2.)
   const stepsHold = (m, flagKey, val) => {
-    for (let i = scheduleHistory.length - 1; i >= 0; i--) {
-      const st = scheduleHistory[i];
+    const hist = scheduleHistoryRef.current;
+    for (let i = hist.length - 1; i >= 0; i--) {
+      const st = hist[i];
       if (st.counts || st.clear) break;
       if (st.sched && st.sched[m]) st.sched[m] = Object.assign({}, st.sched[m], { [flagKey]: val });
     }
@@ -6213,6 +6255,7 @@ function CallSchedule() {
     if (!keys.length) return;
     const eng = schedSyncRef.current, pending = new Set(eng.pending()), ep = sessionEpochRef.current;
     let prior = null, y1 = null;
+    const moved = [];
     keys.forEach(key => {
       const w = watch[key], m = w.m;
       if (w.sess === ep && pending.has(m)) return; // still saving (or retrying): not yet
@@ -6227,49 +6270,76 @@ function CallSchedule() {
         return;
       }
       if (!prior) { const latest = stateBundleRef.current(); prior = latest.priorCounts; y1 = latest.year1Counts; } // (the latest render's)
-      prior = applyCountsDelta(prior, net.delta); y1 = applyCountsDelta(y1, net.delta1yr);
+      prior = applyCountsDelta(prior, net.delta); y1 = applyCountsDelta(y1, net.delta1yr); moved.push(m);
       setPriorCounts(prev => applyCountsDelta(prev, net.delta));
       setYear1Counts(prev => applyCountsDelta(prev, net.delta1yr));
     });
-    if (prior) saveFlipCounts(prior, y1, ep);
+    if (prior) { flipSettlesRef.current++; saveFlipCounts(prior, y1, ep, moved); } // (counted: a job whose render came before this is refused — flipGate)
   };
-  // The Mondays of this session's Backup flips still saving, after settling
-  // what has landed — the job gate refuses a clear, publish, reset or restore
-  // while there are any (review fix 2026-11-01): such a job counts the week by
-  // the flag on screen while the counts still hold the one before, or wipes
-  // the counts the flip is about to move (a clear un-counted the new flag; a
-  // publish netted against it, then the settle moved it again; a restore's
-  // counts took the flip on top; ↩ Undo of that publish put back counts from
-  // before the flip with the flip on screen).
+  // The Mondays of this session's Backup Weeks marks still saving, of either
+  // kind, and of the counts saves a Backup flip started that are still on
+  // the wire (for up to FLIP_SAVE_HOLD_MS), after settling what has landed.
+  // The job gate refuses a clear, publish, reset or restore while there are
+  // any (review fix 2026-11-01): such a job counts the week by the flag on
+  // screen while the counts still hold the one before, or wipes the counts
+  // the flip is about to move (a clear un-counted the new flag; a publish
+  // netted against it, then the settle moved it again; a restore's counts
+  // took the flip on top; ↩ Undo of that publish put back counts from before
+  // the flip with the flip on screen); a publish step would keep a Fierce
+  // label the server then refused (its ↩ Undo refused over that week); and
+  // a snapshot taken before the counts save lands holds the flipped week
+  // without its net (round 2).
+  const FLIP_SAVE_HOLD_MS = 20000;
   const flipsSaving = () => {
     settleFlips();
-    const ep = sessionEpochRef.current;
-    return [...new Set(Object.values(flipWatchRef.current).filter(w => w.kind === "backup" && w.sess === ep).map(w => w.m))].sort();
+    const ep = sessionEpochRef.current, now = Date.now();
+    const ms = Object.values(flipWatchRef.current).filter(w => w.sess === ep).map(w => w.m);
+    Object.values(flipSavesRef.current).forEach(s => { if (now - s.at < FLIP_SAVE_HOLD_MS) ms.push(...s.ms); });
+    return [...new Set(ms)].sort();
+  };
+  // The job gate's flip check (schedEditable("job")): why a job must wait, or
+  // null. A mark the server rejected stays pending until it is removed or the
+  // app reloads, so the wait is named for what it is (round 2); and a flip
+  // that moved the counts after this render (flipSettlesSeen) refuses too —
+  // the counts this tap took predate it.
+  const flipGate = () => {
+    const saving = flipsSaving();
+    if (saving.length) {
+      const rejected = new Set(schedSyncRef.current.status().rejected || []), bad = saving.filter(m => rejected.has(m));
+      if (bad.length) return `The Backup change to the week of ${bad.join(", ")} couldn't be saved — the server refused it. Nothing was changed: remove that mark (or reload the app), then try again.`;
+      return `The Backup change to the week of ${saving.join(", ")} is still being saved — try again once it's saved.`;
+    }
+    if (flipSettlesRef.current !== flipSettlesSeen) return "A Backup change was just saved and moved the counts — nothing was changed. Try again.";
+    return null;
   };
   // The counts a flip moved, saved at once — as ✕ Clear's (saveCleared): from
   // the state as it is NOW (stateBundleRef: the latest render's) with those
   // counts (not rendered yet), and never across the session boundary.
-  // A save that fails puts lastSyncRef and the autosave's baseline back
-  // (review fix 2026-11-01): left on a write that never landed, the next read
-  // would take the older stored row for a newer one and adopt it — the
-  // counts this flip moved silently undone.
-  const saveFlipCounts = (prior, y1, ep) => (async () => {
-    let ts = null;
-    const prevSync = lastSyncRef.current, prevBase = setupBaseRef.current;
+  // lastSyncRef and the autosave's baseline move only once the save has
+  // landed, as the autosave's do (review fix 2026-11-01, round 2): moved
+  // before, a read of the older row coming back meanwhile — or the next read
+  // after a save that failed — took it for someone else's newer one and
+  // adopted it, the counts this flip moved silently undone. While the save is
+  // on the wire, refreshScheduleRow adopts nothing (setupWritesRef), and the
+  // job gate waits for it (flipSavesRef: its Mondays, `ms`).
+  const saveFlipCounts = (prior, y1, ep, ms) => (async () => {
+    if (!setupReadRef.current || !auth.getSession() || sessionEpochRef.current !== ep) return;
+    const w = setupWritesRef.current, id = ++w.seq;
+    w.n++; flipSavesRef.current[id] = { ms: ms || [], at: Date.now() };
     try {
-      if (!setupReadRef.current || !auth.getSession() || sessionEpochRef.current !== ep) return;
-      ts = new Date().toISOString();
-      lastSyncRef.current = ts;
-      // (Our own write, not a read: the setup as last written or read stays the autosave's baseline — review r3.)
-      if (setupBaseRef.current) setupBaseRef.current = { at: ts, sig: setupBaseRef.current.sig };
+      const ts = new Date().toISOString();
       const blobData = stateBundleRef.current({ priorCounts: prior, year1Counts: y1 }); delete blobData.schedule;
       delete blobData.vacations; delete blobData.noCallDays; // retired mirror — time_off is the source
       const { error: flipErr } = await supabase.from("call_schedule_data").upsert({ id: "main", data: blobData, updated_at: ts });
       if (flipErr) throw new Error(`backup-flip counts save failed: ${String((flipErr && flipErr.message) || flipErr).slice(0, 200)}`); // catch toasts; checked autosave retries
+      if (sessionEpochRef.current === ep) {
+        lastSyncRef.current = ts; // our own write: its read is nothing new
+        // (Our own write, not a read: the setup as last written or read stays the autosave's baseline — review r3.)
+        if (setupBaseRef.current) setupBaseRef.current = { at: ts, sig: setupBaseRef.current.sig };
+      }
     } catch(e) {
-      if (ts && lastSyncRef.current === ts) { lastSyncRef.current = prevSync; if (setupBaseRef.current && setupBaseRef.current.at === ts) setupBaseRef.current = prevBase; }
       console.error("Immediate save failed:", e); if (sessionEpochRef.current === ep) showToast("Couldn't save the counts the Backup change moved — check your connection.", "error");
-    }
+    } finally { w.n--; delete flipSavesRef.current[id]; }
   })();
   // A week's save landing changes the engine's status (its pending weeks): settle then.
   useEffect(() => { settleFlips(); }, [schedSync]);
@@ -6307,7 +6377,14 @@ function CallSchedule() {
     const b = stateBundleRef.current(), bk = new Set(b.backupMondays || []), fb = new Set(b.fierceBackup || []);
     return Object.keys(weeks || {}).filter(m => !!weeks[m].isBackup !== bk.has(m) || !!weeks[m].isFierceBackup !== fb.has(m)).sort();
   };
-  const marksMovedText = (ms) => `The Backup marks changed since this preview was made (the week${ms.length === 1 ? "" : "s"} of ${ms.join(", ")}) — nothing was published. Generate the preview again to use them.`;
+  // `how`: the preview's origin ("generated" / "json" — a loaded file is loaded
+  // again: it re-stamps the flags and keeps the file's weeks), or "publish"
+  // for Generate & Publish's own result (round 2).
+  const marksMovedText = (ms, how) => {
+    const wks = `the week${ms.length === 1 ? "" : "s"} of ${ms.join(", ")}`;
+    if (how === "publish") return `The Backup marks changed during Generate & Publish (${wks}) — nothing was published. Run it again to use them.`;
+    return `The Backup marks changed since this preview was made (${wks}) — nothing was published. ${how === "json" ? "Load the file again" : "Generate the preview again"} to use them.`;
+  };
   const acceptPreview = async () => {
     // A Generate & Publish search publishes its own schedule when it ends —
     // never two publishes racing (its button and this one are disabled meanwhile).
@@ -6324,7 +6401,7 @@ function CallSchedule() {
       const moved = schedSyncRef.current.changedSince(Object.keys(previewSchedule), previewEpochRef.current);
       if (moved.length) { showToast(`The week${moved.length === 1 ? "" : "s"} of ${moved.join(", ")} changed since this preview was generated — nothing was published. Generate the preview again.`, "error"); return; }
       const marksMoved = previewMarksMoved(previewSchedule); // (…and no Backup mark changed since it was made — 2026-11-01)
-      if (marksMoved.length) { showToast(marksMovedText(marksMoved), "error"); return; }
+      if (marksMoved.length) { showToast(marksMovedText(marksMoved, previewOrigin), "error"); return; }
       const needsOkN = previewNeedsOk.items.length;
       const weeks = previewSchedule, origin = previewOrigin, sM = startMonth, sY = startYear, nW = numWeeks, bend = previewNeedsOk.cost;
       publishingRef.current = true; setPublishing(true);
@@ -6343,7 +6420,7 @@ function CallSchedule() {
         const moved2 = schedSyncRef.current.changedSince(Object.keys(weeks), previewEpochRef.current);
         if (moved2.length) { showToast(`The week${moved2.length === 1 ? "" : "s"} of ${moved2.join(", ")} changed since this preview was generated — nothing was published. Generate the preview again.`, "error"); setSaveStatus(""); return; }
         const marksMoved2 = previewMarksMoved(weeks); // (a mark changed during the snapshot's await, too)
-        if (marksMoved2.length) { showToast(marksMovedText(marksMoved2), "error"); setSaveStatus(""); return; }
+        if (marksMoved2.length) { showToast(marksMovedText(marksMoved2, origin), "error"); setSaveStatus(""); return; }
         // Weeks already published get their counts replaced, not added again;
         // the published period merges into the existing schedule so prior
         // periods are preserved.
@@ -7341,7 +7418,8 @@ function CallSchedule() {
   //  - ONE way to mark (owner 2026-11-01): markWeek, for the four buttons
   //    and the pasted schedule's Apply alike — the set, the week's flag, a
   //    Backup flip's counts (watchFlip: they move once it stands) and one
-  //    audit line naming the week. Its caller passes the edit gate first.
+  //    audit line naming the week. Its caller passes the edit gate first,
+  //    then marksEditable (the setup read, no job running — round 2).
   //  - …and ↩ Undo of an EARLIER step (a swap, an edit) never takes a mark
   //    back: the steps holding the week take its new flag (stepsHold), or the
   //    Undo would split the set from the flag the same way — and leave counts
@@ -7360,11 +7438,25 @@ function CallSchedule() {
   // session has READ it, a mark can't be saved (the setup autosave waits for
   // that read), and the first good read would put the old marks and counts
   // back over a week already flipped (review fix 2026-11-01). The marking
-  // paths ask this right after the edit gate.
+  // paths ask this right after the edit gate (marksEditable), and so does
+  // the job gate (round 2: a job moves the counts and saves the setup too).
   const setupEditable = () => {
     if (setupReadRef.current && !loadFailedRef.current) return true;
     showToast("The shared setup hasn't loaded yet — nothing was changed. It retries every minute; try again shortly.", "error");
     return false;
+  };
+  // The marking paths' second gate, right after the edit gate: the shared
+  // setup read (setupEditable), and no clear, publish, Generate & Publish,
+  // factory reset or restore running (review fix 2026-11-01, round 2). A mark
+  // made meanwhile lands between that job's checks and its counts: a
+  // restore's or reset's counts took the flip on top, a publish's ↩ Undo
+  // step missed its net.
+  const marksEditable = () => {
+    if (!setupEditable()) return false;
+    const eng = schedSyncRef.current, claim = jobClaimRef.current, job = eng.jobPending();
+    const busy = claim ? eng.jobLabel(claim.what) : job ? eng.jobLabel(job) : publishSearchRunning() ? "Generate & Publish" : publishingRef.current ? eng.jobLabel("publish") : null;
+    if (busy) { showToast(`${busy} is still running — wait for it to finish, then change the Backup Weeks. Nothing was changed.`, "error"); return false; }
+    return true;
   };
   const markWeek = (kind, m, on, via) => {
     const bk = kind === "backup", flagKey = bk ? "isBackup" : "isFierceBackup";
@@ -7381,22 +7473,22 @@ function CallSchedule() {
   };
   const markBackupWeek = () => {
     if (!bkMonday) return;
-    if (!schedEditable() || !setupEditable()) return;
+    if (!schedEditable() || !marksEditable()) return;
     markWeek("backup", bkMonday, true);
     setBkMonday(mondayOfToday());
   };
   const unmarkBackupWeek = (m) => {
-    if (!schedEditable() || !setupEditable()) return;
+    if (!schedEditable() || !marksEditable()) return;
     markWeek("backup", m, false);
   };
   const markFierceBackupWeek = () => {
     if (!bkMonday) return;
-    if (!schedEditable() || !setupEditable()) return;
+    if (!schedEditable() || !marksEditable()) return;
     markWeek("fierce", bkMonday, true);
     setBkMonday(mondayOfToday());
   };
   const unmarkFierceBackupWeek = (m) => {
-    if (!schedEditable() || !setupEditable()) return;
+    if (!schedEditable() || !marksEditable()) return;
     markWeek("fierce", m, false);
   };
   // 📋 Paste Fierce's schedule (owner 2026-11-01): his year's table
@@ -7405,10 +7497,19 @@ function CallSchedule() {
   // buttons do. The preview plans from the marks as they were at Preview;
   // Apply plans again from the marks as they are, and refuses when that
   // differs (a mark made meanwhile, another device's setup adopted).
+  // The stored flags of the listed weeks already published: a listed week
+  // whose stored flag says otherwise than the paste is planned as a change
+  // too, even when its set already agrees — so pasting the table again
+  // repairs a split a refused write or an ↩ Undo left (round 2).
+  const storedFlagsOf = (rows) => {
+    const s = scheduleRef.current || {}, o = {};
+    (rows || []).forEach(r => { const wk = s[r.monday]; if (wk) o[r.monday] = { isBackup: !!wk.isBackup, isFierceBackup: !!wk.isFierceBackup }; });
+    return o;
+  };
   const previewFiercePaste = () => {
     if (typeof parseFierceWeeks !== "function" || typeof planFierceWeeks !== "function") { showToast("This needs the app's latest files — reload the app, then paste again.", "error"); return; }
     const parsed = parseFierceWeeks(fiercePaste.text, fiercePaste.year);
-    const plan = parsed.refused.length || !parsed.rows.length ? null : planFierceWeeks(parsed.rows, [...backupMondaySet], [...fierceBackupSet]);
+    const plan = parsed.refused.length || !parsed.rows.length ? null : planFierceWeeks(parsed.rows, [...backupMondaySet], [...fierceBackupSet], storedFlagsOf(parsed.rows));
     setFiercePaste(p => Object.assign({}, p, { preview: { year: p.year, parsed, plan, sig: plan ? JSON.stringify(plan) : "" }, applied: null }));
   };
   // (Apply and its refusal unmount the focused button with the preview: the
@@ -7418,8 +7519,8 @@ function CallSchedule() {
   const applyFiercePaste = () => {
     const pv = fiercePaste.preview;
     if (!pv || !pv.plan) return;
-    if (!schedEditable() || !setupEditable()) return;
-    const plan = planFierceWeeks(pv.parsed.rows, [...backupMondaySet], [...fierceBackupSet]);
+    if (!schedEditable() || !marksEditable()) return;
+    const plan = planFierceWeeks(pv.parsed.rows, [...backupMondaySet], [...fierceBackupSet], storedFlagsOf(pv.parsed.rows));
     if (JSON.stringify(plan) !== pv.sig) { showToast("The marks changed since this preview — nothing was applied. Preview again.", "error"); setFiercePaste(p => Object.assign({}, p, { preview: null })); focusSoon('[data-fierce-preview-btn="1"]'); return; }
     const n = plan.backup.add.length + plan.backup.remove.length + plan.fierce.add.length + plan.fierce.remove.length;
     if (!n) { showToast("Nothing to change — every week in the paste is already marked as it says.", "info"); return; }
@@ -7434,19 +7535,22 @@ function CallSchedule() {
   };
   // The preview's words for one change: what it does to its week — published
   // (a Backup flip: the counts it moves once it stands) or not generated yet.
+  // A week the open preview holds the old way says so — ✓ Accept & Publish
+  // refuses that preview until it's made again (round 2: published weeks the
+  // preview re-generates too; a loaded file is loaded again).
   const fierceChangeTag = (kind, m, on) => {
-    const wk = scheduleRef.current[m];
-    if (!wk) {
-      // (an open Generate preview made before this mark holds the week the old way — Accept & Publish refuses it until it is generated again)
-      const pw = previewSchedRef.current && previewSchedRef.current[m];
-      if (pw && !!pw[kind === "backup" ? "isBackup" : "isFierceBackup"] !== !!on) return "in the open Generate preview, made before this — generate it again before publishing";
-      return on ? "not generated yet — the generator marks it" : "not generated yet — the generator no longer marks it";
-    }
-    if (kind !== "backup") return on ? "published — the label goes on" : "published — the label comes off";
-    const net = flagNet(m, wk, wk.isBackup, on);
-    if (!net) return m < COUNTS_FLOOR ? "published, before the counts floor — no counts move" : "published — the week already shows it";
-    const t = netCountsText(net.delta), t1 = netCountsText(net.delta1yr);
-    return `published — ${on ? "becomes 2nd call" : "back to our own call"}; counts: ${t}${t1 !== t ? ` (1-Year: ${t1})` : ""}`;
+    const wk = scheduleRef.current[m], pw = previewSchedRef.current && previewSchedRef.current[m];
+    const held = pw && !!pw[kind === "backup" ? "isBackup" : "isFierceBackup"] !== !!on
+      ? (previewOrigin === "json" ? "in the open preview loaded from a file, made before this — load the file again before publishing" : "in the open Generate preview, made before this — generate it again before publishing") : "";
+    if (!wk) return held || (on ? "not generated yet — the generator marks it" : "not generated yet — the generator no longer marks it");
+    const tag = (() => {
+      if (kind !== "backup") return on ? "published — the label goes on" : "published — the label comes off";
+      const net = flagNet(m, wk, wk.isBackup, on);
+      if (!net) return m < COUNTS_FLOOR ? "published, before the counts floor — no counts move" : "published — the week already shows it";
+      const t = netCountsText(net.delta), t1 = netCountsText(net.delta1yr);
+      return `published — ${on ? "becomes 2nd call" : "back to our own call"}; counts: ${t}${t1 !== t ? ` (1-Year: ${t1})` : ""}`;
+    })();
+    return held ? `${tag}; ${held}` : tag;
   };
 
   // Generate shareable read-only HTML with calendar grid view
@@ -9609,7 +9713,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                       <div role="alert" style={{marginTop:8,padding:"8px 10px",borderRadius:6,border:`1px solid ${dk?"#5a2a2a":"#e8c0c0"}`,background:dk?"#2a1a1a":"#fdf0f0",color:dk?"#f0b0b0":"#8a3030",fontSize:12,lineHeight:1.5}}>
                         <div style={{fontWeight:700}}>⚠ {pv.parsed.refused.length} line{pv.parsed.refused.length === 1 ? "" : "s"} can't be read — nothing is applied until {pv.parsed.refused.length === 1 ? "it's" : "they're"} fixed:</div>
                         {pv.parsed.refused.map((r, i) => <div key={i} style={{overflowWrap:"anywhere"}}>Line {r.line}{r.label ? ` (${r.label})` : ""}: {r.why}</div>)}
-                        {!pv.parsed.rows.length && pv.parsed.refused.some(r => / is a [A-Z][a-z]+day$/.test(r.why)) && <div style={{marginTop:4}}>Is the year right? Pick the table's year above.</div>}
+                        {pv.parsed.refused.filter(r => / is a [A-Z][a-z]+day$/.test(r.why)).length > pv.parsed.rows.length &&<div style={{marginTop:4}}>Is the year right? Pick the table's year above.</div>}
                       </div>
                     )}
                     {pv && !pv.parsed.refused.length && !pv.plan && <div style={{marginTop:8,fontSize:12,color:sub}}>No weeks found in the paste.</div>}

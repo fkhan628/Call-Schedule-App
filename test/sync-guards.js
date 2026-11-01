@@ -6802,7 +6802,7 @@ await (async () => {
   const iP = onceAt("  const publishWeeks = (newWeeks, how) => {"), eP = iP < 0 ? -1 : nsrcCW.indexOf("\n\n  // ─── Load a schedule from JSON", iP);
   const iA = onceAt("  const runAuthoritativeSchedule = async (target, what, undoStep, before, late) => {"), eA = endAt("\n  };", iA);
   const iL = onceAt("  const clearSchedule = async () => {"), eL = iL < 0 ? -1 : endAt("\n  };", nsrcCW.indexOf("\n  };\n\n  // ─── Snapshot restore", iL));
-  const NAMES = "surgeons, parse, Date, useCallback, scheduleRef, commitSchedule, schedSyncRef, schedEditable, showToast, priorCounts, year1Counts, setPriorCounts, setYear1Counts, scheduleHistory, setScheduleHistory, logAudit, setJustPublished, publishUndoneRef, sessionEpochRef, confirm, snapshots, setSaveStatus, setTimeout, lastSyncRef, stateBundleRef, setupReadRef, auth, supabase, console, setupBaseRef";
+  const NAMES = "surgeons, parse, Date, useCallback, scheduleRef, commitSchedule, schedSyncRef, schedEditable, showToast, priorCounts, year1Counts, setPriorCounts, setYear1Counts, scheduleHistory, setScheduleHistory, logAudit, setJustPublished, publishUndoneRef, sessionEpochRef, confirm, snapshots, setSaveStatus, setTimeout, lastSyncRef, stateBundleRef, setupReadRef, auth, supabase, console, setupBaseRef, flipGate"; // (+ flipGate 2026-11-01 round 2: ↩ Undo of a publish / clear step waits for a Backup flip still saving — none here; CX runs it)
   let factory = null, whyNot = null;
   if ([iU, eU, iC, kR, eR, eC, iP, eP, iA, eA, iL, eL].every((x) => x >= 0)) {
     try {
@@ -6888,7 +6888,7 @@ ${nsrcCW.slice(iL, eL)}
       if (!(r2.skipped === "reset" || r2.skipped === "cancelled") && eng.opts && typeof eng.opts.late === "function") eng.lateSaid = eng.opts.late(r2);
       for (let i = 0; i < 4; i++) await null;
     };
-    const render = () => { flush(); return factory({ surgeons: SURG, parse: H.parse, Date: Oct26, useCallback: (f) => f, scheduleRef: ref, commitSchedule: commit, schedSyncRef: sync, schedEditable: () => true,
+    const render = () => { flush(); return factory({ surgeons: SURG, parse: H.parse, Date: Oct26, useCallback: (f) => f, scheduleRef: ref, commitSchedule: commit, schedSyncRef: sync, schedEditable: () => true, flipGate: () => null,
       showToast: (m) => st.toasts.push(String(m)), priorCounts: st.prior, year1Counts: st.y1, setPriorCounts: upd("prior"), setYear1Counts: upd("y1"),
       scheduleHistory: st.history, setScheduleHistory: upd("history"), logAudit: (a, msg, meta) => st.audits.push({ a, msg, meta }), setJustPublished: (v) => st.jp.push(v), publishUndoneRef: st.undone,
       sessionEpochRef: st.ep, confirm: () => true, setSaveStatus: () => {}, setTimeout: () => 0, lastSyncRef: { current: null },
@@ -7187,7 +7187,7 @@ await (async () => {
   const iS = onceAt("  const updateSchedule = useCallback((fn) => {"), eS = endAt("\n  }, [commitSchedule]);", iS);
   const iG = onceAt("  const schedEditable = (job, own) => {"), eG = endAt("\n  };\n", iG);
   const iN = onceAt("  const netCountsText = (net) => {"), eN = endAt("\n  };", iN);
-  const NAMES = "surgeons, parse, Date, useCallback, useRef, useEffect, schedSync, scheduleRef, commitSchedule, schedSyncRef, sessionEpochRef, stateBundleRef, setPriorCounts, setYear1Counts, setupReadRef, auth, lastSyncRef, setupBaseRef, supabase, console, showToast, setReauthNeeded, jobClaimRef, bkMonday, setBkMonday, mondayOfToday, backupMondaySet, fierceBackupSet, setBackupMondaySet, setFierceBackupSet, logAudit, scheduleHistory, setScheduleHistory, setJustPublished, publishUndoneRef, fiercePaste, setFiercePaste, loadFailedRef, previewSchedRef";
+  const NAMES = "surgeons, parse, Date, useCallback, useRef, useEffect, schedSync, scheduleRef, commitSchedule, schedSyncRef, sessionEpochRef, stateBundleRef, setPriorCounts, setYear1Counts, setupReadRef, auth, lastSyncRef, setupBaseRef, supabase, console, showToast, setReauthNeeded, jobClaimRef, bkMonday, setBkMonday, mondayOfToday, backupMondaySet, fierceBackupSet, setBackupMondaySet, setFierceBackupSet, logAudit, scheduleHistory, setScheduleHistory, setJustPublished, publishUndoneRef, fiercePaste, setFiercePaste, loadFailedRef, previewSchedRef, flipSettlesRef, flipSettlesSeen, flipSavesRef, setupWritesRef, scheduleHistoryRef, publishSearchRunning, publishingRef, previewOrigin";
   const partsX = { iC, eC, iM, eM, iU, eU, iS, eS, iG, eG, iN, eN };
   let factory = null, whyNot = null;
   if (Object.values(partsX).every((x) => x >= 0)) {
@@ -7253,19 +7253,29 @@ ${nsrcX.slice(iM, eM)}
       history: [], audits: [], toasts: [], blob: [], errors: [], token: "TOK_A", ep: { current: 1 }, bk: "2026-11-02", status: "", statusVer: 0, effVer: -1, effect: null, flipRef: null,
       fp: { open: true, year: 2027, text: "", preview: null, applied: null }, undone: { current: 0 }, queued: false,
       // (2026-11-01 review fixes: the setup read's flags, the open Generate preview, the last-sync marks, a failing setup save)
-      setupRead: { current: true }, loadFailed: { current: false }, preview: { current: null }, lastSync: { current: "2026-11-01T17:00:00.000Z" }, setupBase: { current: { at: "2026-11-01T17:00:00.000Z", sig: "s0" } }, upsertFail: false };
+      setupRead: { current: true }, loadFailed: { current: false }, preview: { current: null }, lastSync: { current: "2026-11-01T17:00:00.000Z" }, setupBase: { current: { at: "2026-11-01T17:00:00.000Z", sig: "s0" } }, upsertFail: false,
+      // (round 2: the settle counter and its render's copy, the counts saves on the wire, this session's immediate setup saves, the
+      // history as last rendered, a running job's flags, the preview's origin; a setup save that answers with config.js's string
+      // body ("string"), rejects as a dropped connection does ("throw"), or waits for `upsertHold` before it answers)
+      settles: { current: 0 }, saves: { current: {} }, writes: { current: { seq: 0, n: 0 } }, histRef: { current: [] }, publishing: { current: false }, searching: false,
+      claim: { current: null }, origin: "generated", upsertMode: null, upsertHold: null, blobTs: [] };
     appsX.push(a);
     const queue = () => { if (a.queued) return; a.queued = true; setTimeout(() => { a.queued = false; render(); }, 0); };
     const render = () => {
       a.rendered = { prior: clone(a.prior), y1: clone(a.y1), backup: [...a.backup], fierce: [...a.fierce] }; // (the render's state: what stateBundleRef builds from, as the app's)
+      a.histRef.current = a.history; // (scheduleHistoryRef: the history as last rendered — the app assigns it at each render)
       a.h = factory({ surgeons: SURG7, parse: H.parse, Date: Nov1, useCallback: (f) => f, useRef: (v) => a.flipRef || (a.flipRef = { current: v }), useEffect: (f) => { a.effect = f; }, schedSync: a.statusVer,
         scheduleRef: a.ref, commitSchedule: a.commitSchedule, schedSyncRef: { current: a.eng }, sessionEpochRef: a.ep,
         stateBundleRef: { current: (x) => Object.assign({ priorCounts: a.rendered.prior, year1Counts: a.rendered.y1, backupMondays: a.rendered.backup, fierceBackup: a.rendered.fierce, schedule: a.ref.current }, x || {}) },
         setPriorCounts: (f) => { a.prior = typeof f === "function" ? f(a.prior) : f; queue(); }, setYear1Counts: (f) => { a.y1 = typeof f === "function" ? f(a.y1) : f; queue(); },
         setupReadRef: a.setupRead, loadFailedRef: a.loadFailed, previewSchedRef: a.preview, auth: { getSession: () => (a.token ? { access_token: a.token } : null) }, lastSyncRef: a.lastSync, setupBaseRef: a.setupBase,
-        supabase: { from: () => ({ upsert: async (row) => { if (a.upsertFail) return { error: { message: "mock: network" } }; a.blob.push(clone(row.data)); return { error: null }; } }) },
+        supabase: { from: () => ({ upsert: async (row) => { if (a.upsertHold) await a.upsertHold;
+          if (a.upsertMode === "throw") throw new TypeError("Failed to fetch"); if (a.upsertMode === "string") return { error: "{\"code\":\"57014\",\"message\":\"canceling statement due to statement timeout\"}" };
+          if (a.upsertFail) return { error: { message: "mock: network" } }; a.blob.push(clone(row.data)); a.blobTs.push(row.updated_at); return { error: null }; } }) },
         console: { error: (...x) => a.errors.push(x.map(String).join(" ")), warn() {}, log() {}, info() {} }, showToast: (m, tone) => a.toasts.push([String(m), tone || "info"]),
-        setReauthNeeded: () => {}, jobClaimRef: { current: null }, bkMonday: a.bk, setBkMonday: (v) => { a.bk = v; }, mondayOfToday: () => "2026-10-26",
+        setReauthNeeded: () => {}, jobClaimRef: a.claim, bkMonday: a.bk, setBkMonday: (v) => { a.bk = v; }, mondayOfToday: () => "2026-10-26",
+        flipSettlesRef: a.settles, flipSettlesSeen: a.settles.current, flipSavesRef: a.saves, setupWritesRef: a.writes, scheduleHistoryRef: a.histRef,
+        publishSearchRunning: () => a.searching, publishingRef: a.publishing, previewOrigin: a.origin,
         backupMondaySet: new Set(a.backup), fierceBackupSet: new Set(a.fierce),
         setBackupMondaySet: (f) => { a.backup = f(a.backup); queue(); }, setFierceBackupSet: (f) => { a.fierce = f(a.fierce); queue(); },
         logAudit: (act, sum, det) => a.audits.push({ act, sum, det }), scheduleHistory: a.history, setScheduleHistory: (f) => { a.history = typeof f === "function" ? f(a.history) : f; queue(); },
@@ -7588,6 +7598,23 @@ ${nsrcX.slice(iM, eM)}
       return r.undone && r.flag === false && !r.toasts.some((m) => /Can't undo/.test(m)) && r.counts && r.fact && r.steps === 0 && s.undone && s.flag === true && !s.toasts.some((m) => /Can't undo/.test(m)) && s.fact && s.steps === 0; }),
     J(cx12).slice(0, 900));
 
+  // CX12b (round 2) a job's re-check that settles a refused mark in its TAP's closure (the snapshot's await resolving before React
+  // renders the refusal) gives the flag back to the Undo steps pushed during that await too: the history as last rendered, not the tap's
+  const cx12b = await tryX(async () => {
+    const t = mkTable(), a = await mkApp(t);
+    const h0 = a.render(); // the job's tap render (its history: none yet)
+    a.render().pushUndo(); a.render().updateSchedule(swapSW); await a.land(); // a swap step, pushed while the job's await runs
+    t.control.fail({ method: "PATCH", week: W14, kind: "403" });
+    a.bk = W14; a.render().markBackupWeek(); await a.eng.push();
+    h0.schedEditable("job"); // the job's re-check, in the tap's closure, settles the refused mark before the effect does
+    await a.flush();
+    const n0 = a.toasts.length; a.render().undoLastChange(); await a.land(); const st = stored(t);
+    return { toasts: a.toasts.slice(n0).map((x) => x[0]), swapBack: st[SW].nights.tue === WEEKS0[SW].nights.tue, flag: st[W14].isBackup, steps: a.history.length, fact: fact(a.counts().prior, st) };
+  });
+  check("CX12b (round 2) a refused mark settled by a job's re-check in its TAP's closure (an older render) still gives the Undo steps pushed since then the stored flag back — ↩ Undo of that swap goes through (no \"Can't undo … changed by someone else\"), the fact holds",
+    !cx12b.threw && cx12b.swapBack && cx12b.flag === false && !cx12b.toasts.some((m) => /Can't undo/.test(m)) && cx12b.steps === 0 && cx12b.fact,
+    J(cx12b).slice(0, 700));
+
   // ── review fixes (2026-11-01): six-lens review of #105, each finding verified by three skeptics ──
   // CX13 the parser reads a comma or tab INSIDE a cell as part of it, never as a column — or refuses
   const cx13 = !H.P ? { threw: "parseFierceWeeks missing" } : await tryX(async () => {
@@ -7598,24 +7625,48 @@ ${nsrcX.slice(iM, eM)}
       yearComma: r("Week,Primary,Backup\nDec 27-Jan 02, 2028,Fierce,Alder"),          // the label's own ", 2028" on a comma line
       quotedLabel: r("Week,Primary,Backup\n\"Dec 27-Jan 02, 2028\",Fierce,Alder"),
       quotedTab: r("Week\tPrimary\tBackup\nJan 25-31\t\"Smith\tJ\"\tFierce"),           // a tab inside a quoted cell (Excel quotes it)
-      extraNoHeader: r("Jan 25-31\tAlder\tBirch\tFierce"),                            // a 4th column with no header naming it
-      fierceElsewhere: r("Week\tDates\tPrimary\tBackup\nJan 25-31\tFierce\tAlder\tBirch"), // "Fierce" in a column that isn't Primary or Backup
-      openQuote: r("Jan 25-31\t\"Fierce\nmore\"\tBirch"),                              // a cell running onto the next line
+      extraNoHeader: r("Jan 25-31\tAlder\tBirch\tFierce"),                            // "Fierce" in a 4th column, no header naming it: refused
+      // (round 2) a TAB line's columns can't shift: a cell past the header's is left out; "Fierce" in a column the header names
+      // otherwise (Notes, Dates) is read as that column; in a column the header doesn't name, refused — and on a comma line, refused
+      extraTab: r("Week\tPrimary\tBackup\nJan 25-31\tFierce\tAlder\t✓"),
+      notesTab: r("Week\tPrimary\tBackup\tNotes\nJan 25-31\tAlder\tBirch\tFierce"),
+      fierceElsewhere: r("Week\tDates\tPrimary\tBackup\nJan 25-31\tFierce\tAlder\tBirch"),
+      unnamedTab: r("Week\tPrimary\tBackup\nJan 25-31\tAlder\tBirch\tFierce"),
+      notesComma: r("Week,Primary,Backup,Notes\nJan 25-31,Alder,Birch,Fierce"),
+      // (round 2) a Year / Pager column right after Week stays a column (Excel's CSV of a 5-column sheet); a label's own ", 2028" beside it is still joined back
+      yearCol: r("Week,Year,Primary,Backup,Notes\nJan 04-10,2027,Alder,Fierce,\nJan 18-24,2027,Birch,Fierce,"),
+      yearColLabel: r("Week,Year,Primary,Backup\nDec 27-Jan 02, 2028,2027,Fierce,Alder"),
+      pagerCol: r("Week,Pager,Primary,Backup\nJan 04-10,4417,Fierce,Alder"),
+      // a quote left open (a cell holding a line break): refused with that reason, and the next line as the rest of that cell
+      openQuote: r("Jan 25-31\t\"Fierce\nmore\"\tBirch"),
+      openQuote3: r("Week\tPrimary\tBackup\nJan 25-31\tAlder\t\"Fierce\n(tentative)\""),
+      openQuoteCut: r("Week\tPrimary\tBackup\nJan 25-31\tAlder\t\"Fierce"),
+      // (round 2) a merged Primary cell: "Fierce" copied into its first row only — the empty one right under it refused
+      merged: r("Week\tPrimary\tBackup\nJan 04-10\tFierce\tAlder\nJan 11-17\t\tBirch\nJan 18-24\tCedar\tDove"),
       prevDec: r("Week\tPrimary\tBackup\nDec 28-Jan 03 2027\tFierce\tAlder\nJan 04-10\tAlder\tBirch"), // the week holding Jan 1 starts in 2026
       renamedComma: J(H.Q(P("Week,Primary,Backup\nJan 04-10,\"Patel, R\",Fierce").rows, [], ["2027-01-04"])) === J(H.Q(P("Week,Primary,Backup\nJan 04-10,Patel,Fierce").rows, [], ["2027-01-04"])),
     };
   });
-  check("CX13 (review fix) the parser: a quoted \"Smith, J\" stays one cell (Fierce still Backup); unquoted it is refused (\"more cells than the table has columns\"), never read one column off; \"Dec 27-Jan 02, 2028\" on a comma line (bare or quoted) is 2027-12-27 with Fierce as Primary; a tab inside a quoted cell stays in it; a 4th column with no header, or \"Fierce\" in a column that isn't Primary or Backup, is refused; a cell running onto the next line never reads as Fierce; the week holding Jan 1 (\"Dec 28-Jan 03 2027\") is refused as 2026's, while the rest of the table reads; renaming a placeholder to \"Patel, R\" (quoted) plans the same",
+  const OPEN_Q = /^a quote in this line isn't closed — does a cell hold a line break\? Put that cell on one line in the spreadsheet, then copy again$/;
+  check("CX13 (review fix) the parser: a quoted \"Smith, J\" stays one cell (Fierce still Backup); unquoted it is refused (\"more cells than the table has columns\"), never read one column off; \"Dec 27-Jan 02, 2028\" on a comma line (bare or quoted) is 2027-12-27 with Fierce as Primary; a tab inside a quoted cell stays in it; \"Fierce\" in a 4th column with no header is refused; (round 2) a TAB line's cell past the header's columns is left out, \"Fierce\" in a column the header names otherwise (Notes, Dates) is read as that column, in one it doesn't name refused, and on a comma line refused naming the column; a Year / Pager column right after Week stays a column (no silent shift), while a label's own \", 2028\" is still joined back; a quote left open is refused for what it is, and the next line as the rest of that cell; an empty Primary cell right under \"Fierce\" (a merged cell) is refused; the week holding Jan 1 (\"Dec 28-Jan 03 2027\") is refused as 2026's, while the rest of the table reads; renaming a placeholder to \"Patel, R\" (quoted) plans the same",
     !cx13.threw && J(cx13.quotedComma.rows) === J([["2027-01-25", false, true]]) && cx13.quotedComma.refused.length === 0
       && cx13.bareComma.rows.length === 0 && /more cells than the table has columns — a comma inside a name/.test(cx13.bareComma.refused[0] || "")
       && J(cx13.yearComma.rows) === J([["2027-12-27", true, false]]) && J(cx13.quotedLabel.rows) === J([["2027-12-27", true, false]])
       && J(cx13.quotedTab.rows) === J([["2027-01-25", false, true]])
-      && cx13.extraNoHeader.rows.length === 0 && /more cells than the table has columns — paste the table with its header row/.test(cx13.extraNoHeader.refused[0] || "")
-      && cx13.fierceElsewhere.rows.length === 0 && /isn't Primary or Backup/.test(cx13.fierceElsewhere.refused[0] || "")
-      && !cx13.openQuote.rows.some((q) => q[1] || q[2])
+      && cx13.extraNoHeader.rows.length === 0 && cx13.extraNoHeader.refused[0] === "\"Fierce\" is in a column that isn't Primary or Backup — paste the table with its header row"
+      && J(cx13.extraTab) === J({ rows: [["2027-01-25", true, false]], refused: [] }) && J(cx13.notesTab) === J({ rows: [["2027-01-25", false, false]], refused: [] })
+      && J(cx13.fierceElsewhere) === J({ rows: [["2027-01-25", false, false]], refused: [] })
+      && cx13.unnamedTab.rows.length === 0 && cx13.unnamedTab.refused[0] === "\"Fierce\" is in a column the header doesn't name — name that column in the header, or leave it out of the copy"
+      && cx13.notesComma.rows.length === 0 && /^"Fierce" is in the Notes column, not Primary or Backup — a comma inside a name may have moved it/.test(cx13.notesComma.refused[0] || "")
+      && J(cx13.yearCol) === J({ rows: [["2027-01-04", false, true], ["2027-01-18", false, true]], refused: [] }) && J(cx13.yearColLabel.rows) === J([["2027-12-27", true, false]])
+      && J(cx13.pagerCol) === J({ rows: [["2027-01-04", true, false]], refused: [] })
+      && cx13.openQuote.rows.length === 0 && OPEN_Q.test(cx13.openQuote.refused[0] || "") && /^this looks like the rest of a cell from line 1 \(a line break inside a cell\)/.test(cx13.openQuote.refused[1] || "")
+      && cx13.openQuote3.rows.length === 0 && OPEN_Q.test(cx13.openQuote3.refused[0] || "") && /^this looks like the rest of a cell from line 2/.test(cx13.openQuote3.refused[1] || "")
+      && cx13.openQuoteCut.rows.length === 0 && cx13.openQuoteCut.refused.length === 1 && OPEN_Q.test(cx13.openQuoteCut.refused[0])
+      && J(cx13.merged.rows) === J([["2027-01-04", true, false], ["2027-01-18", false, false]]) && /^the Primary cell is empty right under "Fierce" — a merged cell\?/.test(cx13.merged.refused[0] || "") && cx13.merged.refused.length === 1
       && J(cx13.prevDec.rows) === J([["2027-01-04", false, false]]) && /^this week starts Dec 28 2026 — it belongs to 2026's table/.test(cx13.prevDec.refused[0] || "")
       && cx13.renamedComma === true,
-    J(cx13).slice(0, 1200));
+    J(cx13).slice(0, 1600));
 
   // CX14 Undo steps older than a publish or clear step keep their copy (the patch stops at the newest counts / clear step)
   const NW14 = Object.assign(clone(WEEKS0[W14]), { dayCall: "s1", nights: Object.assign({}, WEEKS0[W14].nights, { wed: "s7" }) }); // a re-generated copy: DJA on service, ARW Wed
@@ -7648,6 +7699,21 @@ ${nsrcX.slice(iM, eM)}
       && cx14.publish.flag === false && cx14.publish.swapBack && cx14.publish.fact && cx14.publish.counts0 && cx14.publish.steps === 0
       && cx14.clear.ok && cx14.clear.rows === 14 && cx14.clear.flag === false && cx14.clear.fact,
     J(cx14).slice(0, 900));
+  // CX14b (round 2) ↩ Undo of a publish (or clear) step waits for a Backup flip still saving — its net would land on top of the counts
+  // the Undo puts back, from before it
+  const cx14b = await tryX(async () => {
+    const t = mkTable(), a = await mkApp(t);
+    a.render().pushUndo({ prior: clone(a.prior), y1: clone(a.y1) }); a.render().rollForwardCounts({ [W14]: NW14 }, { [W14]: a.ref.current[W14] }); a.commitSchedule(Object.assign({}, a.ref.current, { [W14]: clone(NW14) })); await a.land(); // a publish step
+    const hold = t.control.pause({ method: "PATCH", week: "2027-01-11", count: 1 });
+    a.bk = "2027-01-11"; a.render().markBackupWeek(); const pushing = a.eng.push(); await hold.arrived; for (let i = 0; i < 4; i++) await tick();
+    const n0 = a.toasts.length; a.render().undoLastChange(); const said = a.toasts.slice(n0).map((x) => x[0]), steps = a.history.length;
+    hold.release(); await pushing; await a.flush();
+    a.render().undoLastChange(); await a.land();
+    return { said, steps, after: a.history.length, fact: fact(a.counts().prior, stored(t)) };
+  });
+  check("CX14b (round 2) ↩ Undo of a publish step waits while a Backup mark is still saving (\"The Backup change to the week of … is still being saved\") — nothing undone; once it has landed the Undo goes through, and the fact holds",
+    !cx14b.threw && J(cx14b.said) === J(["The Backup change to the week of 2027-01-11 is still being saved — try again once it's saved."]) && cx14b.steps === 1 && cx14b.after === 0 && cx14b.fact,
+    J(cx14b).slice(0, 700));
 
   // CX15 the job gate refuses a clear / publish / reset / restore while a Backup mark's week is still saving
   const cx15 = await tryX(async () => {
@@ -7662,15 +7728,48 @@ ${nsrcX.slice(iM, eM)}
     a.bk = "2027-01-11"; a.render().markBackupWeek(); await a.land();
     const failing = a.render().schedEditable("job");
     await a.land(); const retried = a.render().schedEditable("job");
-    return { onWire, said, plainEdit, afterLand, failing, retried, fact: fact(a.counts().prior, stored(t)) };
+    // (round 2) a Fierce Backup label still saving holds a job too: a publish step would keep a label the server then refused
+    const holdF = t.control.pause({ method: "PATCH", week: "2027-02-01", count: 1 });
+    a.bk = "2027-02-01"; a.render().markFierceBackupWeek(); const pushingF = a.eng.push(); await holdF.arrived; for (let i = 0; i < 4; i++) await tick();
+    const nF = a.toasts.length, fierceOnWire = a.render().schedEditable("job"), saidF = a.toasts.slice(nF).map((x) => x[0]);
+    holdF.release(); await pushingF; await a.flush(); const fierceLanded = a.render().schedEditable("job");
+    return { onWire, said, plainEdit, afterLand, failing, retried, fierceOnWire, saidF, fierceLanded, fact: fact(a.counts().prior, stored(t)) };
   });
-  check("CX15 (review fix) the job gate (schedEditable(\"job\") — ✕ Clear, Accept & Publish, Generate & Publish, factory reset, restore) refuses while a Backup mark's week is still saving — its PATCH on the wire, or failed and waiting to retry — with \"The Backup change to the week of … is still being saved\"; an ordinary edit isn't held up; once the week lands the job goes ahead",
+  check("CX15 (review fix) the job gate (schedEditable(\"job\") — ✕ Clear, Accept & Publish, Generate & Publish, factory reset, restore) refuses while a Backup mark's week is still saving — its PATCH on the wire, or failed and waiting to retry — with \"The Backup change to the week of … is still being saved\"; an ordinary edit isn't held up; once the week lands the job goes ahead; (round 2) a Fierce Backup label on the wire holds it the same way",
     !cx15.threw && cx15.onWire === false && cx15.said.length === 1 && cx15.said[0] === `The Backup change to the week of ${W14} is still being saved — try again once it's saved.`
-      && cx15.plainEdit === true && cx15.afterLand === true && cx15.failing === false && cx15.retried === true && cx15.fact,
+      && cx15.plainEdit === true && cx15.afterLand === true && cx15.failing === false && cx15.retried === true
+      && cx15.fierceOnWire === false && J(cx15.saidF) === J(["The Backup change to the week of 2027-02-01 is still being saved — try again once it's saved."]) && cx15.fierceLanded === true && cx15.fact,
     J(cx15).slice(0, 700));
+  // CX15b (round 2) the job gate's other waits: a mark the server REJECTED (kept pending until removed — the wait named for what it
+  // is, and removing the mark ends it); a flip's counts save still on the wire (a snapshot then would hold the week without its net);
+  // a tap or re-check from a render before a flip moved the counts (the counts that job took predate the flip — a publish's ↩ Undo step)
+  const cx15b = await tryX(async () => {
+    const out = {};
+    { const t = mkTable(), a = await mkApp(t);
+      t.control.fail({ method: "PATCH", week: W14, kind: "400-22P02" });
+      a.bk = W14; a.render().markBackupWeek(); await a.land(); await a.land();
+      const n0 = a.toasts.length; out.rejected = a.render().schedEditable("job"); out.rejSaid = a.toasts.slice(n0).map((x) => x[0]);
+      a.render().unmarkBackupWeek(W14); await a.land(); await a.land();
+      out.afterRemove = a.render().schedEditable("job"); out.fact = fact(a.counts().prior, stored(t)); }
+    { const t = mkTable(), a = await mkApp(t); let release = null; a.upsertHold = new Promise((r) => { release = r; });
+      a.bk = W14; a.render().markBackupWeek(); await a.land(); // (the week landed and settled; its counts save waits)
+      const n0 = a.toasts.length; out.saveOnWire = a.render().schedEditable("job"); out.saveSaid = a.toasts.slice(n0).map((x) => x[0]);
+      a.upsertHold = null; release(); await a.flush(); out.saveLanded = a.render().schedEditable("job"); out.saved = a.blob.length; }
+    { const t = mkTable(), a = await mkApp(t); const h0 = a.render(); // the tap's render, from before the flip moved the counts
+      a.bk = W14; a.render().markBackupWeek(); await a.land();
+      const n0 = a.toasts.length; out.stale = h0.schedEditable("job"); out.staleSaid = a.toasts.slice(n0).map((x) => x[0]);
+      out.fresh = a.render().schedEditable("job"); }
+    return out;
+  });
+  check("CX15b (round 2) the job gate also waits for: a Backup mark the server rejected (\"couldn't be saved — the server refused it … remove that mark (or reload the app)\", never \"still being saved\"), and removing it ends the wait; a flip's counts save still on the wire (\"still being saved\" until it lands); and it refuses a tap from a render that came before a flip moved the counts (\"A Backup change was just saved and moved the counts\") while a fresh render's goes ahead",
+    !cx15b.threw && cx15b.rejected === false && J(cx15b.rejSaid) === J([`The Backup change to the week of ${W14} couldn't be saved — the server refused it. Nothing was changed: remove that mark (or reload the app), then try again.`])
+      && cx15b.afterRemove === true && cx15b.fact
+      && cx15b.saveOnWire === false && J(cx15b.saveSaid) === J([`The Backup change to the week of ${W14} is still being saved — try again once it's saved.`]) && cx15b.saveLanded === true && cx15b.saved === 1
+      && cx15b.stale === false && J(cx15b.staleSaid) === J(["A Backup change was just saved and moved the counts — nothing was changed. Try again."]) && cx15b.fresh === true,
+    J(cx15b).slice(0, 900));
 
   // CX16 Accept & Publish refuses a preview whose Backup marks changed since it was made
-  const iPM = onceAt("  const previewMarksMoved = (weeks) => {"), ePM = endAt("\n  };", iPM), iMT = onceAt("  const marksMovedText = (ms) => "), eMT = iMT < 0 ? -1 : nsrcX.indexOf("\n", iMT);
+  const iPM = onceAt("  const previewMarksMoved = (weeks) => {"), ePM = endAt("\n  };", iPM), iMT = onceAt("  const marksMovedText = (ms, how) => {"), eMT = endAt("\n  };", iMT);
   const iAP = onceAt("  const acceptPreview = async () => {"), eAP = iAP < 0 ? -1 : nsrcX.indexOf("\n  };\n", iAP);
   const cx16 = iPM < 0 || iMT < 0 || iAP < 0 ? { threw: "previewMarksMoved / marksMovedText missing" } : await tryX(async () => {
     const mk = vm.runInContext(`(function (env) { const { stateBundleRef, previewSchedule, previewSchedRef, previewNeedsOk, previewAck, previewOrigin, publishWeeks, runPublish, publishNotLanded, publishingRef, setPublishing, snapshots, showToast, schedEditable, schedSyncRef, previewEpochRef, setPreviewSchedule, setShowPreview, setCalMonth, setCalYear, setView, setSaveStatus, setTimeout, numWeeks, MO, startMonth, startYear, cancelSearch, publishSearchRunning, sessionEpochRef, setJustPublished } = env;
@@ -7680,21 +7779,26 @@ ${nsrcX.slice(iAP, eAP)}
   };
   return { previewMarksMoved, acceptPreview }; })`, sandbox);
     const PV = { "2027-02-22": { dayCall: "s1", nights: {}, off: "s2", isBackup: false, isFierceBackup: false }, "2027-03-01": { dayCall: "s2", nights: {}, off: "s3", isBackup: false, isFierceBackup: false } };
-    const run = (sets, during) => { const rec = { toasts: [], published: 0, snaps: 0 }; let marks = sets;
-      const f = mk({ stateBundleRef: { current: () => ({ backupMondays: marks.b, fierceBackup: marks.f }) }, previewSchedule: PV, previewSchedRef: { current: PV }, previewNeedsOk: { cost: 0, items: [] }, previewAck: true, previewOrigin: "generated",
-        publishWeeks: () => { rec.published++; return {}; }, runPublish: () => Promise.resolve({ ok: true }), publishNotLanded: () => {}, publishingRef: { current: false }, setPublishing: () => {},
+    const run = (sets, during, origin) => { const rec = { toasts: [], published: 0, snaps: 0, status: [] }; let marks = sets; const pub = { current: false };
+      const f = mk({ stateBundleRef: { current: () => ({ backupMondays: marks.b, fierceBackup: marks.f }) }, previewSchedule: PV, previewSchedRef: { current: PV }, previewNeedsOk: { cost: 0, items: [] }, previewAck: true, previewOrigin: origin || "generated",
+        publishWeeks: () => { rec.published++; return {}; }, runPublish: () => Promise.resolve({ ok: true }), publishNotLanded: () => {}, publishingRef: pub, setPublishing: () => {},
         snapshots: { capture: async () => { rec.snaps++; if (during) marks = during; return { ok: true }; } }, showToast: (m) => rec.toasts.push(String(m)), schedEditable: () => true,
         schedSyncRef: { current: { changedSince: () => [], knownSchedule: () => ({}) } }, previewEpochRef: { current: 0 }, setPreviewSchedule: () => {}, setShowPreview: () => {}, setCalMonth: () => {}, setCalYear: () => {}, setView: () => {},
-        setSaveStatus: () => {}, setTimeout: () => 0, numWeeks: 2, MO: ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"], startMonth: 1, startYear: 2027, cancelSearch: () => {}, publishSearchRunning: () => false, sessionEpochRef: { current: 0 }, setJustPublished: () => {} });
-      return f.acceptPreview().then(() => Object.assign(rec, { moved: f.previewMarksMoved(PV) })); };
-    const none = { b: [], f: [] }, pasted = { b: ["2027-02-22"], f: [] };
-    return { clean: await run(none), stale: await run(pasted), duringSnap: await run(none, pasted) };
+        setSaveStatus: (s) => rec.status.push(s), setTimeout: () => 0, numWeeks: 2, MO: ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"], startMonth: 1, startYear: 2027, cancelSearch: () => {}, publishSearchRunning: () => false, sessionEpochRef: { current: 0 }, setJustPublished: () => {} });
+      return f.acceptPreview().then(() => Object.assign(rec, { moved: f.previewMarksMoved(PV), lock: pub.current })); };
+    const none = { b: [], f: [] }, pasted = { b: ["2027-02-22"], f: [] }, fierce = { b: [], f: ["2027-02-22"] };
+    return { clean: await run(none), stale: await run(pasted), duringSnap: await run(none, pasted),
+      // (round 2) a Fierce Backup mark changed too; a JSON-loaded preview is loaded again, not generated
+      fierce: await run(fierce), fierceDuring: await run(none, fierce), json: await run(pasted, null, "json") };
   });
-  check("CX16 (review fix) ✓ Accept & Publish refuses a preview made before a Backup mark changed (the paste's Apply marked 2027-02-22 after the preview was generated): \"The Backup marks changed since this preview was made (the week of 2027-02-22) — nothing was published. Generate the preview again to use them.\" — at the tap (no snapshot taken) and after the snapshot's await (a mark made during it); with the marks as the preview has them it publishes",
+  check("CX16 (review fix) ✓ Accept & Publish refuses a preview made before a Backup mark changed (the paste's Apply marked 2027-02-22 after the preview was generated): \"The Backup marks changed since this preview was made (the week of 2027-02-22) — nothing was published. Generate the preview again to use them.\" — at the tap (no snapshot taken) and after the snapshot's await (a mark made during it); with the marks as the preview has them it publishes; (round 2) a Fierce Backup mark the same way; each refusal leaves the publish lock released, the after-snapshot one its status line cleared; a preview loaded from a file is told to load it again",
     !cx16.threw && cx16.clean.published === 1 && cx16.clean.toasts.length === 0
-      && cx16.stale.published === 0 && cx16.stale.snaps === 0 && J(cx16.stale.moved) === J(["2027-02-22"]) && cx16.stale.toasts[0] === "The Backup marks changed since this preview was made (the week of 2027-02-22) — nothing was published. Generate the preview again to use them."
-      && cx16.duringSnap.published === 0 && cx16.duringSnap.snaps === 1 && /^The Backup marks changed since this preview was made/.test(cx16.duringSnap.toasts[0] || ""),
-    J(cx16).slice(0, 700));
+      && cx16.stale.published === 0 && cx16.stale.snaps === 0 && J(cx16.stale.moved) === J(["2027-02-22"]) && cx16.stale.toasts[0] === "The Backup marks changed since this preview was made (the week of 2027-02-22) — nothing was published. Generate the preview again to use them." && cx16.stale.lock === false
+      && cx16.duringSnap.published === 0 && cx16.duringSnap.snaps === 1 && /^The Backup marks changed since this preview was made/.test(cx16.duringSnap.toasts[0] || "") && cx16.duringSnap.lock === false && cx16.duringSnap.status[cx16.duringSnap.status.length - 1] === ""
+      && cx16.fierce.published === 0 && cx16.fierce.snaps === 0 && J(cx16.fierce.moved) === J(["2027-02-22"]) && cx16.fierce.lock === false
+      && cx16.fierceDuring.published === 0 && cx16.fierceDuring.snaps === 1 && cx16.fierceDuring.lock === false
+      && cx16.json.published === 0 && cx16.json.toasts[0] === "The Backup marks changed since this preview was made (the week of 2027-02-22) — nothing was published. Load the file again to use them.",
+    J(cx16).slice(0, 900));
 
   // CX17 a mark whose counts net never moved gets one more audit line saying so
   const cx17 = await tryX(async () => {
@@ -7702,50 +7806,108 @@ ${nsrcX.slice(iAP, eAP)}
     { const t = mkTable(), a = await mkApp(t); t.control.fail({ method: "PATCH", week: W14, kind: "403" }); a.bk = W14; a.render().markBackupWeek(); await a.land(); out.refused = a.audits.map((x) => x.act + " " + x.sum); }
     { const t = mkTable(), a = await mkApp(t); a.bk = W14; a.render().markBackupWeek(); await a.land(); out.stood = a.audits.map((x) => x.act); }
     { const t = mkTable(), a = await mkApp(t); a.bk = W14; a.render().markBackupWeek(); a.render().unmarkBackupWeek(W14); await a.land(); out.back = a.audits.map((x) => x.act); }
+    // (round 2) flipped back in a LATER tap — the mark's PATCH held on the wire, its status report and the settle effect run, the
+    // unmark tapped meanwhile, both landing: no watch left, the counts unchanged, nothing saved, the two tap lines only, the fact holds
+    { const t = mkTable(), a = await mkApp(t), c0 = a.counts(); const hold = t.control.pause({ method: "PATCH", week: W14, count: 1 });
+      a.bk = W14; a.render().markBackupWeek(); const pushing = a.eng.push(); await hold.arrived; for (let i = 0; i < 4; i++) await tick();
+      a.render().unmarkBackupWeek(W14); hold.release(); await pushing; await a.land(); await a.land();
+      out.backLater = { acts: a.audits.map((x) => x.act), watches: Object.keys(a.flipRef.current).length, same: same(a.counts(), c0), saves: a.blob.length, flag: stored(t)[W14].isBackup, fact: fact(a.counts().prior, stored(t)) }; }
+    // (round 2) a refused mark of a week before the floor: its tap's line named no counts net — no second line
+    { const oldRow = { week_monday: "2026-04-27", data: { dayCall: "s3", nights: { mon: "s1", tue: "s2", wed: "s4", thu: "s5", wknd: "s6" }, off: "s7", isBackup: false, isFierceBackup: false }, version: 1, updated_by: "user-a", updated_at: "2026-05-01T12:00:00.000Z" };
+      const t = mkTable([oldRow]), a = await mkApp(t); t.control.fail({ method: "PATCH", week: "2026-04-27", kind: "403" }); a.bk = "2026-04-27"; a.render().markBackupWeek(); await a.land(); out.preFloor = a.audits.map((x) => x.act); }
     return out;
   });
-  check("CX17 (review fix) a Backup mark the server refused: after its tap's line (\"— counts net: …\"), one more — \"The Backup change to week of 2027-01-04 didn't save as made … — counts unchanged\"; a mark that stood, or one flipped back before it saved, adds none",
+  check("CX17 (review fix) a Backup mark the server refused: after its tap's line (\"— counts net: …\"), one more — \"The Backup change to week of 2027-01-04 didn't save as made … — counts unchanged\"; a mark that stood, or one flipped back before it saved, adds none; (round 2) one flipped back in a later tap while its PATCH was on the wire leaves no watch, no counts moved or saved, its two tap lines only; a refused mark before the floor (its line named no counts) adds none",
     !cx17.threw && cx17.refused.length === 2 && /^schedule\.backup_mark Marked week of 2027-01-04 .* — counts net: /.test(cx17.refused[0]) && cx17.refused[1] === "schedule.backup_counts The Backup change to week of 2027-01-04 didn't save as made (refused, or the week changed elsewhere first) — counts unchanged"
-      && J(cx17.stood) === J(["schedule.backup_mark"]) && J(cx17.back) === J(["schedule.backup_mark", "schedule.backup_unmark"]),
-    J(cx17).slice(0, 700));
+      && J(cx17.stood) === J(["schedule.backup_mark"]) && J(cx17.back) === J(["schedule.backup_mark", "schedule.backup_unmark"])
+      && J(cx17.backLater.acts) === J(["schedule.backup_mark", "schedule.backup_unmark"]) && cx17.backLater.watches === 0 && cx17.backLater.same && cx17.backLater.saves === 0 && cx17.backLater.flag === false && cx17.backLater.fact
+      && J(cx17.preFloor) === J(["schedule.backup_mark"]),
+    J(cx17).slice(0, 900));
 
   // CX18 no mark before the shared setup has been read; CX19 a failed counts save puts the last-sync marks back
+  // (round 2: every marking path — the four buttons and the paste's Apply — with the setup not read, with a read that failed, and while a
+  // restore, a publish or a Generate & Publish search runs; and the job gate before the setup read)
   const cx18 = await tryX(async () => {
-    const t = mkTable(), a = await mkApp(t); a.setupRead.current = false; const c0 = a.counts(), n0 = writesX(t).length;
-    a.bk = W14; a.render().markBackupWeek(); a.fp = Object.assign({}, a.fp, { text: "Jan 04-10\tFierce\tAlder", year: 2027 }); a.render().previewFiercePaste(); a.render().applyFiercePaste(); await a.land();
-    return { toasts: a.toasts.map((x) => x[0]), set: a.backup.has(W14), flag: a.ref.current[W14].isBackup, writes: writesX(t).length - n0, audits: a.audits.length, same: same(a.counts(), c0) };
+    const run = async (set) => {
+      const t = mkTable(), a = await mkApp(t); set(a); const c0 = a.counts(), n0 = writesX(t).length, b0 = J([...a.backup].sort()), f0 = J([...a.fierce].sort());
+      a.bk = W14; a.render().markBackupWeek(); a.render().unmarkBackupWeek("2026-11-09"); a.bk = "2027-02-01"; a.render().markFierceBackupWeek(); a.render().unmarkFierceBackupWeek(D7);
+      a.fp = Object.assign({}, a.fp, { text: "Jan 04-10\tFierce\tAlder", year: 2027 }); a.render().previewFiercePaste(); a.render().applyFiercePaste(); await a.land();
+      const marks = a.toasts.map((x) => x[0]);
+      const job = a.render().schedEditable("job"), jobSaid = a.toasts.slice(marks.length).map((x) => x[0]);
+      return { marks, job, jobSaid, sets: J([...a.backup].sort()) === b0 && J([...a.fierce].sort()) === f0,
+        flags: a.ref.current[W14].isBackup === false && a.ref.current["2027-02-01"].isFierceBackup === false && a.ref.current[D7].isFierceBackup === true,
+        writes: writesX(t).length - n0, audits: a.audits.length, same: same(a.counts(), c0) };
+    };
+    return { notRead: await run((a) => { a.setupRead.current = false; }), readFailed: await run((a) => { a.loadFailed.current = true; }),
+      restore: await run((a) => { a.claim.current = { what: "restore" }; }), publishing: await run((a) => { a.publishing.current = true; }), searching: await run((a) => { a.searching = true; }) };
   });
-  check("CX18 (review fix) before this session has read the shared setup, a mark and the paste's Apply are refused — \"The shared setup hasn't loaded yet — nothing was changed\" — no set change, no week flipped or written, no audit line, no counts",
-    !cx18.threw && cx18.toasts.filter((m) => /^The shared setup hasn't loaded yet — nothing was changed\./.test(m)).length === 2 && !cx18.set && cx18.flag === false && cx18.writes === 0 && cx18.audits === 0 && cx18.same,
-    J(cx18).slice(0, 600));
+  const SETUP_NOT_READ = "The shared setup hasn't loaded yet — nothing was changed. It retries every minute; try again shortly.";
+  const nothing18 = (r) => r.sets && r.flags && r.writes === 0 && r.audits === 0 && r.same;
+  const five = (r, m) => r.marks.length === 5 && r.marks.every((x) => x === m);
+  check("CX18 (review fix) before this session has read the shared setup — or when its read failed (round 2) — every marking path (the four buttons and the paste's Apply) is refused, \"The shared setup hasn't loaded yet — nothing was changed\" — no set change, no week flipped or written, no audit line, no counts; (round 2) and so is a job (the job gate)",
+    !cx18.threw && ["notRead", "readFailed"].every((k) => { const r = cx18[k]; return five(r, SETUP_NOT_READ) && r.job === false && J(r.jobSaid) === J([SETUP_NOT_READ]) && nothing18(r); }),
+    J(cx18.threw ? cx18 : { notRead: cx18.notRead, readFailed: cx18.readFailed }).slice(0, 900));
+  check("CX18b (round 2) while a restore, a publish or a Generate & Publish search runs, every marking path is refused (\"… is still running — wait for it to finish, then change the Backup Weeks. Nothing was changed.\") — nothing changed, written or audited (a mark then would land between that job's checks and its counts)",
+    !cx18.threw && five(cx18.restore, "Restoring the snapshot is still running — wait for it to finish, then change the Backup Weeks. Nothing was changed.") && nothing18(cx18.restore)
+      && five(cx18.publishing, "Publishing the new weeks is still running — wait for it to finish, then change the Backup Weeks. Nothing was changed.") && nothing18(cx18.publishing)
+      && five(cx18.searching, "Generate & Publish is still running — wait for it to finish, then change the Backup Weeks. Nothing was changed.") && nothing18(cx18.searching),
+    J(cx18.threw ? cx18 : { restore: cx18.restore, publishing: cx18.publishing, searching: cx18.searching }).slice(0, 900));
   const cx19 = await tryX(async () => {
-    const t = mkTable(), a = await mkApp(t); a.upsertFail = true; const s0 = a.lastSync.current, b0 = J(a.setupBase.current);
-    a.bk = W14; a.render().markBackupWeek(); await a.land(); for (let i = 0; i < 4; i++) await tick();
-    const errors = a.errors.splice(0); // (this run's failure is the point: its console.error is expected, and taken out of CX11's count)
-    return { lastSync: a.lastSync.current, s0, base: J(a.setupBase.current), b0, toasts: a.toasts.map((x) => x[0]), moved: same(diffOf(a.counts().prior, P0), DX), errors };
+    const fail = async (how) => {
+      const t = mkTable(), a = await mkApp(t); how(a); const s0 = a.lastSync.current, b0 = J(a.setupBase.current);
+      a.bk = W14; a.render().markBackupWeek(); await a.land(); for (let i = 0; i < 4; i++) await tick();
+      const errors = a.errors.splice(0); // (this run's failure is the point: its console.error is expected, and taken out of CX11's count)
+      return { lastSync: a.lastSync.current, s0, base: J(a.setupBase.current), b0, toasts: a.toasts.map((x) => x[0]), moved: same(diffOf(a.counts().prior, P0), DX), errors, inFlight: a.writes.current.n };
+    };
+    // an error answer (an object; config.js's string body), and a dropped connection (config.js's upsert throws)
+    const out = { obj: await fail((a) => { a.upsertFail = true; }), str: await fail((a) => { a.upsertMode = "string"; }), thrown: await fail((a) => { a.upsertMode = "throw"; }) };
+    // (round 2) a save that lands: lastSyncRef and the baseline take its time only once it has landed — never while it's on the wire
+    { const t = mkTable(), a = await mkApp(t); const s0 = a.lastSync.current; let release = null; a.upsertHold = new Promise((r) => { release = r; });
+      a.bk = W14; a.render().markBackupWeek(); await a.land();
+      const mid = { lastSync: a.lastSync.current, inFlight: a.writes.current.n, seq: a.writes.current.seq };
+      a.upsertHold = null; release(); await a.flush();
+      out.landed = { s0, mid, lastSync: a.lastSync.current, ts: a.blobTs[0], baseAt: a.setupBase.current.at, inFlight: a.writes.current.n, saved: a.blob.length }; }
+    return out;
   });
-  check("CX19 (review fix) the flip's counts save fails: the counts stay moved on screen and it says so (\"Couldn't save the counts…\"), and lastSyncRef and the autosave's baseline go back to the row last read — so the next read can't take that older row for a newer one and silently undo the move",
-    !cx19.threw && cx19.moved && cx19.lastSync === cx19.s0 && cx19.base === cx19.b0 && cx19.toasts.includes("Couldn't save the counts the Backup change moved — check your connection.")
-      && cx19.errors.length === 1 && /^Immediate save failed: .*backup-flip counts save failed: mock: network/.test(cx19.errors[0]),
-    J(cx19).slice(0, 600));
+  check("CX19 (review fix) the flip's counts save fails — an error answer (an object, or config.js's string body) or a dropped connection (it throws): the counts stay moved on screen and it says so (\"Couldn't save the counts…\"), and lastSyncRef and the autosave's baseline stay on the row last read — so the next read can't take that older row for a newer one and silently undo the move; (round 2) one that lands moves them to its own time only then, never while it's on the wire",
+    !cx19.threw && ["obj", "str", "thrown"].every((k) => { const r = cx19[k]; return r.moved && r.lastSync === r.s0 && r.base === r.b0 && r.toasts.includes("Couldn't save the counts the Backup change moved — check your connection.") && r.errors.length === 1 && r.inFlight === 0; })
+      && /^Immediate save failed: .*backup-flip counts save failed: mock: network/.test(cx19.obj.errors[0]) && /backup-flip counts save failed: \{"code":"57014"/.test(cx19.str.errors[0]) && /Failed to fetch/.test(cx19.thrown.errors[0])
+      && cx19.landed.mid.lastSync === cx19.landed.s0 && cx19.landed.mid.inFlight === 1 && cx19.landed.mid.seq === 1
+      && !!cx19.landed.ts && cx19.landed.lastSync === cx19.landed.ts && cx19.landed.baseAt === cx19.landed.ts && cx19.landed.inFlight === 0 && cx19.landed.saved === 1,
+    J(cx19).slice(0, 900));
 
   // CX20 the preview's tags for removals and for a week the open Generate preview holds; a Fierce Backup removal through Apply
   const cx20 = !H.P ? { threw: "parseFierceWeeks missing" } : await tryX(async () => {
     const t = mkTable(), a = await mkApp(t);
     a.bk = "2027-02-08"; a.render().markFierceBackupWeek(); a.bk = "2027-07-12"; a.render().markFierceBackupWeek(); // a published and a pending Fierce Backup week, not in the table's Fierce cells
     a.bk = W14; a.render().markBackupWeek(); await a.land(); // (and a published Backup week, so its removal's tag can be read)
-    a.preview.current = { "2027-03-08": { dayCall: "s1", nights: {}, off: "s2", isBackup: false, isFierceBackup: false } }; // an open Generate preview holding 2027-03-08 the old way
+    // an open Generate preview holding 2027-03-08 (not generated), 2027-01-11 (published) and 2027-03-15 (a Fierce label) the old way
+    const OLD = (x) => Object.assign({ dayCall: "s1", nights: {}, off: "s2", isBackup: false, isFierceBackup: false }, x || {});
+    a.preview.current = { "2027-03-08": OLD(), "2027-01-11": OLD(), "2027-03-15": OLD({ isBackup: true }) }; // (2027-03-15: its two flags differ — the Fierce tag must read isFierceBackup)
     const h = a.render();
-    const tags = { pendRemove: h.fierceChangeTag("backup", "2027-07-05", false), pubRemove: h.fierceChangeTag("backup", W14, false), inPreview: h.fierceChangeTag("backup", "2027-03-08", true), fPubRemove: h.fierceChangeTag("fierce", "2027-02-08", false) };
-    const pv = paste(a, T0); a.render().applyFiercePaste(); await a.land();
-    return { tags, remove: pv && pv.plan && pv.plan.fierce.remove, set: [...a.fierce].sort(), label: stored(t)["2027-02-08"].isFierceBackup, lines: a.audits.map((x) => x.sum).filter((s) => /Fierce Backup mark/.test(s)) };
+    const tags = { pendRemove: h.fierceChangeTag("backup", "2027-07-05", false), pubRemove: h.fierceChangeTag("backup", W14, false), inPreview: h.fierceChangeTag("backup", "2027-03-08", true), fPubRemove: h.fierceChangeTag("fierce", "2027-02-08", false),
+      // (round 2) a published week the open preview re-generates the old way; a Fierce label it holds the old way; the same preview loaded from a file
+      pubInPreview: h.fierceChangeTag("backup", "2027-01-11", true), fierceInPreview: h.fierceChangeTag("fierce", "2027-03-15", true) };
+    a.origin = "json"; tags.jsonInPreview = a.render().fierceChangeTag("backup", "2027-03-08", true); a.origin = "generated"; a.preview.current = null;
+    // (round 2) where the focus goes: Apply → the "✓ Applied" line; a stale Apply's refusal → the Preview button (focusSoon's selectors, on a stand-in document)
+    const sel = []; sandbox.document = { querySelector: (q) => ({ focus: () => sel.push(q) }) };
+    let pv;
+    try { pv = paste(a, T0); a.render().applyFiercePaste(); await a.land(); await tick();
+      // (Jan 25 is a Fierce Backup week after T0; this paste makes him Primary there — then the button marks it Backup before Apply)
+      paste(a, "Week\tPrimary\tBackup\nJan 25-31\tFierce\tAlder"); a.bk = "2027-01-25"; a.render().markBackupWeek(); await a.land(); a.render().applyFiercePaste(); await tick();
+    } finally { delete sandbox.document; }
+    return { tags, sel, remove: pv && pv.plan && pv.plan.fierce.remove, set: [...a.fierce].sort(), label: stored(t)["2027-02-08"].isFierceBackup, lines: a.audits.map((x) => x.sum).filter((s) => /Fierce Backup mark/.test(s)) };
   });
-  check("CX20 (review fix) the paste preview's tags: a pending removal \"not generated yet — the generator no longer marks it\"; a published Backup removal \"back to our own call\" with its counts; a week the open Generate preview holds the old way \"in the open Generate preview, made before this — generate it again before publishing\"; a published Fierce removal \"the label comes off\"; and Apply removes Fierce Backup marks the table no longer gives him — the label off the stored week, both out of the set, one audit line each",
+  check("CX20 (review fix) the paste preview's tags: a pending removal \"not generated yet — the generator no longer marks it\"; a published Backup removal \"back to our own call\" with its counts; a week the open Generate preview holds the old way \"in the open Generate preview, made before this — generate it again before publishing\"; a published Fierce removal \"the label comes off\"; and Apply removes Fierce Backup marks the table no longer gives him — the label off the stored week, both out of the set, one audit line each; (round 2) a PUBLISHED week the open preview holds the old way, and a Fierce label, say so too; a preview loaded from a file says \"load the file again\"; Apply moves the focus to the \"✓ Applied\" line, a stale Apply's refusal to the Preview button",
     !cx20.threw && cx20.tags.pendRemove === "not generated yet — the generator no longer marks it" && /^published — back to our own call; counts: /.test(cx20.tags.pubRemove || "")
       && cx20.tags.inPreview === "in the open Generate preview, made before this — generate it again before publishing" && cx20.tags.fPubRemove === "published — the label comes off"
+      && /^published — becomes 2nd call; counts: .*; in the open Generate preview, made before this — generate it again before publishing$/.test(cx20.tags.pubInPreview || "")
+      && cx20.tags.fierceInPreview === "in the open Generate preview, made before this — generate it again before publishing"
+      && cx20.tags.jsonInPreview === "in the open preview loaded from a file, made before this — load the file again before publishing"
+      && J(cx20.sel) === J(['[data-fierce-applied="1"]', '[data-fierce-preview-btn="1"]'])
       && J(cx20.remove) === J(["2027-02-08", "2027-07-12"]) && !cx20.set.includes("2027-02-08") && !cx20.set.includes("2027-07-12") && cx20.label === false
       && J(cx20.lines) === J(["Removed Fierce Backup mark from week of 2027-02-08 — from Fierce's pasted schedule", "Removed Fierce Backup mark from week of 2027-07-12 — from Fierce's pasted schedule"]),
-    J(cx20).slice(0, 900));
+    J(cx20).slice(0, 1100));
 
   // CX21 1-Year through the paste (a 2026 table over a published 2026 week), and the review fixes' wiring
   const cx21 = !H.P ? { threw: "parseFierceWeeks missing" } : await tryX(async () => {
@@ -7754,12 +7916,107 @@ ${nsrcX.slice(iAP, eAP)}
     return { add: pv && pv.plan && pv.plan.backup.add, prior: diffOf(a.counts().prior, c0.prior), y1: diffOf(a.counts().y1, c0.y1), st: stored(t), c: a.counts() };
   });
   const want21 = flipNet(WEEKS0, D7, true);
-  check("CX21 (review fix) the paste for 2026 over the published 2026-12-07: its Backup flip moves BOTH tiers (this calendar year's week) by exactly its net — and the review fixes are wired once each: the paste's year starts at next year, the job gate asks flipsSaving, Accept & Publish checks the marks at the tap and after the snapshot, the four buttons and Apply ask setupEditable, the Undo patch stops at the newest publish / clear step, the year hint shows only when no line was read",
+  const wired21 = { flipGate: countX("const flipWhy = flipGate();"), saving: countX("const saving = flipsSaving();"), marksMoved: countX("previewMarksMoved("), setup: countX("setupEditable()"), marks: countX("marksEditable()"),
+    stored: countX("storedFlagsOf("), histRef: countX("scheduleHistoryRef.current = scheduleHistory;"), histRead: countX("const hist = scheduleHistoryRef.current;"),
+    skip: countX("if (setupWritesRef.current.n || setupWritesRef.current.seq !== seq0) return;"), settles: countX("flipSettlesRef.current++;"), seen: countX("const flipSettlesSeen = flipSettlesRef.current;") };
+  check("CX21 (review fix) the paste for 2026 over the published 2026-12-07: its Backup flip moves BOTH tiers (this calendar year's week) by exactly its net — and the review fixes are wired once each: the paste's year starts at next year; (round 2) the job gate and ↩ Undo of a publish / clear step ask flipGate (flipsSaving inside it); Accept & Publish checks the marks at the tap and after the snapshot, Generate & Publish in its preview, before it publishes and after its snapshot; the job gate and marksEditable ask setupEditable; the four buttons and Apply ask marksEditable; the paste plans with the stored flags at Preview and Apply; stepsHold reads the history as last rendered; the poll skips a row read while a flip's counts save is out; a settle that moves the counts is counted, each render keeping its own copy; the Undo patch stops at the newest publish / clear step; the year hint shows when the weekday refusals outnumber the lines read; the unchanged weeks carry published / not generated yet",
     !cx21.threw && J(cx21.add) === J([D7]) && same(cx21.prior, want21) && same(cx21.y1, want21) && fact(cx21.c.prior, cx21.st) && fact1(cx21.c.y1, cx21.st)
       && countX("useState(() => ({ open: false, year: new Date().getFullYear() + 1, text: \"\", preview: null, applied: null }))") === 1
-      && countX("const saving = flipsSaving();") === 1 && countX("previewMarksMoved(") === 2 && countX("setupEditable()") === 5
-      && countX("if (st.counts || st.clear) break;") === 1 && countX("{!pv.parsed.rows.length && pv.parsed.refused.some(r => / is a [A-Z][a-z]+day$/.test(r.why)) &&") === 1,
-    J(cx21.threw ? cx21 : { add: cx21.add, prior: cx21.prior, y1: cx21.y1, want: want21, gate: countX("const saving = flipsSaving();"), pm: countX("previewMarksMoved("), se: countX("setupEditable()") }).slice(0, 700));
+      && J(wired21) === J({ flipGate: 2, saving: 1, marksMoved: 5, setup: 2, marks: 5, stored: 2, histRef: 1, histRead: 1, skip: 1, settles: 1, seen: 1 })
+      && countX("if (st.counts || st.clear) break;") === 1 && countX("{pv.parsed.refused.filter(r => / is a [A-Z][a-z]+day$/.test(r.why)).length > pv.parsed.rows.length &&") === 1
+      && countX("unchanged: {o.same.map(m => `${m} (${scheduleRef.current[m] ? \"published\" : \"not generated yet\"})`).join(\", \")}") === 1,
+    J(cx21.threw ? cx21 : { add: cx21.add, prior: cx21.prior, y1: cx21.y1, want: want21, wired21 }).slice(0, 900));
+
+  // CX22 (round 2) the setup poll never adopts a row read while a flip's counts save was on the wire, or sent before one started — it
+  // may be older than that save (the counts the save moved silently put back); the next read takes the row
+  const iRR = onceAt("    const refreshScheduleRow = async () => {"), eRR = endAt("\n    };", iRR);
+  const cx22 = iRR < 0 || eRR < 0 ? { threw: "refreshScheduleRow not found" } : await tryX(async () => {
+    const RR_ENV = "supabase, loadFailedRef, setupWritesRef, lastSyncRef, setupReadRef, setSurgeons, setApps, USE_TIME_OFF, setVacations, setNoCallDays, setBackupMondaySet, setFierceBackupSet, setPriorCounts, setYear1Counts, setStartMonth, setStartYear, setNumWeeks, setStartMondayOverride, setHolidayAssignments, setPendingLocks, setSilvisRule, sfRule, setDismissedWarnings, everHadRealDataRef, console";
+    const mkRR = vm.runInContext(`(function (env) { const { ${RR_ENV} } = env;\n${nsrcX.slice(iRR, eRR)}\n  return refreshScheduleRow; })`, sandbox);
+    const run = async (o) => {
+      const w = { current: { seq: 0, n: 0 } }, last = { current: "T0" }, rec = { adopted: 0 }, noop = () => {};
+      const row = { data: { priorCounts: { s1: { dc: 1 } } }, updated_at: o.rowTs || "T1" };
+      const fn = mkRR({ supabase: { from: () => ({ select: () => ({ eq: () => ({ single: async () => { if (o.during) o.during(w); return { data: row }; } }) }) }) },
+        loadFailedRef: { current: false }, setupWritesRef: w, lastSyncRef: last, setupReadRef: { current: true }, setSurgeons: noop, setApps: noop, USE_TIME_OFF: true, setVacations: noop, setNoCallDays: noop,
+        setBackupMondaySet: noop, setFierceBackupSet: noop, setPriorCounts: () => { rec.adopted++; }, setYear1Counts: noop, setStartMonth: noop, setStartYear: noop, setNumWeeks: noop, setStartMondayOverride: noop,
+        setHolidayAssignments: noop, setPendingLocks: noop, setSilvisRule: noop, sfRule: (x) => x, setDismissedWarnings: noop, everHadRealDataRef: { current: false }, console: { warn: noop, error: noop } });
+      if (o.before) o.before(w);
+      await fn(); const first = { adopted: rec.adopted, last: last.current };
+      if (o.after) o.after(w);
+      await fn(); return { first, second: { adopted: rec.adopted, last: last.current } };
+    };
+    return {
+      plain: await run({}),                                                                                     // a newer row, no save out: adopted
+      out: await run({ before: (w) => { w.current.n = 1; w.current.seq = 1; }, after: (w) => { w.current.n = 0; } }), // one of our saves on the wire: not adopted — then it is
+      started: await run({ during: (w) => { if (!w.done) { w.done = 1; w.current.seq++; } } }),                   // a save started (and landed) while this read was out: not adopted — the next read takes it
+      own: await run({ rowTs: "T0" }),                                                                          // our own last write / read: nothing new
+    };
+  });
+  check("CX22 (round 2) the setup poll (refreshScheduleRow) adopts a newer row — but not one read while one of this session's flip counts saves was on the wire, or sent before one started (it may be older than that save: adopting it put back the counts the save moved); the next read takes the row; our own last row is nothing new",
+    !cx22.threw && cx22.plain.first.adopted === 1 && cx22.plain.first.last === "T1"
+      && cx22.out.first.adopted === 0 && cx22.out.first.last === "T0" && cx22.out.second.adopted === 1
+      && cx22.started.first.adopted === 0 && cx22.started.second.adopted === 1
+      && cx22.own.first.adopted === 0 && cx22.own.second.adopted === 0,
+    J(cx22).slice(0, 700));
+
+  // CX23 (round 2) pasting the table again repairs a split — a listed published week whose stored flag says otherwise than its set
+  // (a refused write, an ↩ Undo of a publish): the plan reads the stored flags too, and Apply runs the change through markWeek
+  const mkTableW = (weeks) => createFakeWeeksTable({ baseUrl: "https://x.supabase.co", anonKey: "ANON", users: { TOK_A: "user-a", TOK_B: "user-b" }, clock: clockX,
+    rows: Object.keys(weeks).map((m) => ({ week_monday: m, data: clone(weeks[m]), version: 2, updated_by: "user-a", updated_at: "2026-10-24T12:00:00.000Z" })) });
+  const cx23 = !H.P ? { threw: "parseFierceWeeks missing" } : await tryX(async () => {
+    const out = {};
+    { // the set has 2027-01-04, the stored week is regular: Fierce Primary that week → a change, not "unchanged"
+      const t = mkTable(), a = await mkApp(t, { backup: B0.concat([W14]) }), c0 = a.counts();
+      const pv = paste(a, "Week\tPrimary\tBackup\nJan 04-10\tFierce\tAlder"), tag = a.render().fierceChangeTag("backup", W14, true);
+      a.render().applyFiercePaste(); await a.land();
+      const again = paste(a, "Week\tPrimary\tBackup\nJan 04-10\tFierce\tAlder");
+      out.flagOff = { add: pv && pv.plan && pv.plan.backup.add, same: pv && pv.plan && pv.plan.backup.same, tag, flag: stored(t)[W14].isBackup, set: a.backup.has(W14), diff: diffOf(a.counts().prior, c0.prior), fact: fact(a.counts().prior, stored(t)), again: again && again.plan && again.plan.backup };
+    }
+    { // the set lacks 2027-01-04, the stored week is 2nd call (and counted so): Fierce not Primary that week → removed
+      const WB = clone(WEEKS0); WB[W14].isBackup = true;
+      const t = mkTableW(WB), a = await mkApp(t, { prior: withDays(plus(R0, tally(WB))), y1: withDays(plus(R1, tally(WB, in2026))) }), c0 = a.counts();
+      const pv = paste(a, "Week\tPrimary\tBackup\nJan 04-10\tAlder\tBirch");
+      a.render().applyFiercePaste(); await a.land();
+      out.flagOn = { remove: pv && pv.plan && pv.plan.backup.remove, flag: stored(t)[W14].isBackup, set: a.backup.has(W14), diff: diffOf(a.counts().prior, c0.prior), fact: fact(a.counts().prior, stored(t)) };
+    }
+    return out;
+  });
+  const negDX = Object.fromEntries(Object.keys(DX).map((id) => [id, Object.fromEntries(Object.keys(DX[id]).map((k) => [k, -DX[id][k]]))]));
+  check("CX23 (round 2) pasting Fierce's table again repairs a split — a listed published week whose stored flag says otherwise than its set: set marked / week regular → planned as a change (\"published — becomes 2nd call\"), Apply flips the week and its counts move by exactly its net (the fact holds), and the next paste of it is unchanged; set unmarked / week 2nd call (counted so) with Fierce no longer Primary → removed, the week back to our call and its counts back (the fact holds)",
+    !cx23.threw && J(cx23.flagOff.add) === J([W14]) && !(cx23.flagOff.same || []).includes(W14) && /^published — becomes 2nd call; counts: /.test(cx23.flagOff.tag || "")
+      && cx23.flagOff.flag === true && cx23.flagOff.set && same(cx23.flagOff.diff, DX) && cx23.flagOff.fact
+      && !!cx23.flagOff.again && J(cx23.flagOff.again.add) === J([]) && J(cx23.flagOff.again.same) === J([W14])
+      && J(cx23.flagOn.remove) === J([W14]) && cx23.flagOn.flag === false && !cx23.flagOn.set && same(cx23.flagOn.diff, negDX) && cx23.flagOn.fact,
+    J(cx23).slice(0, 900));
+
+  // CX24 (round 2) Generate & Publish checks the marks against its result: one changed during the search → nothing published and no
+  // preview offered (✓ Accept & Publish would refuse it); during its snapshot's await → nothing published; a preview whose search saw
+  // the old marks says so
+  const iFG = onceAt("  const finishGenerate = (result, preview, clickSig, clickLocks, genEpoch, via) => {"), eFG = iFG < 0 ? -1 : nsrcX.indexOf("\n  };\n", iFG);
+  const cx24 = iFG < 0 || iPM < 0 || iMT < 0 ? { threw: "finishGenerate / previewMarksMoved / marksMovedText missing" } : await tryX(async () => {
+    const FG_ENV = "pendingLocks, nameOf, slotLabel, showToast, setPreviewSchedule, setPreviewOrigin, setShowPreview, genInputsSig, listScheduleBends, surgeons, mondays, buildGenAvailability, buildSilvisPrimary, vacations, holidayAssignments, buildPrevWeekSeed, publishingRef, setPublishing, setSaveStatus, snapshots, genCommitRef, previewEpochRef, schedEditable, schedSyncRef, sessionEpochRef, view, stateBundleRef";
+    const mkFG = vm.runInContext(`(function (env) { const { ${FG_ENV} } = env;\n${nsrcX.slice(iPM, ePM)}\n${nsrcX.slice(iMT, eMT)}\n${nsrcX.slice(iFG, eFG)}\n  };\n  return finishGenerate; })`, sandbox);
+    const RES = { "2027-02-22": { dayCall: "s1", nights: {}, off: "s2", isBackup: false, isFierceBackup: false } };
+    const go = async (o) => {
+      let marks = o.marks || { b: [], f: [] }; const rec = { toasts: [], preview: null, snaps: 0, committed: 0, status: [] };
+      const fn = mkFG({ view: "generate", pendingLocks: [], nameOf: (x) => x, slotLabel: () => "slot", showToast: (m) => rec.toasts.push(String(m)), setPreviewSchedule: (x) => { rec.preview = x; }, setPreviewOrigin: () => {}, setShowPreview: () => {},
+        genInputsSig: () => o.sig || "SIG0", listScheduleBends: () => ({ items: [] }), surgeons: [], mondays: [], buildGenAvailability: () => ({}), buildSilvisPrimary: () => null, vacations: {}, holidayAssignments: {}, buildPrevWeekSeed: () => null,
+        publishingRef: { current: false }, setPublishing: () => {}, setSaveStatus: (s) => rec.status.push(s), snapshots: { capture: async () => { rec.snaps++; if (o.during) marks = o.during; return { ok: true }; } },
+        genCommitRef: { current: async () => { rec.committed++; return { ok: true }; } }, previewEpochRef: { current: -1 }, schedEditable: () => true, sessionEpochRef: { current: 0 },
+        schedSyncRef: { current: { knownSchedule: () => ({}), changedSince: () => [] } }, stateBundleRef: { current: () => ({ backupMondays: marks.b, fierceBackup: marks.f }) } });
+      rec.ret = await fn(RES, !!o.preview, "SIG0", [], 5);
+      return rec;
+    };
+    const marked = { b: ["2027-02-22"], f: [] };
+    return { clean: await go({}), search: await go({ marks: marked, sig: "SIG1" }), snap: await go({ during: marked }), preview: await go({ preview: true, marks: marked }) };
+  });
+  const GP_MOVED = "The Backup marks changed during Generate & Publish (the week of 2027-02-22) — nothing was published. Run it again to use them.";
+  check("CX24 (round 2) Generate & Publish checks the marks against its result: one changed during the search → nothing published and no preview offered (✓ Accept & Publish would refuse it) — \"The Backup marks changed during Generate & Publish (the week of …) — nothing was published. Run it again to use them.\"; one changed during its snapshot's await → the same, nothing committed, its status line cleared; a preview whose search saw the old marks says Accept won't take it; with the marks unchanged it publishes",
+    !cx24.threw && cx24.clean.ret === "published" && cx24.clean.committed === 1 && cx24.clean.toasts.length === 0
+      && cx24.search.ret === "moved" && cx24.search.preview === null && cx24.search.snaps === 0 && cx24.search.committed === 0 && J(cx24.search.toasts) === J([GP_MOVED])
+      && cx24.snap.ret === "moved" && cx24.snap.snaps === 1 && cx24.snap.committed === 0 && J(cx24.snap.toasts) === J([GP_MOVED]) && cx24.snap.status[cx24.snap.status.length - 1] === ""
+      && cx24.preview.ret === "preview" && J(cx24.preview.toasts) === J(["The Backup marks changed during the search — this preview used the earlier ones, and ✓ Accept & Publish won't take it. Re-roll to use the new ones."]),
+    J(cx24).slice(0, 900));
 
   // CX11 — the wiring
   const iMk = onceAt("  const markWeek = (kind, m, on, via) => {"), mkBody = iMk < 0 ? "" : nsrcX.slice(iMk, endAt("\n  };", iMk));
@@ -11767,7 +12024,7 @@ await (async () => {
 
   // CH2 — the landed signal, end to end: the REAL finishGenerate (AH9's env) and the REAL commitGenerated + publishNotLanded (SE-G's)
   const fgBody = bodyCH("  const finishGenerate = (result, preview, clickSig, clickLocks, genEpoch, via) => {", "\n  };\n");
-  const fgMk = fnCH("pendingLocks, nameOf, slotLabel, showToast, setPreviewSchedule, setPreviewOrigin, setShowPreview, genInputsSig, listScheduleBends, surgeons, mondays, buildGenAvailability, buildSilvisPrimary, vacations, holidayAssignments, buildPrevWeekSeed, publishingRef, setPublishing, setSaveStatus, snapshots, genCommitRef, previewEpochRef, schedEditable, schedSyncRef, sessionEpochRef, view",
+  const fgMk = fnCH("pendingLocks, nameOf, slotLabel, showToast, setPreviewSchedule, setPreviewOrigin, setShowPreview, genInputsSig, listScheduleBends, surgeons, mondays, buildGenAvailability, buildSilvisPrimary, vacations, holidayAssignments, buildPrevWeekSeed, publishingRef, setPublishing, setSaveStatus, snapshots, genCommitRef, previewEpochRef, schedEditable, schedSyncRef, sessionEpochRef, view, previewMarksMoved, marksMovedText", // (+ the marks check, 2026-11-01 round 2: unchanged here — CX24 runs it)
     fgBody === null ? null : "(result, preview, clickSig, clickLocks, genEpoch, via) => {" + fgBody + "\n  }");
   const pnBody = bodyCH("  const publishNotLanded = (pr, what) => {", "\n  };\n");
   const cgBody = bodyCH("  const commitGenerated = async (result, via) => {", "\n  };\n  genFinishRef.current = finishGenerate;");
@@ -11792,7 +12049,7 @@ await (async () => {
         // (o.undoDuringSave — CR: ↩ Undo of the publish lands after its job settled, while the blob save still runs)
         supabase: { from: () => ({ upsert: async () => { await new Promise((r) => setTimeout(r, 5)); if (o.undoDuringSave) undoneCH.current++; return { error: null }; } }) }, console: { error() {}, log() {}, warn() {} }, showToast: (m) => rec.toasts.push(String(m)), setTimeout: T, sessionEpochRef: ep,
         publishUndoneRef: undoneCH });
-      const finish = fgMk({ view: o.view || "calendar", sessionEpochRef: ep, pendingLocks: [], nameOf: (x) => x, slotLabel: () => "slot", showToast: (m) => rec.toasts.push(String(m)), setPreviewSchedule: () => {}, setPreviewOrigin: () => {}, setShowPreview: () => {},
+      const finish = fgMk({ view: o.view || "calendar", sessionEpochRef: ep, previewMarksMoved: () => [], marksMovedText: () => "", pendingLocks: [], nameOf: (x) => x, slotLabel: () => "slot", showToast: (m) => rec.toasts.push(String(m)), setPreviewSchedule: () => {}, setPreviewOrigin: () => {}, setShowPreview: () => {},
         genInputsSig: () => o.sigNow || "SIG0", listScheduleBends: () => ({ items: o.items || [] }), surgeons: [], mondays: [], buildGenAvailability: () => ({}), buildSilvisPrimary: () => null, vacations: {}, holidayAssignments: {}, buildPrevWeekSeed: () => null,
         publishingRef: { current: false }, setPublishing: () => {}, setSaveStatus: (s) => rec.status.push(s), snapshots: { capture: async () => { rec.snaps++; return { ok: !o.snapFail }; } }, genCommitRef: { current: commit },
         previewEpochRef: { current: -1 }, schedEditable: () => true, schedSyncRef: { current: { knownSchedule: () => ({}), changedSince: (keys) => (o.moved ? keys.slice(0, 1) : []) } } });
@@ -11942,12 +12199,12 @@ await (async () => {
   // the REAL undoLastChange with the banner up: o.step — the step undone; o.blocked — a week of it changed by someone else since
   const unBody = bodyCH("  const undoLastChange = () => {", "\n  };\n");
   // (2026-10-25: it also counts the publish it took back in publishUndoneRef — runPublish's late() reads it, CO4)
-  const unMk = fnCH("scheduleHistory, schedEditable, schedSyncRef, showToast, commitSchedule, setPriorCounts, setYear1Counts, setScheduleHistory, setJustPublished, publishUndoneRef", unBody === null ? null : "() => {" + unBody + "\n  }");
+  const unMk = fnCH("scheduleHistory, schedEditable, schedSyncRef, showToast, commitSchedule, setPriorCounts, setYear1Counts, setScheduleHistory, setJustPublished, publishUndoneRef, flipGate", unBody === null ? null : "() => {" + unBody + "\n  }");
   const un5 = (step, o = {}) => {
     const rec = { jp: [], commits: 0, toasts: [], counts: 0, undone: { current: 0 } };
     if (!unMk) return { threw: "undoLastChange not extractable" };
     try {
-      unMk({ scheduleHistory: step ? [step] : [], schedEditable: () => true, schedSyncRef: { current: { undoPlan: (s) => ({ next: s, touched: [], blocked: o.blocked ? ["2026-11-16"] : [] }) } }, showToast: (m) => rec.toasts.push(String(m)),
+      unMk({ scheduleHistory: step ? [step] : [], schedEditable: () => true, flipGate: () => null, schedSyncRef: { current: { undoPlan: (s) => ({ next: s, touched: [], blocked: o.blocked ? ["2026-11-16"] : [] }) } }, showToast: (m) => rec.toasts.push(String(m)),
         commitSchedule: () => { rec.commits++; }, setPriorCounts: () => { rec.counts++; }, setYear1Counts: () => { rec.counts++; }, setScheduleHistory: () => {}, setJustPublished: (v) => rec.jp.push(v), publishUndoneRef: rec.undone })();
     } catch (ex) { rec.threw = String(ex).slice(0, 160); }
     return rec;
@@ -13312,7 +13569,7 @@ await (async () => {
     if ([iU, eU, iC, kC, eC, iP, eP].every(x => x >= 0)) {
       try {
         factory = vm.runInContext(`(function (env) {
-          const { surgeons, parse, useCallback, scheduleRef, commitSchedule, schedSyncRef, schedEditable, showToast, priorCounts, year1Counts, setPriorCounts, setYear1Counts, scheduleHistory, setScheduleHistory, logAudit, setJustPublished, publishUndoneRef } = env;
+          const { surgeons, parse, useCallback, scheduleRef, commitSchedule, schedSyncRef, schedEditable, showToast, priorCounts, year1Counts, setPriorCounts, setYear1Counts, scheduleHistory, setScheduleHistory, logAudit, setJustPublished, publishUndoneRef, flipGate } = env; // (+ flipGate 2026-11-01 round 2: none pending here)
           ${nsrc.slice(iU, eU)}
           ${nsrc.slice(iC, eC) + "\n  });"}
           ${nsrc.slice(iP, eP)}
@@ -13328,7 +13585,7 @@ await (async () => {
       const ref = { current: st.schedule };
       const upd = (k) => (f) => { st[k] = typeof f === "function" ? f(st[k]) : f; };
       const render = () => factory({ surgeons: sur, parse: vm.runInContext("parse", sandbox), useCallback: (f) => f, scheduleRef: ref,
-        commitSchedule: (v) => { st.schedule = v; ref.current = v; }, schedEditable: () => true, showToast: (m) => st.toasts.push(String(m)),
+        commitSchedule: (v) => { st.schedule = v; ref.current = v; }, schedEditable: () => true, flipGate: () => null, showToast: (m) => st.toasts.push(String(m)),
         schedSyncRef: { current: { epochNow: () => eng.epoch, undoPlan: (snap) => ({ next: JSON.parse(JSON.stringify(snap)), touched: [], blocked: eng.blocked.slice() }) } }, priorCounts: st.prior, year1Counts: st.y1,
         setPriorCounts: upd("prior"), setYear1Counts: upd("y1"), scheduleHistory: st.history, setScheduleHistory: upd("history"),
         logAudit: (a, msg, meta) => st.audits.push({ a, msg, meta }), setJustPublished: () => {}, publishUndoneRef: { current: 0 } }); // (↩ Undo of a publish takes the "nobody notified yet" banner down — 2026-10-20, review R1; run in CH5 — and, 2026-10-25, counts in publishUndoneRef: CO4)
@@ -15345,13 +15602,13 @@ await (async () => {
 await (async () => {
   const nsrcF = src.replace(/\r\n/g, "\n");
   const i = nsrcF.indexOf("  const finishGenerate = (result, preview, clickSig, clickLocks, genEpoch, via) => {"), e = i < 0 ? -1 : nsrcF.indexOf("\n  };\n", i);
-  const ENV = "pendingLocks, nameOf, slotLabel, showToast, setPreviewSchedule, setPreviewOrigin, setShowPreview, genInputsSig, listScheduleBends, surgeons, mondays, buildGenAvailability, buildSilvisPrimary, vacations, holidayAssignments, buildPrevWeekSeed, publishingRef, setPublishing, setSaveStatus, snapshots, genCommitRef, previewEpochRef, schedEditable, schedSyncRef, sessionEpochRef, view"; // (view: 2026-10-20 — its preview toasts say where the preview is, CH2)
+  const ENV = "pendingLocks, nameOf, slotLabel, showToast, setPreviewSchedule, setPreviewOrigin, setShowPreview, genInputsSig, listScheduleBends, surgeons, mondays, buildGenAvailability, buildSilvisPrimary, vacations, holidayAssignments, buildPrevWeekSeed, publishingRef, setPublishing, setSaveStatus, snapshots, genCommitRef, previewEpochRef, schedEditable, schedSyncRef, sessionEpochRef, view, previewMarksMoved, marksMovedText"; // (+ the marks check 2026-11-01 round 2: unchanged here — CX runs it) // (view: 2026-10-20 — its preview toasts say where the preview is, CH2)
   let mk = null; try { mk = i < 0 ? null : vm.runInContext("(function (env) { const { " + ENV + " } = env; return (" + nsrcF.slice(i + "  const finishGenerate = ".length, e) + "\n  }); })", sandbox); } catch (ex) { mk = null; }
   if (!mk) { check("AH9 finishGenerate extractable for execution", false, "anchor / compile"); return; }
   const RES = { "2099-03-02": { dayCall: "s1", nights: {} } };
   const go = async (o) => {
     const rec = { toasts: [], preview: null, shown: false, captured: 0, committed: 0 }, pub = { current: false }, pe = { current: -1 };
-    const fn = mk({ view: "generate", sessionEpochRef: { current: 0 }, pendingLocks: o.locksNow || [], nameOf: (x) => x, slotLabel: () => "slot", showToast: (m) => rec.toasts.push(String(m)), setPreviewSchedule: (x) => { rec.preview = x; }, setPreviewOrigin: () => {}, setShowPreview: (x) => { rec.shown = x; },
+    const fn = mk({ view: "generate", sessionEpochRef: { current: 0 }, previewMarksMoved: () => [], marksMovedText: () => "", pendingLocks: o.locksNow || [], nameOf: (x) => x, slotLabel: () => "slot", showToast: (m) => rec.toasts.push(String(m)), setPreviewSchedule: (x) => { rec.preview = x; }, setPreviewOrigin: () => {}, setShowPreview: (x) => { rec.shown = x; },
       genInputsSig: () => o.sigNow, listScheduleBends: () => ({ items: o.items || [] }), surgeons: [], mondays: [], buildGenAvailability: () => ({}), buildSilvisPrimary: () => null, vacations: {}, holidayAssignments: {}, buildPrevWeekSeed: () => null,
       publishingRef: pub, setPublishing: () => {}, setSaveStatus: () => {}, snapshots: { capture: async () => { rec.captured++; if (o.gateAfter) o.gated = true; return { ok: !o.snapFail }; } }, genCommitRef: { current: async () => { rec.committed++; return { ok: !o.notLanded }; } },
       previewEpochRef: pe, schedEditable: () => !o.gated, schedSyncRef: { current: { knownSchedule: () => ({}), changedSince: (keys, since) => (o.moved && since === 5) ? keys.slice() : [] } } });
@@ -18139,7 +18396,7 @@ await (async () => {
   try { const code = se.extractEngine(src); createSchedSyncG = se.compileEngine(code); merge = se.compileMerge(code); } catch (ex) { /* reported just below */ }
   const HG = vm.runInContext("({ parse, addD, fmt, SHIFT_LABELS })", sandbox);
   const geSrc = after("  const schedEditable = ", "\n  };\n");
-  const geF = geSrc && fnG("schedSyncRef, showToast, setReauthNeeded, jobClaimRef, flipsSaving", geSrc + "\n  }"); // (+ flipsSaving 2026-11-01: none pending here; CX runs it)
+  const geF = geSrc && fnG("schedSyncRef, showToast, setReauthNeeded, jobClaimRef, flipGate, setupEditable", geSrc + "\n  }"); // (+ flipGate / setupEditable 2026-11-01: no Backup flip saving, the setup read here; CX runs both)
   const puSrc = after("  const pushUndo = useCallback((counts) => {", "\n  }, []);");
   const puF = puSrc && fnG("scheduleRef, schedSyncRef, setScheduleHistory", "(counts) => {" + puSrc + "\n  }");
   const raSrc = after("  const runAuthoritativeSchedule = ", "\n  };\n");
@@ -18175,7 +18432,7 @@ await (async () => {
     a.schedSyncRef = { current: a.eng };
     appsG.push(a);
     a.jobClaimRef = { current: null }; // (a reset / restore's claim, which the gate reads — P7, 2026-10-27)
-    a.schedEditable = geF({ schedSyncRef: a.schedSyncRef, showToast: a.showToast, setReauthNeeded: () => { a.reauth++; }, jobClaimRef: a.jobClaimRef, flipsSaving: () => [] });
+    a.schedEditable = geF({ schedSyncRef: a.schedSyncRef, showToast: a.showToast, setReauthNeeded: () => { a.reauth++; }, jobClaimRef: a.jobClaimRef, flipGate: () => null, setupEditable: () => true });
     a.pushUndo = puF({ scheduleRef: a.ref, schedSyncRef: a.schedSyncRef, setScheduleHistory: a.setScheduleHistory });
     a.runAuthoritativeSchedule = raF({ schedSyncRef: a.schedSyncRef, commitSchedule: a.commitSchedule, setScheduleHistory: a.setScheduleHistory, sessionEpochRef: { current: 0 }, setJustPublished: () => {} });
     a.updateSchedule = usF({ scheduleRef: a.ref, commitSchedule: a.commitSchedule });
@@ -18190,9 +18447,10 @@ await (async () => {
   // ── (1) the backup / fierce marks: the edit gate before the set changes ──
   const flSrc = after("  const setWeekFlag = (monday, flagKey, val) => {", "\n\n  // Generate shareable read-only HTML");
   // (Changed ON PURPOSE 2026-11-01: the handlers mark through markWeek, which also watches a Backup flip's counts and
-  // keeps the mark in earlier Undo steps — stubbed here, executed in CX. The setup-read gate, setupEditable, is in this
-  // slice and runs for real: the setup here has been read — CX18 covers the setup not read yet.)
-  const flF = flSrc && fnG("schedEditable, updateSchedule, bkMonday, setBackupMondaySet, setFierceBackupSet, logAudit, setBkMonday, mondayOfToday, watchFlip, stepsHold, netCountsText, scheduleHistory, setupReadRef, loadFailedRef",
+  // keeps the mark in earlier Undo steps — stubbed here, executed in CX. The setup-read gate, setupEditable, and the
+  // marking paths' second gate, marksEditable, are in this slice and run for real: the setup here has been read, no job
+  // runs — CX18 covers the setup not read yet and a job running.)
+  const flF = flSrc && fnG("schedEditable, updateSchedule, bkMonday, setBackupMondaySet, setFierceBackupSet, logAudit, setBkMonday, mondayOfToday, watchFlip, stepsHold, netCountsText, scheduleHistory, setupReadRef, loadFailedRef, schedSyncRef, jobClaimRef, publishSearchRunning, publishingRef",
     "(() => { const setWeekFlag = (monday, flagKey, val) => {" + flSrc + "\n  return { markBackupWeek, unmarkBackupWeek, markFierceBackupWeek, unmarkFierceBackupWeek }; })()");
   if (!flF) check("SE-G the backup / fierce mark handlers (with setWeekFlag) are extractable", false, "anchor / compile");
   else {
@@ -18201,7 +18459,8 @@ await (async () => {
       r.h = flF({ schedEditable: a.schedEditable, updateSchedule: a.updateSchedule, bkMonday: WG[0],
         setBackupMondaySet: (f) => { r.setCalls++; r.backup = f(r.backup); }, setFierceBackupSet: (f) => { r.setCalls++; r.fierce = f(r.fierce); },
         logAudit: (x) => r.audits.push(x), setBkMonday: () => { r.picker++; }, mondayOfToday: () => "2026-10-12",
-        watchFlip: () => null, stepsHold: () => {}, netCountsText: () => "no change", scheduleHistory: [], setupReadRef: { current: true }, loadFailedRef: { current: false } });
+        watchFlip: () => null, stepsHold: () => {}, netCountsText: () => "no change", scheduleHistory: [], setupReadRef: { current: true }, loadFailedRef: { current: false },
+        schedSyncRef: a.schedSyncRef, jobClaimRef: a.jobClaimRef, publishSearchRunning: () => false, publishingRef: { current: false } }); // (marksEditable, round 2: no job running here — CX18 runs one)
       return r;
     };
     const all4 = (m) => { m.h.markBackupWeek(); m.h.unmarkBackupWeek(WG[0]); m.h.markFierceBackupWeek(); m.h.unmarkFierceBackupWeek(WG[0]); };
