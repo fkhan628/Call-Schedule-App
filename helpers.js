@@ -303,6 +303,29 @@ function effectiveHolidayCoverage(h) {
   return rows;
 }
 
+// A Sunday handoff (owner, 2026-11-02: "On Sunday - KJH is covering AM and DJA
+// is covering PM"). A week can hand its weekend's Sunday 24h from the weekend
+// surgeon to another at a whole Central hour, 8a–11p — wk.handoffs =
+// { "2026-11-08": { to: "s1", at: "12:00" } }: the weekend surgeon keeps Sun
+// 7a → 12p and "to" holds 12p → Mon 7a. It is shown wherever a person reads who
+// is on call — the calendar, the day sheet, On Call Today and "On call now",
+// Mine, the calendar files. Counts, billing, Schedule Warnings, trades and the
+// generator keep the weekend surgeon. Only the Sunday of the week's own dates,
+// with no holiday coverage on it. A record may name its "from": once that is no
+// longer the weekend surgeon (a trade, a re-publish), the handoff is ignored
+// rather than handing someone else's Sunday on. Returns { to, from, at, hour }
+// (from null when not stored) or null (none, or not valid). Pure.
+function handoffOn(wk, ds) {
+  const all = wk && wk.handoffs && typeof wk.handoffs === "object" ? wk.handoffs : null;
+  const h = all ? all[ds] : null;
+  if (!h || typeof h !== "object" || typeof h.to !== "string" || !h.to) return null;
+  const m = /^(\d{2}):00$/.exec(String(h.at || ""));
+  const hour = m ? Number(m[1]) : NaN;
+  return hour >= 8 && hour <= 23 ? { to: h.to, from: typeof h.from === "string" && h.from ? h.from : null, at: m[1] + ":00", hour } : null;
+}
+// An hour in the app's own style (SHIFT_TIMES writes "7a", "5p"): 12 → "12p", 8 → "8a", 23 → "11p".
+function hourLabel(hour) { const h = ((Number(hour) % 24) + 24) % 24; return `${h % 12 === 0 ? 12 : h % 12}${h < 12 ? "a" : "p"}`; }
+
 // Who actually holds each date of one week, slot by slot (2026-10-02). This
 // is the calendar's rule: calData in index-source.html is the reference, and
 // sync-guards section X proves the two agree on every live week. For each of
@@ -317,7 +340,9 @@ function effectiveHolidayCoverage(h) {
 // Billing's exclusions (swaps, backup weeks) are billing-only and live in
 // weekBillingCredits. covers lists every entry, including one dated outside
 // the week, because the calendar draws those too. Service slots exist only
-// when the week has a dayCall, as on the calendar. Pure: no clock, no state.
+// when the week has a dayCall, as on the calendar. A Sunday the week hands off
+// (handoffOn) also carries handoff: { from, to, at, hour } — from is the
+// weekend surgeon, whom wkndSun still names. Pure: no clock, no state.
 function weekHolders(mondayStr, wk) {
   const w = wk || {};
   const hc = w.holidayCoverage || {};
@@ -336,6 +361,8 @@ function weekHolders(mondayStr, wk) {
     if (i <= 3 && n[NIGHT_KEYS[i]]) { day.night = n[NIGHT_KEYS[i]]; day.nightKey = NIGHT_KEYS[i]; }
     if (n.wknd && i === 4) day.wkndFri = n.wknd;
     if (n.wknd && i === 6) day.wkndSun = n.wknd;
+    const ho = i === 6 && day.wkndSun ? handoffOn(w, ds) : null;
+    if (ho && ho.to !== day.wkndSun && (!ho.from || ho.from === day.wkndSun)) day.handoff = { from: day.wkndSun, to: ho.to, at: ho.at, hour: ho.hour };
     return day;
   });
   return { mondayStr, isBackup: !!w.isBackup, days, covers };
@@ -410,7 +437,13 @@ function dayDetailLines(schedule, ds, opts) {
     if (day.sat) add("sat", day.sat, bk, note ? "Service day" : "Service week", hrs(satSeg), { note });
     if (day.night) add("night", day.night, bk, "Night", hrs(T[day.nightKey]));
     if (day.wkndFri) add("wkndFri", day.wkndFri, bk, "Weekend", hrs(friSeg));
-    if (day.wkndSun) add("wkndSun", day.wkndSun, bk, "Weekend", hrs(sunSeg));
+    // A handed-off Sunday reads as its two halves: "Weekend: KJH (7a–12p) — then DJA",
+    // "Weekend: DJA (12p–Mon 7a) — from KJH" (handoff "from" / "to" on each line)
+    const ho = day.handoff, [sunA, sunB] = hrs(sunSeg).split("–");
+    if (day.wkndSun && ho) {
+      add("wkndSun", ho.from, bk, "Weekend", `${sunA}–${hourLabel(ho.hour)}`, { note: `then ${nameOf(ho.to)}`, handoff: "from" });
+      add("wkndSun", ho.to, bk, "Weekend", `${hourLabel(ho.hour)}–${sunB}`, { note: `from ${nameOf(ho.from)}`, handoff: "to" });
+    } else if (day.wkndSun) add("wkndSun", day.wkndSun, bk, "Weekend", hrs(sunSeg));
   }
   const aid = (o.appShifts || {})[ds];
   if (aid) add("app", aid, false, "APP", dow === 0 || dow === 6 ? "7a–7a" : "5p–7a");
@@ -457,6 +490,10 @@ function onCallNow(schedule, now) {
   else if (day.wkndFri) { sid = day.wkndFri; slot = `${SHIFT_LABELS.wknd} (Fri night)`; }
   else if (day.wkndSun) { sid = day.wkndSun; slot = `${SHIFT_LABELS.wknd} (Sun)`; }
   else if (day.sat) { sid = day.sat; slot = `${svc(day.sat)} (Sat 24h)`; }
+  // A handed-off Sunday: the weekend surgeon until the handoff hour, then the
+  // other surgeon to Mon 7a (before 7a this reads Sunday's overnight: theirs)
+  const ho = day.handoff;
+  if (ho && sid === ho.from && day.i === 6) { if (h < 7 || h >= ho.hour) sid = ho.to; else until = hourLabel(ho.hour); }
   return sid ? { sid, slot, until, backup: !!wk.isBackup } : null;
 }
 
@@ -485,9 +522,14 @@ function centralClock(now) {
 // date plus a / b / c for before 7a, 7a–5p and from 5p — onCallNow's answer
 // can change only when this does, so the banner's minute tick re-renders on a
 // new key and never misses a handover, in any time zone. "" for no instant.
-function onCallWindowKey(now) {
+// Given the schedule, a handed-off Sunday (handoffOn) also changes the key at
+// its hour, so the line moves to the taker then, not at 5p.
+function onCallWindowKey(now, schedule) {
   const c = centralClock(now);
-  return c ? c.ds + (c.h < 7 ? "a" : c.h < 17 ? "b" : "c") : "";
+  if (!c) return "";
+  const x = parse(c.ds), wk = schedule && x.getDay() === 0 ? schedule[fmt(addD(x, -6))] : null;
+  const ho = wk ? weekHolders(fmt(addD(x, -6)), wk).days[6].handoff : null;
+  return c.ds + (c.h < 7 ? "a" : c.h < 17 ? "b" : "c") + (ho && c.h >= ho.hour ? "h" : "");
 }
 
 // The banner's top line for onCallNow's answer and the holder's name (review
@@ -1458,7 +1500,12 @@ function buildICSEvents(schedule, surgeonId, surgeonName, opts) {
     });
 
     if (H.days[4].wkndFri === surgeonId) add(addD(mon, 4), addD(mon, 5), "DSG Weekend — Fri night", bkLabel, "Fri 5:00 PM – Sat 7:00 AM");
-    if (H.days[6].wkndSun === surgeonId) add(addD(mon, 6), addD(mon, 7), "DSG Weekend — Sun", bkLabel, "Sun 7:00 AM – Mon 7:00 AM (24h)");
+    // A handed-off Sunday: each surgeon's own half (handoffOn)
+    const hoSun = H.days[6].handoff, atText = (hr) => `${hr % 12 === 0 ? 12 : hr % 12}:00 ${hr < 12 ? "AM" : "PM"}`;
+    if (hoSun) {
+      if (hoSun.from === surgeonId) add(addD(mon, 6), addD(mon, 7), "DSG Weekend — Sun", bkLabel, `Sun 7:00 AM – ${atText(hoSun.hour)}, then ${nameOf(hoSun.to)}`);
+      if (hoSun.to === surgeonId) add(addD(mon, 6), addD(mon, 7), `DSG Weekend — Sun (from ${nameOf(hoSun.from)})`, bkLabel, `Sun ${atText(hoSun.hour)} – Mon 7:00 AM`);
+    } else if (H.days[6].wkndSun === surgeonId) add(addD(mon, 6), addD(mon, 7), "DSG Weekend — Sun", bkLabel, "Sun 7:00 AM – Mon 7:00 AM (24h)");
 
     H.covers.forEach(c => {
       if (c.sid !== surgeonId) return;
@@ -1642,7 +1689,12 @@ function buildPrintableCalendarHTML({
   }
 
   // Shift text for a given date — Mon/Fri: "DC / Night", Sat: "DC", Sun: "Wknd"
-  // Fri night IS the weekend slot. Holiday coverage overrides.
+  // Fri night IS the weekend slot. Holiday coverage overrides. DC is the
+  // date's dayCallOverrides entry, else the dayCall: weekHolders' rule, the
+  // calendar's (2026-11-02 — an override's date printed the dayCall: Sat 11/7
+  // read KJH, the calendar DJA). A Sunday the week hands off (handoffOn, as
+  // weekHolders reads it) prints both surgeons and the hour, "KJH→DJA 5p":
+  // KJH until 5p, then DJA to Mon 7a.
   function shiftTextFor(date) {
     const ds = fmt(date);
     const mon = monOf(date);
@@ -1655,8 +1707,11 @@ function buildPrintableCalendarHTML({
     }
 
     const dow = date.getDay();
-    const dc = nameOf(wk.dayCall);
+    const ovr = wk.dayCall && wk.dayCallOverrides ? wk.dayCallOverrides[ds] : null;
+    const dc = nameOf(ovr || wk.dayCall);
     if (dow === 0) {
+      const ho = weekHolders(wkKey, wk).days[6].handoff;
+      if (ho) return `${nameOf(ho.from)}→${nameOf(ho.to)} ${hourLabel(ho.hour)}`;
       return wk.nights?.wknd ? nameOf(wk.nights.wknd) : "";
     }
     if (dow === 6) {
