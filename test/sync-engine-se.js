@@ -5402,12 +5402,15 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
     open(X[1]); draft(d => { d.dayCall = "s7"; });
     await peer(X[1], w => (w.nights.wed = "s6", w));
     from = t.log.length; save(); await A.eng.push();
+    // (Changed ON PURPOSE 2026-11-02, sync-guards DD9: a save that went through says so, naming who was told — one success
+    // toast each, "Saved — s2 and s7 were notified" (nameOf is the id here); the engine's own toasts still none.)
+    const SAVED = (a, b) => [`Saved — ${a} and ${b} were notified`, "success"];
     check("SE-X6 …their change to ANOTHER slot (X1's Wed night) → Save writes only the edit, onto the latest week: the table has both, by one CAS PATCH",
-      writesOf(t, from, "TOK_A").length === 1 && t.get(X[1]).data.dayCall === "s7" && t.get(X[1]).data.nights.wed === "s6" && A.modal === null && A.toasts.length === 0, JSON.stringify({ row: t.get(X[1]).data, toasts: A.toasts }));
+      writesOf(t, from, "TOK_A").length === 1 && t.get(X[1]).data.dayCall === "s7" && t.get(X[1]).data.nights.wed === "s6" && A.modal === null && JSON.stringify(A.toasts) === JSON.stringify([SAVED("s2", "s7")]), JSON.stringify({ row: t.get(X[1]).data, toasts: A.toasts }));
     open(X[2]); draft(d => { d.dayCall = "s6"; });
     from = t.log.length; save(); await A.eng.push();
     check("SE-X6 …control: nobody else touches the week → the edit lands (one PATCH), one undo step, one audit line",
-      writesOf(t, from, "TOK_A").length === 1 && t.get(X[2]).data.dayCall === "s6" && A.history.length === 2 && rec.audits.length === 2 && A.toasts.length === 0, JSON.stringify({ h: A.history.length, audits: rec.audits.length }));
+      writesOf(t, from, "TOK_A").length === 1 && t.get(X[2]).data.dayCall === "s6" && A.history.length === 2 && rec.audits.length === 2 && JSON.stringify(A.toasts) === JSON.stringify([SAVED("s2", "s7"), SAVED("s5", "s6")]), JSON.stringify({ h: A.history.length, audits: rec.audits.length, toasts: A.toasts }));
   });
 
   // SE-X7 — the REAL acceptPreview (and publishNotLanded / runPublish) on the

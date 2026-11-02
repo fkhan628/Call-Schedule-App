@@ -7715,6 +7715,10 @@ function CallSchedule() {
     }
     addNotification("schedule_changed", title, msg, { week: mondayStr }, allTargets);
     sendEmailNotif("schedule_changed", emailPayload, allTargets);
+    // Saved, and who was told (UX audit 2026-11-01, QW16): the editor closed with nothing said, though the people
+    // whose shifts changed had just been sent a push and an e-mail. They are named in the order of the changes.
+    const told = [...new Set(changes.flatMap(c => [c.oldId, c.newId]).filter(Boolean))].map(nameOf);
+    showToast(`Saved — ${told.length > 1 ? told.slice(0, -1).join(", ") + " and " + told[told.length - 1] : told[0]} ${told.length > 1 ? "were" : "was"} notified`, "success");
 
     setEditWeekModal(null);
     if (openAfter) {
@@ -12306,17 +12310,25 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               return `${MO[m.getMonth()].slice(0,3)} ${m.getDate()}`;
             };
 
+            // ×, Cancel and a tap outside the card close the editor — asking first while it holds an edit not saved
+            // (UX audit 2026-11-01, QW16): they threw the draft away without a word, though ← Prev / Next → asked.
+            const closeEditor = () => {
+              if (hasUnsaved && !confirm("Discard your changes to this week?")) return;
+              setEditWeekModal(null);
+            };
+
             // It ends above the update banner (editWeekLift; 0 with none), so the banner never covers its buttons. No
             // space below the card (no bottom padding, no margin): the sticky button row stopped at the padding's edge
             // (a strip of the editor showed under it), and with a gap below the card the row sat 20px higher at the
             // end of the scroll than stuck — the toasts, measured once, sit above where it is either way only if it
             // never moves. So the editor's last row lies on the bottom edge, scrolled or not.
             return (
-              <div onClick={()=>setEditWeekModal(null)} style={{position:"fixed",top:0,left:0,right:0,bottom:editWeekLift,background:"rgba(0,0,0,0.55)",zIndex:9000,display:"flex",alignItems:"flex-start",justifyContent:"center",padding:"20px 10px 0",overflowY:"auto"}}>
+              <div onClick={closeEditor} style={{position:"fixed",top:0,left:0,right:0,bottom:editWeekLift,background:"rgba(0,0,0,0.55)",zIndex:9000,display:"flex",alignItems:"flex-start",justifyContent:"center",padding:"20px 10px 0",overflowY:"auto"}}>
                 <div onClick={e=>e.stopPropagation()} style={{background:dk?"#1a1f2a":"#fff",borderRadius:10,maxWidth:520,width:"100%",padding:20,boxShadow:"0 10px 40px rgba(0,0,0,0.3)"}}>
                   <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
                     <div style={{fontSize:16,fontWeight:700,color:dk?"#e8e8f0":"#2c5a80"}}>✏️ Edit Week — {wkLabel}</div>
-                    <button aria-label="Close" onClick={()=>setEditWeekModal(null)} style={{background:"none",border:"none",fontSize:20,cursor:"pointer",color:dk?"#8a94a0":"#5a6a78"}}>×</button>
+                    {/* finger-sized (QW16: it was 12px wide); its margin keeps the title row as tall as before */}
+                    <button aria-label="Close" onClick={closeEditor} style={{background:"none",border:"none",fontSize:24,lineHeight:1,cursor:"pointer",minWidth:44,minHeight:44,margin:"-10px -10px -10px 4px",padding:0,flexShrink:0,color:dk?"#8a94a0":"#5a6a78"}}>×</button>
                   </div>
 
                   {/* A13: someone else's copy of this week was adopted while the
@@ -12360,17 +12372,18 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   <div style={{marginBottom:14}}>
                     <div style={{fontSize:12,fontWeight:700,color:dk?"#b0b8c0":"#5a6a78",marginBottom:6,textTransform:"uppercase",letterSpacing:0.5}}>Surgeon Shifts</div>
                     <div style={{display:"grid",gridTemplateColumns:"150px 1fr",gap:6,alignItems:"center"}}>
-                      {/* Slot labels dated via slotLabel (single owner: shiftStartDate) — no local date math */}
-                      <label style={{fontSize:12,color:dk?"#b0b8c0":"#4a5868"}}>{slotLabel(mondayStr, "dayCall")}</label>
-                      <select value={draft.dayCall} onChange={e=>updateDraft(d=>({...d,dayCall:e.target.value}))} style={{...css.inp,padding:"6px 8px"}}>{surgeonOpts}</select>
+                      {/* Slot labels dated via slotLabel (single owner: shiftStartDate) — no local date math. Each label is its
+                          select's (htmlFor / id), so VoiceOver names every picker by its slot (UX audit 2026-11-01, QW16). */}
+                      <label htmlFor="ew-dayCall" style={{fontSize:12,color:dk?"#b0b8c0":"#4a5868"}}>{slotLabel(mondayStr, "dayCall")}</label>
+                      <select id="ew-dayCall" value={draft.dayCall} onChange={e=>updateDraft(d=>({...d,dayCall:e.target.value}))} style={{...css.inp,padding:"6px 8px"}}>{surgeonOpts}</select>
                       {["mon","tue","wed","thu"].map(nk => (
                         <React.Fragment key={nk}>
-                          <label style={{fontSize:12,color:dk?"#b0b8c0":"#4a5868"}}>{slotLabel(mondayStr, nk)}</label>
-                          <select value={draft.nights[nk]||""} onChange={e=>updateDraft(d=>({...d,nights:{...d.nights,[nk]:e.target.value}}))} style={{...css.inp,padding:"6px 8px"}}>{surgeonOpts}</select>
+                          <label htmlFor={"ew-" + nk} style={{fontSize:12,color:dk?"#b0b8c0":"#4a5868"}}>{slotLabel(mondayStr, nk)}</label>
+                          <select id={"ew-" + nk} value={draft.nights[nk]||""} onChange={e=>updateDraft(d=>({...d,nights:{...d.nights,[nk]:e.target.value}}))} style={{...css.inp,padding:"6px 8px"}}>{surgeonOpts}</select>
                         </React.Fragment>
                       ))}
-                      <label style={{fontSize:12,color:dk?"#b0b8c0":"#4a5868"}}>{slotLabel(mondayStr, "wknd")}</label>
-                      <select value={draft.nights.wknd||""} onChange={e=>updateDraft(d=>({...d,nights:{...d.nights,wknd:e.target.value}}))} style={{...css.inp,padding:"6px 8px"}}>{surgeonOpts}</select>
+                      <label htmlFor="ew-wknd" style={{fontSize:12,color:dk?"#b0b8c0":"#4a5868"}}>{slotLabel(mondayStr, "wknd")}</label>
+                      <select id="ew-wknd" value={draft.nights.wknd||""} onChange={e=>updateDraft(d=>({...d,nights:{...d.nights,wknd:e.target.value}}))} style={{...css.inp,padding:"6px 8px"}}>{surgeonOpts}</select>
                     </div>
                   </div>
 
@@ -12387,8 +12400,9 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                         const val = (draft.dayCallOverrides && draft.dayCallOverrides[ds]) || draft.dayCall || "";
                         return (
                           <React.Fragment key={ds}>
-                            <label style={{fontSize:12,color:dk?"#b0b8c0":"#4a5868"}}>{lbl}{isOv && <span style={{color:"#c08030",marginLeft:4}}>●</span>}</label>
-                            <select value={val} onChange={e=>{
+                            <label htmlFor={"ew-svc-" + ds} style={{fontSize:12,color:dk?"#b0b8c0":"#4a5868"}}>{lbl}{isOv && <span style={{color:"#c08030",marginLeft:4}}>●</span>}</label>
+                            {/* named with its section, as the APP day's below: "Mon 11/2" alone names two pickers (QW16) */}
+                            <select id={"ew-svc-" + ds} aria-label={`Service day ${lbl}`} value={val} onChange={e=>{
                               const v=e.target.value;
                               updateDraft(d=>{
                                 const o={...(d.dayCallOverrides||{})};
@@ -12412,8 +12426,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                         const ds = fmt(d);
                         return (
                           <React.Fragment key={ds}>
-                            <label style={{fontSize:12,color:dk?"#b0b8c0":"#4a5868"}}>{dayLabels[d.getDay()]} {d.getMonth()+1}/{d.getDate()}</label>
-                            <select value={draft.apps[ds]||""} disabled={appsLocked} onChange={e=>updateDraft(dr=>({...dr,apps:{...dr.apps,[ds]:e.target.value}}))} style={{...css.inp,padding:"6px 8px",opacity:appsLocked?0.5:1}}>{appOpts}</select>
+                            <label htmlFor={"ew-app-" + ds} style={{fontSize:12,color:dk?"#b0b8c0":"#4a5868"}}>{dayLabels[d.getDay()]} {d.getMonth()+1}/{d.getDate()}</label>
+                            <select id={"ew-app-" + ds} aria-label={`APP ${dayLabels[d.getDay()]} ${d.getMonth()+1}/${d.getDate()}`} value={draft.apps[ds]||""} disabled={appsLocked} onChange={e=>updateDraft(dr=>({...dr,apps:{...dr.apps,[ds]:e.target.value}}))} style={{...css.inp,padding:"6px 8px",opacity:appsLocked?0.5:1}}>{appOpts}</select>
                           </React.Fragment>
                         );
                       })}
@@ -12422,14 +12436,14 @@ ${"</"}script>${"</"}body>${"</"}html>`;
 
                   {/* Reason */}
                   <div style={{marginBottom:14}}>
-                    <label style={{fontSize:12,fontWeight:700,color:dk?"#b0b8c0":"#5a6a78",marginBottom:4,display:"block",textTransform:"uppercase",letterSpacing:0.5}}>Reason (optional)</label>
-                    <input type="text" value={draft.reason} onChange={e=>updateDraft(d=>({...d,reason:e.target.value}))} placeholder="e.g. REH sick, covering with FAK" style={{...css.inp,width:"100%",padding:"6px 8px"}} />
+                    <label htmlFor="ew-reason" style={{fontSize:12,fontWeight:700,color:dk?"#b0b8c0":"#5a6a78",marginBottom:4,display:"block",textTransform:"uppercase",letterSpacing:0.5}}>Reason (optional)</label>
+                    <input id="ew-reason" type="text" value={draft.reason} onChange={e=>updateDraft(d=>({...d,reason:e.target.value}))} placeholder="e.g. REH sick, covering with FAK" style={{...css.inp,width:"100%",padding:"6px 8px"}} />
                   </div>
 
                   {/* Buttons — sticky at the editor's bottom, so they stay in view on a phone (the editor is taller than
                       the screen), and a toast floor: the app's toasts sit above them, never on Save (toastLiftNow). */}
                   <div ref={editWeekFootRef} data-toast-floor="1" style={{position:"sticky",bottom:0,display:"flex",gap:8,justifyContent:"flex-end",flexWrap:"wrap",margin:"0 -20px -20px",padding:"12px 20px 20px",background:dk?"#1a1f2a":"#fff",borderTop:`1px solid ${dk?"#2a3a5e":"#e8ecf0"}`,borderRadius:"0 0 10px 10px"}}>
-                    <button onClick={()=>setEditWeekModal(null)} style={{...css.btn(false),padding:"8px 16px"}}>Cancel</button>
+                    <button onClick={closeEditor} style={{...css.btn(false),padding:"8px 16px"}}>Cancel</button>
                     <button onClick={()=>saveWeekEdits()} style={{...css.btn(true),padding:"8px 16px"}}>💾 Save Changes</button>
                     {nextMonday && (
                       <button onClick={()=>saveWeekEdits(nextMonday)} style={{...css.btn(true),padding:"8px 16px"}}>

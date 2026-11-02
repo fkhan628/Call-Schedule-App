@@ -16252,7 +16252,9 @@ await (async () => {
 
   // BM4 — the week editor: above the banner, its buttons a sticky toast floor
   {
-    const ovM = nsrcBM.match(/\n\s*<div onClick=\{\(\)=>setEditWeekModal\(null\)\} style=\{(\{position:"fixed",[^\n]*?\})\}>\n\s*<div onClick=\{e=>e\.stopPropagation\(\)\} style=\{(\{[^\n]*?\})\}>\n/);
+    // (Changed ON PURPOSE 2026-11-02, DD7: a tap on the backdrop closes through closeEditor, which asks first while there
+    // are unsaved edits — DD7 runs it; the styles read here are as they were.)
+    const ovM = nsrcBM.match(/\n\s*<div onClick=\{closeEditor\} style=\{(\{position:"fixed",[^\n]*?\})\}>\n\s*<div onClick=\{e=>e\.stopPropagation\(\)\} style=\{(\{[^\n]*?\})\}>\n/);
     const footM = nsrcBM.match(/\n( *)<div ref=\{editWeekFootRef\} data-toast-floor="1" style=\{(\{[^\n]*?\})\}>\n([\s\S]*?)\n\1<\/div>\n/);
     const ov = ovM ? fnBM("editWeekLift", ovM[1]) : null, card = ovM ? fnBM("dk", ovM[2]) : null, foot = footM ? fnBM("dk", footM[2]) : null;
     const o100 = ov ? ov(100) : null, fL = foot ? foot(false) : null, fD = foot ? foot(true) : null, cL = card ? card(false) : null, cD = card ? card(true) : null;
@@ -17492,6 +17494,15 @@ await (async () => {
 //       are "Save" / "Cancel" in words; their colours read ≥ 4.5:1 where they sit
 //   DD6 (QW15) the APP list keeps past shifts behind "Show completed shifts", as the vacation list does, writes its dates
 //       as "Thu Nov 5", and each row's ✕ is 44×44 and named
+//   DD7 (QW16) Edit this week (the editor, rendered): ×, Cancel and a tap outside the card ask "Discard your changes to
+//       this week?" while it holds an edit not saved — Cancel keeps the editor and its draft, OK closes it; with nothing
+//       changed they close at once, as before; ← Prev / Next → and "Reopen with the latest" ask their own questions
+//   DD8 (QW16) its × is 44×44; every picker is named for VoiceOver — the slot's own label (htmlFor / id: "Mon Nov 2 —
+//       Night"), "Service day Mon 11/2", "APP Mon 11/2" — and the Reason box by its label; the ids are unique
+//   DD9 (QW16) Save says "Saved — DJA and ARW were notified" (the people whose shifts changed, in the order of the
+//       changes); the save itself — the week written, Undo, the APP days, the audit line, the notices and e-mails, the
+//       confirm, Save & Next — is 3200f94's exactly, on every path; nothing more is said when nothing changed, when
+//       the save is refused or when its 3+ change question is answered Cancel
 console.log("\nDD. Setup asks first; Setup's lists; the week editor's close, names and Save");
 await (async () => {
   const nsrcD = src.replace(/\r\n/g, "\n"), JD = JSON.stringify, cloneD = (o) => JSON.parse(JSON.stringify(o));
@@ -17994,6 +18005,127 @@ await (async () => {
         xs.length === 7 && xs.every((b) => !!b && b.tag === "button" && b.props.style.minWidth >= 44 && b.props.style.minHeight >= 44 && textD(b) === "✕") && xs[3].props["aria-label"] === "Remove MA's APP call Mon Nov 2"
           && open.rows.every((r) => r.x.props["aria-label"] === `Remove ${nameOfD(r.app)}'s APP call ${r.date}`) && JD(open.rm) === JD(Object.keys(MAP).sort()) && [...inks.light, ...inks.dark].every((x) => x >= 4.5),
         JD({ labels: xs.map((b) => b && b.props["aria-label"]), rm: open.rm, inks }));
+    }
+  }
+
+  // ── DD7 / DD8 — Edit this week, rendered ──
+  {
+    const EA = "{editWeekModal && (()=>{\n            const { mondayStr, draft } = editWeekModal;", EI = nsrcD.indexOf(EA), EJ = EI < 0 ? -1 : nsrcD.indexOf("\n          })()}", EI);
+    const EN = "h, editWeekModal, MO, parse, addD, fmt, surgeons, apps, setEditWeekModal, schedule, confirm, openWeekEditor, mergeEditorEdits, schedSyncRef, editWeekLift, dk, css, font, slotLabel, React, editWeekFootRef, saveWeekEdits";
+    let eF = null, why = "";
+    // (an apostrophe inside a word — the APP rows' "hadn't" — would read as a string to CJ's compiler: typographic here)
+    try { eF = EI > 0 && EJ > EI ? compileD(EN, jsxD(stripD(nsrcD.slice(EI + "{editWeekModal && ".length, EJ)).replace(/(\w)'(\w)/g, "$1’$2") + "\n          })()"), "dd-editor.js") : null; } catch (ex) { why = String(ex).slice(0, 160); }
+    if (!eF) check("DD7 the week editor is extractable and compiles (JSX → h())", false, JD({ at: EI, end: EJ, why }));
+    else {
+      const MON = "2026-11-02", DAYS = [0, 1, 2, 3, 4, 5, 6].map((i) => vm.runInContext(`fmt(addD(parse("${MON}"), ${i}))`, sandbox));
+      const WK = { dayCall: "s4", nights: { mon: "s7", tue: "s2", wed: "s3", thu: "s5", wknd: "s4" }, dayCallOverrides: { "2026-11-07": "s1" } };
+      const modalOf = (edit) => { const draft = { dayCall: WK.dayCall, nights: Object.assign({}, WK.nights), dayCallOverrides: Object.assign({}, WK.dayCallOverrides), apps: Object.fromEntries(DAYS.map((d) => [d, d === "2026-11-05" ? "a1" : ""])), reason: "" };
+        if (edit) edit(draft); return { mondayStr: MON, appsBase: Object.fromEntries(DAYS.map((d) => [d, d === "2026-11-05" ? "a1" : ""])), appsLoaded: true, openWeek: cloneD(WK), openEpoch: 0, draft }; };
+      const SCHED = { "2026-10-26": { dayCall: "s1", nights: {} }, [MON]: cloneD(WK), "2026-11-09": { dayCall: "s2", nights: {} } };
+      const render = (modal, answer) => {
+        const r = { asked: [], sets: [], opened: [], saved: [] };
+        r.tree = eF({ h: hD, editWeekModal: modal, MO: vm.runInContext("MO", sandbox), parse: vm.runInContext("parse", sandbox), addD: vm.runInContext("addD", sandbox), fmt: vm.runInContext("fmt", sandbox), surgeons: S7D, apps: APPSD,
+          setEditWeekModal: (v) => r.sets.push(v), schedule: SCHED, confirm: (q) => { r.asked.push(q); return answer !== false; }, openWeekEditor: (m) => r.opened.push(m), mergeEditorEdits: () => ({ ok: true }),
+          schedSyncRef: { current: { epochOf: () => 0 } }, editWeekLift: 0, dk: false, css: cssD, font: "font", slotLabel: vm.runInContext("slotLabel", sandbox), React: { Fragment: "#frag" }, editWeekFootRef: { current: null },
+          saveWeekEdits: (n) => r.saved.push(n === undefined ? "save" : n) });
+        const all = allD(r.tree);
+        r.x = all.find((n) => n.tag === "button" && n.props["aria-label"] === "Close") || null;
+        r.cancel = all.find((n) => n.tag === "button" && textD(n) === "Cancel") || null;
+        r.prev = all.find((n) => n.tag === "button" && /← Prev/.test(textD(n))) || null;
+        r.all = all;
+        return r;
+      };
+      const DISCARD = "Discard your changes to this week?";
+      // each way out, on an editor with an edit not saved (the service week KJH → DJA) and on an untouched one
+      const outs = {};
+      for (const [way, pick] of [["×", (r) => r.x], ["Cancel", (r) => r.cancel], ["the backdrop", (r) => r.tree]]) {
+        const no = render(modalOf((d) => { d.dayCall = "s1"; }), false), yes = render(modalOf((d) => { d.dayCall = "s1"; }), true), clean = render(modalOf(), false);
+        [no, yes, clean].forEach((r) => { const b = pick(r); if (b && typeof b.props.onClick === "function") b.props.onClick({ stopPropagation() {} }); });
+        outs[way] = { no: [no.asked, no.sets], yes: [yes.asked, yes.sets], clean: [clean.asked, clean.sets] };
+      }
+      const APPED = render(modalOf((d) => { d.apps["2026-11-04"] = "a3"; }), false), OVR = render(modalOf((d) => { d.dayCallOverrides = {}; }), false);
+      [APPED, OVR].forEach((r) => r.x.props.onClick());
+      check("DD7 ×, Cancel and a tap on the backdrop (the editor, rendered): with an edit not saved each asks \"Discard your changes to this week?\" — Cancel keeps the editor (no close), OK closes it (setEditWeekModal(null)); an APP day or a Service Day override edited asks too; untouched, each closes at once without asking (as before)",
+        Object.values(outs).every((o) => JD(o.no) === JD([[DISCARD], []]) && JD(o.yes) === JD([[DISCARD], [null]]) && JD(o.clean) === JD([[], [null]]))
+          && JD(APPED.asked) === JD([DISCARD]) && JD(OVR.asked) === JD([DISCARD]) && APPED.sets.length === 0 && OVR.sets.length === 0,
+        JD(outs));
+      const nav = render(modalOf((d) => { d.dayCall = "s1"; }), false); nav.prev.props.onClick();
+      const navOk = render(modalOf((d) => { d.dayCall = "s1"; }), true); navOk.prev.props.onClick();
+      const navClean = render(modalOf(), false); navClean.prev.props.onClick();
+      check("DD7 …← Prev keeps its own question (\"You have unsaved changes. Discard and switch to a different week?\") — no, it stays; yes, it opens the week before; untouched it just goes; the card's own taps never reach the backdrop (it stops them)",
+        JD(nav.asked) === JD(["You have unsaved changes. Discard and switch to a different week?"]) && nav.opened.length === 0 && JD(navOk.opened) === JD(["2026-10-26"]) && navClean.asked.length === 0 && JD(navClean.opened) === JD(["2026-10-26"])
+          && (() => { const card = nav.tree.kids[0]; let stopped = 0; card.props.onClick({ stopPropagation() { stopped++; } }); return stopped === 1 && nav.sets.length === 0; })(),
+        JD({ nav: [nav.asked, nav.opened], ok: navOk.opened, clean: navClean.opened }));
+      // DD8 — the × and the pickers' names
+      const R0 = render(modalOf(), true), all = R0.all;
+      const labels = all.filter((n) => n.tag === "label" && n.props.htmlFor);
+      const nameOfNode = (n) => n.props["aria-label"] || (labels.find((l) => l.props.htmlFor === n.props.id) ? textD(labels.find((l) => l.props.htmlFor === n.props.id)) : "");
+      const fields = all.filter((n) => n.tag === "select" || n.tag === "input");
+      const names = fields.map(nameOfNode), ids = fields.map((n) => n.props.id).filter(Boolean);
+      const SL = vm.runInContext("slotLabel", sandbox);
+      const DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"], md = (ds) => { const [, m, d] = ds.split("-").map(Number); return `${m}/${d}`; }, dowOf = (ds) => DOW[new Date(ds + "T12:00:00").getDay()];
+      const WANT = ["dayCall", "mon", "tue", "wed", "thu", "wknd"].map((k) => SL(MON, k)).concat(DAYS.slice(0, 6).map((ds) => `Service day ${dowOf(ds)} ${md(ds)}`), DAYS.map((ds) => `APP ${dowOf(ds)} ${md(ds)}`), ["Reason (optional)"]);
+      const xs = R0.x && R0.x.props.style;
+      check("DD8 the × (rendered) is 44×44 (it was ~12px wide), still named \"Close\"; every picker and the Reason box has a name VoiceOver reads — the slot's own label through htmlFor / id (\"" + WANT[1] + "\"), \"Service day Mon 11/2\", \"APP Mon 11/2\", \"Reason (optional)\" — 20 fields, ids unique",
+        !!xs && xs.minWidth >= 44 && xs.minHeight >= 44 && textD(R0.x) === "×" && fields.length === 20 && JD(names) === JD(WANT) && new Set(ids).size === ids.length && ids.length === 20,
+        JD({ x: xs && [xs.minWidth, xs.minHeight], n: fields.length, names, ids }));
+    }
+  }
+
+  // ── DD9 — Save says who was told; the save itself is 3200f94's ──
+  {
+    const WE = "editWeekModal, schedule, appShifts, appShiftsLoaded, openWeekEditor, setEditWeekModal, silvisActive, silvisFakId, silvisDays, silvisBlock, silvisRefuse, sfSlotDays, confirm, pushUndo, updateSchedule, scheduleRef, schedEditable, schedSyncRef, mergeEditorEdits, SHIFT_LABELS, backupMondaySet, fierceBackupSet, surgeons, showToast, APP_SHIFTS_NOT_LOADED, setAppShifts, saveAppShifts, logAudit, nameOf, aMap, sMap, schedulerAdminIds, addNotification, sendEmailNotif, setTimeout"; // AB2's list
+    const weN = compileD(WE, fnOf("(openAfter) => {", cutD("  const saveWeekEdits = useCallback((openAfter) => {", "\n  }, [editWeekModal,")), "dd-save.js"), weO = compileD(WE, fnOf("(openAfter) => {", OLD.saveWeekEdits), "dd-save-old.js");
+    let mergeD = null; try { const se = require("./sync-engine-se.js"); mergeD = se.compileMerge(se.extractEngine(src)); } catch (ex) { mergeD = null; }
+    if (!weN || !weO || !mergeD) check("DD9 saveWeekEdits (today's and 3200f94's) and mergeEditorEdits are extractable and compile", false, JD({ now: !!weN, old: !!weO, merge: !!mergeD }));
+    else {
+      const MON = "2026-10-12", DAYS = ["2026-10-12", "2026-10-13", "2026-10-14", "2026-10-15", "2026-10-16", "2026-10-17", "2026-10-18"];
+      const WK = { dayCall: "s1", nights: { mon: "s2", tue: "s3", wed: "s4", thu: "s5", wknd: "s6" }, off: "s7" };
+      const APPS0 = { "2026-10-13": "a1", "2026-10-20": "a4" }, BASE = Object.fromEntries(DAYS.map((d) => [d, APPS0[d] || ""]));
+      const sMapD = Object.fromEntries(S7D.map((s) => [s.id, s])), aMapD = Object.fromEntries(APPSD.map((a) => [a.id, a]));
+      // One Save of an editor whose draft `edit` changed: everything it does, recorded in order.
+      const runW = (fn, o = {}) => {
+        const ev = [], wk = cloneD(WK), latest = o.moved ? Object.assign(cloneD(WK), { dayCall: "s5" }) : cloneD(WK);
+        const draft = { dayCall: WK.dayCall, nights: Object.assign({}, WK.nights), dayCallOverrides: {}, apps: Object.assign({}, BASE), reason: o.reason || "" };
+        if (o.edit) o.edit(draft);
+        try {
+          fn({ editWeekModal: { mondayStr: MON, appsBase: Object.assign({}, BASE), openWeek: wk, openEpoch: 3, draft }, schedule: { [MON]: latest }, appShifts: Object.assign({}, APPS0), appShiftsLoaded: o.loaded !== false,
+            openWeekEditor: (m) => ev.push(["open", m]), setEditWeekModal: (x) => ev.push(["modal", x]), silvisActive: !!o.silvis, silvisFakId: "s6", silvisDays: { primary: new Set(o.silvis ? ["2026-10-14"] : []) },
+            silvisBlock: (id, m, nk) => (id === "s6" && o.silvis ? `s6 Silvis ${nk}` : null), silvisRefuse: (hits) => { ev.push(["silvisRefuse", hits]); return hits.length > 0 && !!o.silvis; }, sfSlotDays: () => DAYS.slice(0, 6),
+            confirm: (q) => { ev.push(["confirm", q]); return o.answer !== false; }, pushUndo: () => ev.push(["undo"]), updateSchedule: (f) => ev.push(["week", f({ [MON]: latest })[MON]]),
+            scheduleRef: { current: { [MON]: latest } }, schedEditable: () => true, schedSyncRef: { current: { epochOf: () => (o.moved ? 4 : 0) } }, mergeEditorEdits: mergeD,
+            SHIFT_LABELS: vm.runInContext("SHIFT_LABELS", sandbox), backupMondaySet: new Set(), fierceBackupSet: new Set(), surgeons: S7D,
+            showToast: (m, t) => ev.push(["toast", String(m), t || "info"]), APP_SHIFTS_NOT_LOADED: "APP shifts haven't loaded yet",
+            setAppShifts: (u) => ev.push(["apps", u(Object.assign({}, APPS0))]), saveAppShifts: (x) => ev.push(["saveApps", x]), logAudit: (a, msg, meta) => ev.push(["audit", a, msg, meta]),
+            nameOf: nameOfD, aMap: aMapD, sMap: sMapD, schedulerAdminIds: ["s6", "admin"], addNotification: (...a) => ev.push(["notify", ...a]), sendEmailNotif: (...a) => ev.push(["email", ...a]),
+            setTimeout: (f, ms) => ev.push(["later", ms]) })(o.next || null);
+        } catch (ex) { ev.push(["threw", String(ex).slice(0, 160)]); }
+        return ev;
+      };
+      const CASES = [
+        ["one surgeon slot (the service week DJA → ARW)", { edit: (d) => { d.dayCall = "s7"; } }, "Saved — DJA and ARW were notified"],
+        ["a night (Mon MCC → KJH), with a reason", { edit: (d) => { d.nights.mon = "s4"; }, reason: "MCC sick" }, "Saved — MCC and KJH were notified"],
+        ["a night cleared (Wed KJH → none)", { edit: (d) => { d.nights.wed = ""; } }, "Saved — KJH was notified"],
+        ["an APP day (Tue MA → MS)", { edit: (d) => { d.apps["2026-10-13"] = "a3"; } }, "Saved — MA and MS were notified"],
+        ["three changes, the question answered OK", { edit: (d) => { d.dayCall = "s7"; d.nights.tue = "s1"; d.dayCallOverrides["2026-10-14"] = "s2"; } }, "Saved — DJA, ARW, RPC and MCC were notified"],
+        ["Save & Next", { edit: (d) => { d.nights.thu = "s1"; }, next: "2026-10-19" }, "Saved — REH and DJA were notified"],
+        ["the APP row not loaded: the surgeon change saves, the APP change refused", { edit: (d) => { d.dayCall = "s7"; d.apps["2026-10-14"] = "a3"; }, loaded: false }, "Saved — DJA and ARW were notified"],
+        ["three changes, the question answered Cancel", { edit: (d) => { d.dayCall = "s7"; d.nights.tue = "s1"; d.dayCallOverrides["2026-10-14"] = "s2"; }, answer: false }, null],
+        ["nothing changed", {}, null],
+        ["changed underneath by someone else (refused)", { edit: (d) => { d.dayCall = "s7"; }, moved: true }, null],
+        ["FAK onto a Silvis day (refused)", { edit: (d) => { d.nights.wed = "s6"; }, silvis: true }, null],
+        ["only an APP day, the row not loaded (refused)", { edit: (d) => { d.apps["2026-10-14"] = "a3"; }, loaded: false }, null],
+      ];
+      const bad = [];
+      for (const [label, o, line] of CASES) {
+        const n = runW(weN, o), d = runW(weO, o);
+        const okToasts = n.filter((e) => e[0] === "toast" && e[2] === "success"), restN = n.filter((e) => !(e[0] === "toast" && e[2] === "success"));
+        const want = line ? [["toast", line, "success"]] : [];
+        const closeAt = n.findIndex((e) => e[0] === "modal" && e[1] === null), toastAt = n.findIndex((e) => e[0] === "toast" && e[2] === "success");
+        if (JD(restN) !== JD(d) || JD(okToasts) !== JD(want) || (line && !(toastAt > n.findIndex((e) => e[0] === "email") && toastAt < closeAt))) bad.push(`${label}: ${JD(okToasts)} / ${JD(restN).slice(0, 200)} vs ${JD(d).slice(0, 200)}`);
+      }
+      check("DD9 after Save, ONE success toast names the people whose shifts changed, in the order of the changes — \"Saved — DJA and ARW were notified\", \"Saved — KJH was notified\", \"Saved — DJA, ARW, RPC and MCC were notified\", an APP day's APPs (\"MA and MS\"), on Save & Next too — after the notices and e-mails, before the editor closes; everything else on every path is 3200f94's exactly (the week written, Undo, the APP days and their save, the audit line, the notices and e-mails, the 3+ change question, Save & Next's reopen, the refusals' own toasts); nothing more when nothing changed, when it is refused, or when the question is answered Cancel",
+        bad.length === 0, bad.slice(0, 3).join(" | "));
     }
   }
 })().catch((ex) => check("DD harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
@@ -22023,9 +22155,12 @@ await (async () => {
     const aWrites = (from) => writesG(t, from, "TOK_A");
     const changesOf = (i) => (ed.audits[i] && ed.audits[i].changes || []).map(c => c.slot + ":" + c.from + ">" + c.to).join();
     // control: nobody else touches the week
+    // (Changed ON PURPOSE 2026-11-02, DD9: a save that went through now says so, naming who was told — one success toast,
+    // "Saved — s1 and s7 were notified" (nameOf is the id here); the engine's own toasts still none.)
+    const SAVED = (a, b) => [`Saved — ${a} and ${b} were notified`, "success"];
     open(WG[0]); edit(d => { d.dayCall = "s7"; }); save(); await A.eng.push();
     check("SE-G 14/n the real editor, control: the edit saves and lands on the table by CAS (one Undo step, one audit line naming exactly that slot, the editor closed)",
-      t.get(WG[0]).data.dayCall === "s7" && t.get(WG[0]).version === 3 && A.history.length === 1 && changesOf(0) === "Service Week:s1>s7" && ed.closed === 1 && A.toasts.length === 0,
+      t.get(WG[0]).data.dayCall === "s7" && t.get(WG[0]).version === 3 && A.history.length === 1 && changesOf(0) === "Service Week:s1>s7" && ed.closed === 1 && JSON.stringify(A.toasts) === JSON.stringify([SAVED("s1", "s7")]),
       JSON.stringify({ row: t.get(WG[0]).data, audits: ed.audits, toasts: A.toasts }));
     // someone else's change to a slot NOT edited here, adopted while the editor is open
     open(WG[1]); edit(d => { d.dayCall = "s7"; });
@@ -22037,9 +22172,11 @@ await (async () => {
       dirtyEdited === true && dirtyUntouched === false, JSON.stringify({ dirtyEdited, dirtyUntouched }));
     save(); await A.eng.push();
     check("SE-G 14/n the real editor: someone else's change to a slot NOT edited here (Tue night) is adopted while it's open → Save keeps THEIR value and writes the edit: the table has both; the audit / notice name only the edited slot; the editor's note said it would save (not refused)",
-      adopted && keepNote === false && t.get(WG[1]).data.dayCall === "s7" && t.get(WG[1]).data.nights.tue === "p9" && changesOf(1) === "Service Week:s1>s7" && ed.notes.length === 2 && !/Tue Night/.test(ed.notes[1]) && A.toasts.length === 0 && ed.closed === 2,
+      adopted && keepNote === false && t.get(WG[1]).data.dayCall === "s7" && t.get(WG[1]).data.nights.tue === "p9" && changesOf(1) === "Service Week:s1>s7" && ed.notes.length === 2 && !/Tue Night/.test(ed.notes[1])
+        && JSON.stringify(A.toasts) === JSON.stringify([SAVED("s1", "s7"), SAVED("s1", "s7")]) && ed.closed === 2,
       JSON.stringify({ adopted, keepNote, row: t.get(WG[1]).data, audits: ed.audits[1], toasts: A.toasts }));
     // someone else's change to the slot edited here
+    A.toasts.length = 0; // (2026-11-02: the two saves above said "Saved — …"; the refusal below is counted on its own)
     open(WG[2]); edit(d => { d.nights.tue = "s1"; });
     await peer(WG[2], w => { w.nights.tue = "p8"; }); await A.eng.pull();
     const refuseNote = note(), fromR = t.log.length, histR = A.history.length, auditsR = ed.audits.length;
