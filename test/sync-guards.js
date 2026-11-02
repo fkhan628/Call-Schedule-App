@@ -8461,6 +8461,7 @@ console.log("\nCZ2. Sunday handoff: the calendar and On Call Today");
   // main's output is compared after exactly these rewrites, and everything else still byte for byte)
   //   QW1 the service Saturday is a Svc row (main: Wknd) — so main's own todayCall, given the row, already says
   //       dayCall —, its chip says "Service Week · Sat 7a–Sun 7a", its text line "Service Week (Sat 7a–Sun 7a)"
+  //   QW2 a weekday's APP chip says "APP tonight 5p–7a" (main: "APP 5p–7a")
   const dowDA = (ds) => { const [y, m, d] = ds.split("-").map(Number); return new Date(y, m - 1, d).getDay(); };
   const daCalZ = (cal) => Object.fromEntries(Object.entries(cal || {}).map(([ds, rows]) => [ds, (rows || []).map((e) => (/^(B-)?Wknd$/.test(e.type) && e.note === "Sat 7a–7a" ? Object.assign({}, e, { type: e.type.replace("Wknd", "Svc") }) : e))]));
   const daMsgZ = (msg, ds) => String(msg).split("\n").map((l) => {
@@ -8468,8 +8469,8 @@ console.log("\nCZ2. Sunday handoff: the calendar and On Call Today");
     return sv && sat ? `🏥 Service Week (Sat 7a–Sun 7a): ${sv[1]}` : l;
   }).join("\n");
   const daChipsZ = (tree, ds) => {
-    const t = JSON.parse(JSON.stringify(tree)), sat = dowDA(ds) === 6;
-    const walk = (n) => { if (n && typeof n === "object" && Array.isArray(n.kids)) { n.kids = n.kids.map((k) => (sat && k === "Service Week" ? "Service Week · Sat 7a–Sun 7a" : k)); n.kids.forEach(walk); } };
+    const t = JSON.parse(JSON.stringify(tree)), sat = dowDA(ds) === 6, wkday = dowDA(ds) >= 1 && dowDA(ds) <= 5;
+    const walk = (n) => { if (n && typeof n === "object" && Array.isArray(n.kids)) { n.kids = n.kids.map((k) => (sat && k === "Service Week" ? "Service Week · Sat 7a–Sun 7a" : wkday && k === "APP 5p–7a" ? "APP tonight 5p–7a" : k)); n.kids.forEach(walk); } };
     walk(t); return t;
   };
   const kitOk = (k) => !!(k.cal && k.cells && k.today && k.chips);
@@ -8603,7 +8604,7 @@ console.log("\nCZ2. Sunday handoff: the calendar and On Call Today");
     compareZ("the 11/2 week", PLAIN, APPZ);
     INERT.forEach(([l, r]) => compareZ(`11/2 + ${l}`, weekZ({ handoffs: r }), APPZ));
     compareZ("11/2 + a covered Sunday", weekZ({ handoffs: HOZ, holidayCoverage: COVZ }), APPZ);
-    check(`CZ2b no handoff → main's, byte for byte (main's code at 226bd08, frozen) apart from DA's rewrites (the service Saturday's Svc row, its chip and text line): calData on the 46 live weeks, 520 random weeks (${randRec.length} with a record weekHolders leaves inert) and the 11/2 week alone and with each inert record or a covered Sunday; and on every one of their ${sameZ.dates} dates the cell's chips under seven filter settings, todayCall + hasCallToday + the shared text, and the banner's chip row`,
+    check(`CZ2b no handoff → main's, byte for byte (main's code at 226bd08, frozen) apart from DA's rewrites (the service Saturday's Svc row, its chip and text line; a weekday's "APP tonight" chip): calData on the 46 live weeks, 520 random weeks (${randRec.length} with a record weekHolders leaves inert) and the 11/2 week alone and with each inert record or a covered Sunday; and on every one of their ${sameZ.dates} dates the cell's chips under seven filter settings, todayCall + hasCallToday + the shared text, and the banner's chip row`,
       Object.keys(LIVEZ).length === 46 && randRec.length >= 100 && randInert && sameZ.scheds === 3 + INERT.length + 1 && sameZ.bad.length === 0 && sameZ.dates >= 3500,
       JZ({ scheds: sameZ.scheds, dates: sameZ.dates, randRec: randRec.length, randInert, bad: sameZ.bad.slice(0, 3) }));
 
@@ -14628,8 +14629,9 @@ console.log("\nAY. On Call Today: an \"On call now\" line");
   const nsrcY = src.replace(/\r\n/g, "\n");
   const B0 = nsrcY.indexOf("{/* ─── On Call Today Banner ─── */}"), BH = B0 < 0 ? -1 : nsrcY.indexOf("📋 On Call Today — ", B0);
   const head = B0 > 0 && BH > B0 ? nsrcY.slice(B0, BH) : "";
-  check("AY5 the line is the banner's FIRST child, above the \"On Call Today\" heading: gated on callNowLine, its text onCallNowText's, green for DSG and amber (#8a6a10, the Fierce line's) for a backup week; the heading follows inside {hasCallToday && <>",
-    /^\{\/\* ─── On Call Today Banner ─── \*\/\}\s*\{\/\*[^]*?\*\/\}\s*\{\(hasCallToday \|\| callNowLine\) && \(\s*<div style=\{\{background:"linear-gradient\(135deg,#ffffff,#f0f8ff\)"[^\n]*>\s*\{callNowLine && \(\s*<div style=\{\{fontSize:13,fontWeight:700,color:callNowLine\.backup\?"#8a6a10":"#1a6e3c",marginBottom:hasCallToday\?8:0\}\}>\s*\{callNowLine\.text\}\s*<\/div>\s*\)\}\s*\{hasCallToday && <>\s*<div style=\{\{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10,flexWrap:"wrap",gap:8\}\}>\s*<div style=\{\{fontSize:15,fontWeight:700,color:"#1a2a3a"\}\}>\s*$/.test(head)
+  // (changed ON PURPOSE 2026-11-02, section DA / QW2: last night's APP, "👩‍⚕️ APP now: <name>, until 7a", follows the line)
+  check("AY5 the line is the banner's FIRST child, above the \"On Call Today\" heading: gated on callNowLine, its text onCallNowText's, green for DSG and amber (#8a6a10, the Fierce line's) for a backup week; then, before 7a, last night's APP (DA2); the heading follows inside {hasCallToday && <>",
+    /^\{\/\* ─── On Call Today Banner ─── \*\/\}\s*\{\/\*[^]*?\*\/\}\s*\{\(hasCallToday \|\| callNowLine\) && \(\s*<div style=\{\{background:"linear-gradient\(135deg,#ffffff,#f0f8ff\)"[^\n]*>\s*\{callNowLine && \(\s*<div style=\{\{fontSize:13,fontWeight:700,color:callNowLine\.backup\?"#8a6a10":"#1a6e3c",marginBottom:hasCallToday\?8:0\}\}>\s*\{callNowLine\.text\}\s*<\/div>\s*\)\}\s*\{\/\*[^]*?\*\/\}\s*\{appUntil7a && \(\s*<div style=\{\{fontSize:13,fontWeight:700,color:"#1a6e3c",marginBottom:hasCallToday\?8:0\}\}>\s*👩‍⚕️ APP now: \{appUntil7a\}, until 7a\s*<\/div>\s*\)\}\s*\{hasCallToday && <>\s*<div style=\{\{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10,flexWrap:"wrap",gap:8\}\}>\s*<div style=\{\{fontSize:15,fontWeight:700,color:"#1a2a3a"\}\}>\s*$/.test(head)
       && count("{callNowLine.text}") === 1 && count("On call now") === 0,
     head.slice(0, 500));
   check("AY5 callNow is read only there: onCallNow is called once in the app, callNowName three times (declared, and twice in callNowLine), callNowLine five times (declared, the banner's gate, the line's gate, its colour, its text), callNow's fields only for the name",
@@ -18296,18 +18298,25 @@ await (async () => {
   }
 })().catch(ex => check("CC harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
 
-// ─── DA. On Call Today and the calendar say what each shift is: the service Saturday (2026-11-02) ───
+// ─── DA. On Call Today and the calendar say what each shift is: the service Saturday, last night's APP (2026-11-02) ───
 // The UX audit's quick wins (2026-11-01; owner 2026-11-02: "work through your list in a safe and expeditious manner"):
 //   QW1 a service week runs Mon–Sat (owner rule 2026-10-20), yet the calendar drew its Saturday as a "W" under the
 //       Weekends switch, and On Call Today and its shared text said "Weekend: <name>" — the weekend surgeon (Fri night
 //       and Sun) is someone else, so a caller planning for Sunday could pick the wrong one. The Saturday is a Svc row
 //       now: "S" in the service colour under Service Wk, "Service Week · Sat 7a–Sun 7a" on the card and in the text.
+//   QW2 between midnight and 7a the card dropped the APP whose overnight runs to 7a, and named tonight's (who starts
+//       at 5p) as if on now. Before 7a it now says "👩‍⚕️ APP now: <name>, until 7a" under the "On call now" line
+//       (helpers.js appOnCallNow, Central hours), and a weekday's APP chip reads "APP tonight 5p–7a".
 // The real code, sliced and run with stubs; the JSX through CJ's h() compiler (copied here, as is, as CZ2 has it):
 //   DA1 QW1, on the week of 11/2 (KJH's service week, DJA covering Sat 11/7) and the live weeks: calData's Saturday is
 //       one Svc / B-Svc row, "Sat 7a–7a", naming weekHolders' sat; the cell draws "S DJA" in the service ink, the
 //       Service Wk switch hides it and Weekends doesn't; Fri night and Sun stay "W"; the Generate preview draws "S"
 //       too; On Call Today names DJA the day's Service Week, "Sat 7a–Sun 7a", with no Weekend chip; the text says so;
 //       the legend's W is the weekend's Friday night and Sunday
+//   DA2 QW2: appOnCallNow minute by minute for three weeks against the shifts' own spans (a weekday's 5p → 7a, a
+//       Sat / Sun's 7a → 7a), every change of answer on a new window key (the card re-renders), pure, never a throw;
+//       the component's two real lines at a pinned clock (F3's nights) and with an older helpers.js; the line
+//       rendered, in the banner's head, ungated; today's weekday APP chip "APP tonight 5p–7a"
 //   DA4 the blast radius, against main's code (frozen: test/fixtures/calendar-today-main-226bd08.txt, CZ2b's): on
 //       every date of the 46 live weeks and the week of 11/2 (plain and backup), the calendar's rows, the cell's chips
 //       (seven filter settings), todayCall, the banner's chips and the shared text differ from main's ONLY where the
@@ -18491,6 +18500,90 @@ await (async () => {
     count('<span><span style={{color:"#908050",fontWeight:700}}>W</span> Weekend (Fri night, Sun)</span>') === 1 && count('<span><span style={{color:"#3080a8",fontWeight:700}}>S</span> Service Wk</span>') === 1
       && count('{key:"svc",label:"Service Wk",color:"#3080a8",icon:"S"},') === 1 && count("</span> Weekend</span>") === 0);
 
+  // DA2 — QW2: the APP on call now, by the APP shifts' own hours at Central hours (helpers.js appOnCallNow)
+  const aocD = vm.runInContext('typeof appOnCallNow === "function" ? appOnCallNow : null', sandbox);
+  const ocwD = vm.runInContext('typeof onCallWindowKey === "function" ? onCallWindowKey : null', sandbox);
+  // A CENTRAL wall-clock time → its instant, whatever this machine's zone (AY's ct): CDT is UTC−5, CST UTC−6
+  const CTD = new Intl.DateTimeFormat("en-US", { timeZone: "America/Chicago", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+  const ctD = (ds, h, mi) => {
+    const [y, m, d] = ds.split("-").map(Number);
+    for (const off of [5, 6]) {
+      const t = new Date(Date.UTC(y, m - 1, d, h + off, mi || 0)), p = Object.fromEntries(CTD.formatToParts(t).map((x) => [x.type, x.value]));
+      if (+p.year === y && +p.month === m && +p.day === d && +p.hour % 24 === h && +p.minute === (mi || 0)) return t;
+    }
+    return new Date(NaN);
+  };
+  // Three weeks of APP shifts, Sat 10/31 → Sat 11/21 (the fall-back night included), one date in five with none
+  const APPW = {};
+  for (let k = 0; k < 22; k++) if (k % 5 !== 3) APPW[H.fmt(H.addD(H.parse("2026-10-31"), k))] = ["a1", "a2", "a3"][k % 3];
+  const APPW0 = JD(APPW);
+  // The oracle, said the other way round: each shift as the span of instants it holds — a weekday's [5p, next 7a),
+  // a Sat / Sun's [7a, next 7a) — and an instant's APP is the shift whose span holds it
+  const spansD = Object.entries(APPW).map(([ds, aid]) => { const wkend = [0, 6].includes(dowD(ds)), nx = H.fmt(H.addD(H.parse(ds), 1)); return { ds, aid, a: ctD(ds, wkend ? 7 : 17).getTime(), b: ctD(nx, 7).getTime() }; });
+  const sigD = (r) => (r ? `${r.aid}|${r.ds}|${r.until}|${r.lastNight ? "L" : "-"}` : "null");
+  const sweepD = { n: 0, named: 0, bad: [], keyMiss: [], lastNight: 0 };
+  if (aocD && ocwD) {
+    let prev = null;
+    for (let t = ctD("2026-10-31", 0).getTime(); t < ctD("2026-11-22", 0).getTime(); t += 60000) {
+      const at = new Date(t), got = aocD(APPW, at), sp = spansD.find((s) => s.a <= t && t < s.b) || null;
+      const cDay = Object.fromEntries(CTD.formatToParts(at).map((x) => [x.type, x.value]));
+      const want = sp ? `${sp.aid}|${sp.ds}|7a|${sp.ds !== `${cDay.year}-${cDay.month}-${cDay.day}` ? "L" : "-"}` : "null";
+      sweepD.n++; if (got) sweepD.named++; if (got && got.lastNight) sweepD.lastNight++;
+      if (sigD(got) !== want && sweepD.bad.length < 4) sweepD.bad.push(`${at.toISOString()}: ${sigD(got)} vs ${want}`);
+      const cur = { a: sigD(got), k: ocwD(at) };
+      if (prev && cur.a !== prev.a && cur.k === prev.k && sweepD.keyMiss.length < 4) sweepD.keyMiss.push(at.toISOString());
+      prev = cur;
+    }
+  }
+  check(`DA2 QW2 appOnCallNow, minute by minute for three weeks of Central time (${sweepD.n} minutes, the fall-back night included), against the shifts' own spans — a weekday's 5p → next 7a, a Sat / Sun's 7a → next 7a: before 7a the PREVIOUS date's APP, lastNight true; Mon–Fri 7a–5p nobody, though the date has a shift; from 5p that date's; Sat / Sun from 7a that date's; a date with no shift, nobody — every minute agrees`,
+    !!aocD && sweepD.n === 22 * 1440 + 60 && sweepD.bad.length === 0 && sweepD.named > 15000 && sweepD.lastNight > 5000, JD(sweepD.bad.length ? sweepD.bad : { n: sweepD.n, named: sweepD.named, lastNight: sweepD.lastNight }));
+  check("DA2 QW2 the card re-renders at every APP handover: over the same minutes, each change of appOnCallNow's answer comes with a new window key (onCallWindowKey — the 60-s tick re-renders only on a new key)",
+    !!aocD && !!ocwD && sweepD.n > 0 && sweepD.keyMiss.length === 0, JD(sweepD.keyMiss));
+  let junkD = null;
+  try { junkD = aocD ? [aocD(APPW, null), aocD(APPW, new Date(NaN)), aocD(APPW, "2026-11-06"), aocD(null, ctD("2026-11-06", 3)), aocD({}, ctD("2026-11-06", 3)), aocD({ "2026-11-05": { id: "a1" } }, ctD("2026-11-06", 3))] : null; } catch (ex) { junkD = [threwD(ex)]; }
+  check("DA2 QW2 appOnCallNow is pure (no Date.now, no new Date(); the shifts passed in untouched) and never throws: no time, a bad time, a date string, no shifts, none that night, a shift that is not an APP id → null",
+    !!aocD && !/Date\.now|new Date\(\s*\)/.test(String(aocD)) && !!junkD && junkD.length === 6 && junkD.every((r) => r === null) && Object.keys(APPW).length === 18 && JD(APPW) === APPW0,
+    JD({ junkD, src: aocD ? String(aocD).slice(0, 80) : "appOnCallNow is not defined in helpers.js" }));
+  // the component's two real lines, at a pinned clock
+  const AN0 = '  const appNow = typeof appOnCallNow === "function" ? appOnCallNow(appShifts, new Date()) : null;';
+  const AN1 = "  const appUntil7a = appNow && appNow.lastNight ? (aMap[appNow.aid]?.name || null) : null;";
+  const anAt = nsrcDA.indexOf(AN0), anOk = anAt > 0 && count(AN0) === 1 && count(AN1) === 1 && nsrcDA.indexOf(AN1) === anAt + AN0.length + 1;
+  const anCompile = (ctx) => mkD(() => vm.runInContext(`(function (env) { const { appShifts, aMap } = env; const Date = env.Date;\n${AN0}\n${AN1}\n  return { appNow, appUntil7a }; })`, ctx, { filename: "da-app-now.js" }));
+  const anRun = anOk ? anCompile(sandbox) : null;
+  const anAtD = (fn, apps, ds, h, aMap) => { clockD.ms = ctD(ds, h).getTime(); try { return fn({ appShifts: apps, aMap: aMap || aMapD, Date: DateD }).appUntil7a; } catch (ex) { return threwD(ex); } };
+  // F3's evidence: Thu 11/5 MA (5p–7a), Sat 11/7 MA (7a–7a), Wed 11/11 none, Thu 11/12 MA
+  const APPF = { "2026-11-05": "a1", "2026-11-06": "a2", "2026-11-07": "a1", "2026-11-08": "a3", "2026-11-12": "a1" };
+  const anGot = anRun ? { fri03: anAtD(anRun, APPF, "2026-11-06", 3), fri06: anAtD(anRun, APPF, "2026-11-06", 6), fri10: anAtD(anRun, APPF, "2026-11-06", 10), fri18: anAtD(anRun, APPF, "2026-11-06", 18),
+    sun03: anAtD(anRun, APPF, "2026-11-08", 3), thu03: anAtD(anRun, APPF, "2026-11-12", 3), offRoster: anAtD(anRun, APPF, "2026-11-06", 3, {}) } : null;
+  check("DA2 QW2 the component's real lines (appNow, appUntil7a — each once, together), at a pinned Central clock: Fri 11/6 03:00 and 06:00 name MA, Thursday night's APP, on until 7a; 10:00 and 18:00 nobody (Friday's own APP is the chips' \"APP tonight\"); Sun 11/8 03:00 MA, Saturday's 7a–7a; Thu 11/12 03:00 nobody — Wednesday had no APP, and MA starts at 5p; an APP off the roster → no name",
+    anOk && !!anGot && JD(anGot) === JD({ fri03: "MA", fri06: "MA", fri10: null, fri18: null, sun03: "MA", thu03: null, offRoster: null }), JD({ anOk, anGot }));
+  // an older cached helpers.js (no appOnCallNow): the lines still run, and name nobody (the OLD_SB convention)
+  const oldCtx = (() => { try { const sb = { console, window: {}, document: undefined, navigator: { userAgent: "node-test" }, localStorage: { getItem: () => null, setItem() {}, removeItem() {} }, setTimeout, clearTimeout }; sb.globalThis = sb; vm.createContext(sb);
+    for (const f of ["helpers.js", "config.js"]) vm.runInContext(fs.readFileSync(path.join(ROOT, f), "utf8"), sb, { filename: f }); vm.runInContext("appOnCallNow = undefined;", sb); return sb; } catch (ex) { return null; } })();
+  const anOld = oldCtx && anOk ? anCompile(oldCtx) : null;
+  check("DA2 QW2 an older cached helpers.js (no appOnCallNow): the real lines run without a throw and name nobody — the card is main's",
+    !!anOld && anAtD(anOld, APPF, "2026-11-06", 3) === null, anOld ? JD(anAtD(anOld, APPF, "2026-11-06", 3)) : "no old context");
+  // the line itself, rendered (the banner's head: after the "On call now" line, before the heading — AY5's regex)
+  const anLine = mkD(() => cutD("{appUntil7a && (", "\n              )}", true).slice(1) + "\n              )");
+  const anLineRun = anLine ? mkD(() => vm.runInContext(`(function (env) { const { h, appUntil7a, hasCallToday } = env; return ${jsxD(stripD(anLine))}; })`, sandbox, { filename: "da-app-line.js" })) : null;
+  const lumD = (hx) => { const v = hx.slice(1).match(/../g).map((x) => parseInt(x, 16) / 255).map((cc) => (cc <= 0.03928 ? cc / 12.92 : Math.pow((cc + 0.055) / 1.055, 2.4))); return 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2]; };
+  const crD = (a, b) => (Math.max(lumD(a), lumD(b)) + 0.05) / (Math.min(lumD(a), lumD(b)) + 0.05);
+  const lineOn = anLineRun ? mkD(() => anLineRun({ h: hD, appUntil7a: "MA", hasCallToday: true })) : null, lineOff = anLineRun ? mkD(() => anLineRun({ h: hD, appUntil7a: null, hasCallToday: true })) : "x";
+  const lnSt = lineOn && lineOn.props ? lineOn.props.style : {};
+  const banD = cutD("{/* ─── On Call Today Banner ─── */}", "{(todayCall.fierce || todayCall.fierceBkp) && (", true) || "";
+  const headD = banD.slice(0, Math.max(0, banD.indexOf("{hasCallToday && <>")));
+  check("DA2 QW2 the line, rendered: \"👩‍⚕️ APP now: MA, until 7a\" at 13px bold in the \"now\" line's green #1a6e3c (≥ 4.5:1 on the card's white and #f0f8ff), only when there is a name; in the banner's head after the \"On call now\" line and before the heading, ungated — ?public=1 and the OR board show it too",
+    !!lineOn && textD(lineOn) === "👩‍⚕️ APP now: MA, until 7a" && lnSt.color === "#1a6e3c" && lnSt.fontSize === 13 && lnSt.fontWeight === 700 && crD("#1a6e3c", "#ffffff") >= 4.5 && crD("#1a6e3c", "#f0f8ff") >= 4.5
+      && (lineOff === null || lineOff === false) && headD.indexOf("{callNowLine && (") > 0 && headD.indexOf("{callNowLine && (") < headD.indexOf("{appUntil7a && (")
+      && !/isPublicMode|isOrView|appOffVisible/.test(headD) && count("{appUntil7a && (") === 1 && count("appUntil7a") === 3,
+    JD({ text: lineOn && textD(lineOn), style: lnSt, off: lineOff, uses: count("appUntil7a") }));
+  const cF = calD(KD, weekD(), APPF);
+  const appChip = (ds) => { const t = todayD(KD, cF[ds], ds); return kidsD(chipsD(KD, t.todayCall, ds)).map(partsD).filter((p) => p[0] === "👩‍⚕️"); };
+  check("DA2 QW2 today's APP chip says when the shift starts: Fri 11/6 (a weekday) \"APP tonight 5p–7a\" SJ — main's \"APP 5p–7a\" read as on now before 5p —, Thu 11/5 \"APP tonight 5p–7a\" MA; Sat 11/7 \"APP 7a–7a\" MA and Sun 11/8 \"APP 7a–7a\" MS as before",
+    JD(appChip(FRI)) === JD([["👩‍⚕️", "APP tonight 5p–7a", "SJ"]]) && JD(appChip("2026-11-05")) === JD([["👩‍⚕️", "APP tonight 5p–7a", "MA"]])
+      && JD(appChip(SAT)) === JD([["👩‍⚕️", "APP 7a–7a", "MA"]]) && JD(appChip(SUN)) === JD([["👩‍⚕️", "APP 7a–7a", "MS"]]),
+    JD({ fri: appChip(FRI), thu: appChip("2026-11-05"), sat: appChip(SAT), sun: appChip(SUN) }));
+
   // DA4 — the blast radius, against main's frozen code: today's and main's pieces, each on its own rows
   const APPL = {};
   Object.keys(LIVED).forEach((m, k) => { APPL[H.fmt(H.addD(H.parse(m), k % 7))] = ["a1", "a2", "a3"][k % 3]; });
@@ -18503,9 +18596,10 @@ await (async () => {
     const svcSats = new Set(Object.entries(S).map(([m, w]) => whD(m, w).days[5]).filter((d) => d.sat).map((d) => d.ds));
     for (const ds of [...new Set([...Object.keys(cNew), ...Object.keys(cMain)])].sort()) {
       blast.dates++;
-      const key = `${label} ${ds}`, a = cNew[ds] || [], b = cMain[ds] || [], sat = svcSats.has(ds);
+      const key = `${label} ${ds}`, a = cNew[ds] || [], b = cMain[ds] || [], sat = svcSats.has(ds), wkday = dowD(ds) >= 1 && dowD(ds) <= 5;
       // what each item changes on this date
       if (sat) ["rows", "cell", "today", "chips", "text"].forEach((k) => noteD(blast.want, k, key));
+      if (wkday && b.some((e) => e.type === "APP" && aMapD[e.appId])) noteD(blast.want, "chips", key); // QW2: "APP tonight 5p–7a"
       // the rows: main's, with the service Saturday's Wknd row a Svc row (QW1)
       const wantRows = b.map((e) => (sat && /^(B-)?Wknd$/.test(e.type) && e.note === "Sat 7a–7a" ? Object.assign({}, e, { type: e.type.replace("Wknd", "Svc") }) : e));
       if (JD(a) !== JD(b)) noteD(blast.diff, "rows", key);
@@ -18516,8 +18610,9 @@ await (async () => {
       if (JD(tA.todayCall) !== JD(tB.todayCall) || tA.hasCallToday !== tB.hasCallToday) noteD(blast.diff, "today", key);
       if (sat && JD(tA.todayCall) !== JD(Object.assign({}, tB.todayCall, { dayCall: tB.todayCall.weekend, weekend: null }))) blast.bad.push(`${key}: todayCall ${JD(tA.todayCall)} vs main ${JD(tB.todayCall)}`);
       const pA = kidsD(chipsD(KD, tA.todayCall, ds)).map(partsD), pB = kidsD(chipsD(KM, tB.todayCall, ds)).map(partsD);
-      // the chips: main's, with the service Saturday's Weekend chip the Service Week one (QW1)
-      const wantChips = pB.map(([e, l, n]) => (sat && l === "Weekend" ? ["☀️", "Service Week · Sat 7a–Sun 7a", n] : [e, l, n]));
+      // the chips: main's, with the service Saturday's Weekend chip the Service Week one (QW1) and a weekday's APP chip
+      // "APP tonight 5p–7a" (QW2)
+      const wantChips = pB.map(([e, l, n]) => (sat && l === "Weekend" ? ["☀️", "Service Week · Sat 7a–Sun 7a", n] : wkday && l === "APP 5p–7a" ? [e, "APP tonight 5p–7a", n] : [e, l, n]));
       if (JD(chipsD(KD, tA.todayCall, ds)) !== JD(chipsD(KM, tB.todayCall, ds))) noteD(blast.diff, "chips", key);
       if (JD(pA) !== JD(wantChips)) blast.bad.push(`${key}: chips ${JD(pA)} vs main ${JD(pB)}`);
       // the text, line by line: main's, with the service Saturday's line (QW1)
@@ -18531,8 +18626,8 @@ await (async () => {
   radiusD("11/2", weekD(), APPD);
   radiusD("11/2 backup", weekD({ isBackup: true }), APPD);
   const KINDS = ["rows", "cell", "today", "chips", "text"], setD = (o, k) => JD((o[k] || []).slice().sort());
-  check(`DA4 the blast radius, against main's frozen code (CZ2b's fixture), each on its own rows: on all ${blast.dates} dates of the 46 live weeks and the week of 11/2 (plain and backup), today's calendar rows, cell chips (seven filter settings), todayCall, banner chips and shared text differ from main's ONLY on the ${(blast.want.rows || []).length} service Saturdays — the row's type Wknd → Svc, the cell main's own given that row ("W" → "S"), todayCall weekend → dayCall, the Weekend chip → "Service Week · Sat 7a–Sun 7a", "🌗 Weekend: X" → "🏥 Service Week (Sat 7a–Sun 7a): X" — every other date is main's, byte for byte`,
-    blast.bad.length === 0 && blast.dates >= 300 && (blast.want.rows || []).length >= 30 && KINDS.every((k) => setD(blast.diff, k) === setD(blast.want, k)),
+  check(`DA4 the blast radius, against main's frozen code (CZ2b's fixture), each on its own rows: on all ${blast.dates} dates of the 46 live weeks and the week of 11/2 (plain and backup), today's calendar rows, cell chips (seven filter settings), todayCall, banner chips and shared text differ from main's ONLY on the ${(blast.want.rows || []).length} service Saturdays — the row's type Wknd → Svc, the cell main's own given that row ("W" → "S"), todayCall weekend → dayCall, the Weekend chip → "Service Week · Sat 7a–Sun 7a", "🌗 Weekend: X" → "🏥 Service Week (Sat 7a–Sun 7a): X" — and in a weekday's APP chip, "APP 5p–7a" → "APP tonight 5p–7a" (${(blast.want.chips || []).length - (blast.want.rows || []).length} dates); every other date is main's, byte for byte`,
+    blast.bad.length === 0 && blast.dates >= 300 && (blast.want.rows || []).length >= 30 && (blast.want.chips || []).length > (blast.want.rows || []).length + 20 && KINDS.every((k) => setD(blast.diff, k) === setD(blast.want, k)),
     JD({ dates: blast.dates, want: Object.fromEntries(KINDS.map((k) => [k, (blast.want[k] || []).length])), diff: Object.fromEntries(KINDS.map((k) => [k, (blast.diff[k] || []).length])), bad: blast.bad.slice(0, 3) }));
 })().catch(ex => check("DA harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
 

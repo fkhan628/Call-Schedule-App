@@ -8692,6 +8692,11 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   const nowWindowKey = () => (typeof onCallWindowKey === "function" ? onCallWindowKey(new Date(), scheduleRef.current) : "");
   const [, setNowWindow] = useState(nowWindowKey);
   useEffect(() => { const t = setInterval(() => setNowWindow(nowWindowKey()), 60000); return () => clearInterval(t); }, []);
+  // The APP on call right now (UX audit 2026-11-01, QW2): before 7a that is LAST night's APP, whose shift runs to 7a —
+  // the chips are today's, and a weekday's APP starts at 5p ("APP tonight 5p–7a"). helpers.js appOnCallNow, at Central
+  // hours like the surgeon line; the window tick above re-renders at midnight, 7a and 5p, the APP's handovers too.
+  const appNow = typeof appOnCallNow === "function" ? appOnCallNow(appShifts, new Date()) : null;
+  const appUntil7a = appNow && appNow.lastNight ? (aMap[appNow.aid]?.name || null) : null;
 
   // Build notification message for tonight
   const buildTonightMsg = () => {
@@ -10794,6 +10799,12 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   {callNowLine.text}
                 </div>
               )}
+              {/* Last night's APP, on until 7a (QW2): before 7a only — the chips below are today's */}
+              {appUntil7a && (
+                <div style={{fontSize:13,fontWeight:700,color:"#1a6e3c",marginBottom:hasCallToday?8:0}}>
+                  👩‍⚕️ APP now: {appUntil7a}, until 7a
+                </div>
+              )}
               {hasCallToday && <>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10,flexWrap:"wrap",gap:8}}>
                 <div style={{fontSize:15,fontWeight:700,color:"#1a2a3a"}}>
@@ -10856,7 +10867,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 ))}
                 {todayCall.app && (()=>{
                   const dow = new Date().getDay();
-                  const appTimeLabel = (dow === 0 || dow === 6) ? "APP 7a–7a" : "APP 5p–7a";
+                  // a weekday's APP starts at 5p: "tonight", so it never reads as on now (QW2 — last night's is the line above)
+                  const appTimeLabel = (dow === 0 || dow === 6) ? "APP 7a–7a" : "APP tonight 5p–7a";
                   return (
                   <div style={{display:"flex",alignItems:"center",gap:6,padding:"6px 12px",background:"#fcf4f0",borderRadius:8,border:"1px solid #e8d0c0"}}>
                     <span style={{fontSize:16}}>👩‍⚕️</span>

@@ -543,6 +543,28 @@ function onCallNowText(callNow, name) {
     : { backup: false, text: `🟢 On call now: ${name} — ${callNow.slot}, until ${callNow.until}` };
 }
 
+// The APP on call at an instant (UX audit 2026-11-01, QW2). The On Call Today
+// card reads only today's APP, so after midnight it dropped the APP whose
+// overnight runs to 7a — and named tonight's, who starts at 5p, as if on now.
+// An APP shift's hours are the app's own (buildAppICSEvents, the day sheet,
+// the card): a weekday's runs 5p → 7a the next morning, a Saturday's or
+// Sunday's 7a → 7a. So, at CENTRAL hours (centralClock, as onCallNow):
+//   before 7a    the PREVIOUS date's APP, until 7a (lastNight: true)
+//   7a – 5p      Sat / Sun that date's APP; Mon–Fri nobody
+//   from 5p      that date's APP, until 7a
+// appShifts maps a date to an APP id, as calData reads it. Returns { aid, ds,
+// until: "7a", lastNight } — ds the shift's own date — or null when no APP
+// holds that hour (no shift, a weekday daytime, no instant). now is passed in,
+// so there is no clock here.
+function appOnCallNow(appShifts, now) {
+  const c = centralClock(now);
+  if (!c) return null;
+  const x = parse(c.ds), dow = x.getDay();
+  const ds = c.h < 7 ? fmt(addD(x, -1)) : dow === 0 || dow === 6 || c.h >= 17 ? c.ds : null;
+  const aid = ds && appShifts && typeof appShifts === "object" ? appShifts[ds] : null;
+  return typeof aid === "string" && aid ? { aid, ds, until: "7a", lastNight: c.h < 7 } : null;
+}
+
 // Why a calendar month is blank (UX audit, 2026-10-18). A month with no
 // surgeon call looks the same whether nothing loaded or the month is simply
 // not published yet, so the Calendar tab asks this for the month it shows
