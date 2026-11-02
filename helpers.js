@@ -1690,7 +1690,12 @@ function buildPrintableCalendarHTML({
   }
 
   // Shift text for a given date — Mon/Fri: "DC / Night", Sat: "DC", Sun: "Wknd"
-  // Fri night IS the weekend slot. Holiday coverage overrides.
+  // Fri night IS the weekend slot. Holiday coverage overrides. DC is the
+  // date's dayCallOverrides entry, else the dayCall: weekHolders' rule, the
+  // calendar's (2026-11-02 — an override's date printed the dayCall: Sat 11/7
+  // read KJH, the calendar DJA). A Sunday the week hands off (handoffOn, as
+  // weekHolders reads it) prints both surgeons and the hour, "KJH→DJA 5p":
+  // KJH until 5p, then DJA to Mon 7a.
   function shiftTextFor(date) {
     const ds = fmt(date);
     const mon = monOf(date);
@@ -1703,8 +1708,11 @@ function buildPrintableCalendarHTML({
     }
 
     const dow = date.getDay();
-    const dc = nameOf(wk.dayCall);
+    const ovr = wk.dayCall && wk.dayCallOverrides ? wk.dayCallOverrides[ds] : null;
+    const dc = nameOf(ovr || wk.dayCall);
     if (dow === 0) {
+      const ho = weekHolders(wkKey, wk).days[6].handoff;
+      if (ho) return `${nameOf(ho.from)}→${nameOf(ho.to)} ${hourLabel(ho.hour)}`;
       return wk.nights?.wknd ? nameOf(wk.nights.wknd) : "";
     }
     if (dow === 6) {

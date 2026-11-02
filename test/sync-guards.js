@@ -17949,6 +17949,227 @@ await (async () => {
     J({ p1, p2, p3, m1 }));
 })().catch(ex => check("CK harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
 
+// ─── CZ4. Sunday handoff: the printed calendar (2026-11-02) ───
+// Owner, 2026-11-02: on Sun 11/8 KJH covers 7a–5p and DJA 5p–Mon 7a. The live week 2026-11-02 stores it as a
+// handoff of its weekend's Sunday (wk.handoffs: helpers.js handoffOn, honored as weekHolders reads it). The
+// printed month sheet — 🖨 Print Calendar in the Calendar's Schedule Tools and on the Generate preview, both
+// helpers.js buildPrintableCalendarHTML — printed one name on a Sunday, the weekend surgeon's, for all 24h. A
+// handed-off Sunday now prints both surgeons and the hour: "KJH→DJA 5p". Found on the same week: the sheet
+// ignored dayCallOverrides — Sat 11/7 (DJA covers the service Saturday) printed KJH while the calendar shows
+// DJA, and a weekday override printed the week's dayCall. The service holder is now weekHolders' (the date's
+// override, else the dayCall; an override in a week with no dayCall stays ignored, as there). The REAL code,
+// executed: the sheet sliced from helpers.js (its clock pinned, for the footer's "Printed" date), both 🖨
+// buttons sliced from index-source.html (their try … catch in a fresh context — a free name throws, which the
+// button's own catch turns into an alert; window.open and alert stubbed), and main's sheet, frozen
+// (test/fixtures/buildPrintableCalendarHTML-main-226bd08.txt), as the "before":
+//   CZ4a the live week WITH the handoff, from the Calendar's 🖨 button: Sun 11/8 reads "KJH→DJA 5p" and Sat 11/7
+//        "DJA" (its override); Mon–Fri as before; the document is main's but for those two cells, byte for byte
+//   CZ4b WITHOUT it (none stored, {} or null): Sun 11/8 reads "KJH" as before and only Sat 11/7 differs from
+//        main's; with the handoff and no override, only Sun 11/8 does
+//   CZ4c the hour in the app's words ("12p", "8a", "11p"), the taker by name; a handoff weekHolders does not
+//        honor prints exactly as none (a recorded from that no longer holds the weekend, to the weekend surgeon,
+//        a bad hour, a key on a Fri / Sat or outside the week, no to); a covered Sunday prints its coverer; a
+//        week with no weekend surgeon prints no Sunday; a Fierce Primary (backup) week splits too
+//   CZ4d every cell names weekHolders' holders (the calendar's rule) — the override else the dayCall, the night,
+//        the weekend, the coverer, the split — on all 46 live weeks and 260 random weeks with overrides and
+//        handoffs; a week with no dayCall (null, "" or none stored) prints its override dates as main does
+//   CZ4e with no handoff and no override (or overrides naming the week's own dayCall), the whole document is
+//        main's, byte for byte (pages, cells, bars, mini calendars): every month of the live weeks (their
+//        overrides stripped) and of 520 random weeks, a week with no dayCall stored each of those three ways
+//   CZ4f the Generate preview's 🖨 Print Calendar prints its previewSchedule (not the live one) as the same
+//        document the Calendar's button prints for those months, the handed-off Sunday included; nothing else
+//        in index-source.html calls the sheet
+//   the section runs inside its own catch (a throw fails one named check, never the run)
+console.log("\nCZ4. Sunday handoff: the printed calendar");
+await (async () => {
+  const J = JSON.stringify, clone = (o) => JSON.parse(JSON.stringify(o));
+  const FIXZ = path.join(ROOT, "test", "fixtures");
+  const fnZ = (name) => vm.runInContext(`typeof ${name} === "function" ? ${name} : null`, sandbox);
+  const weekHoldersZ = fnZ("weekHolders"), hourLabelZ = fnZ("hourLabel"), parseZ = fnZ("parse"), fmtZ = fnZ("fmt"), addDZ = fnZ("addD");
+  // The sheet, sliced from helpers.js, and main's, frozen — each run with the sheet's clock pinned (the footer prints the day)
+  const hsZ = fs.readFileSync(path.join(ROOT, "helpers.js"), "utf8").replace(/\r\n/g, "\n"), PA = "function buildPrintableCalendarHTML({";
+  const p0 = hsZ.indexOf(PA), p1 = p0 < 0 || hsZ.indexOf(PA, p0 + 1) !== -1 ? -1 : hsZ.indexOf("\n}\n", p0);
+  const PinnedZ = vm.runInContext("(class extends Date { constructor(...a) { if (a.length) super(...a); else super(2026, 10, 2, 9, 0); } })", sandbox);
+  const sheetOf = (body) => { try { return vm.runInContext(`(function (Date) {\n${body}\nreturn buildPrintableCalendarHTML; })`, sandbox, { filename: "printable-calendar.js" })(PinnedZ); } catch (ex) { return null; } };
+  const printNew = p1 > p0 ? sheetOf(hsZ.slice(p0, p1 + 2)) : null;
+  const printOld = sheetOf(fs.readFileSync(path.join(FIXZ, "buildPrintableCalendarHTML-main-226bd08.txt"), "utf8"));
+  // Both 🖨 buttons' handlers (try … catch), sliced verbatim, each in a fresh context
+  const nsrcZ = src.replace(/\r\n/g, "\n");
+  const btnZ = (anchor, names) => {
+    const a = nsrcZ.indexOf(anchor), t = a < 0 || nsrcZ.indexOf(anchor, a + 1) !== -1 ? -1 : nsrcZ.lastIndexOf("try {", a), e = t < 0 ? -1 : nsrcZ.indexOf("}} style=", a);
+    try { return e > a && t > 0 ? vm.runInContext(`(function (env) { const { ${names} } = env;\n${nsrcZ.slice(t, e)}\n })`, vm.createContext({})) : null; } catch (ex) { return null; }
+  };
+  const calBtn = btnZ("startYear: printStartYear,", "printStartYear, printStartMonth, printNumMonths, schedule, vacations, surgeons, apps, appShifts, fierceBackupSet, buildPrintableCalendarHTML, window, alert, console");
+  const prevBtn = btnZ("const previewMondays = Object.keys(previewSchedule).sort();", "previewSchedule, schedule, vacations, surgeons, apps, appShifts, fierceBackupSet, buildPrintableCalendarHTML, window, alert, console, parse, addD");
+  const press = (btn, env) => {
+    const r = { docs: [], opened: 0, closed: 0, alerts: [], errors: [] };
+    const win = { document: { open: () => {}, write: (h) => r.docs.push(String(h)), close: () => { r.closed++; } } };
+    try {
+      btn(Object.assign({ buildPrintableCalendarHTML: printNew, window: { open: () => { r.opened++; return win; } }, alert: (m) => r.alerts.push(String(m)),
+        console: { error: (...a) => r.errors.push(a.map(String).join(" ")) }, parse: parseZ, addD: addDZ }, env));
+    } catch (ex) { r.threw = String(ex && ex.message || ex).slice(0, 160); }
+    return r;
+  };
+  const ranClean = (r) => r.opened === 1 && r.docs.length === 1 && r.closed === 1 && r.alerts.length === 0 && r.errors.length === 0 && !r.threw;
+  if (!printNew || !printOld || !calBtn || !prevBtn || !weekHoldersZ || !hourLabelZ) {
+    check("CZ4 the sheet (helpers.js), main's frozen copy and both 🖨 buttons (index-source.html) are extractable", false, J({ sheet: !!printNew, main: !!printOld, calendar: !!calBtn, preview: !!prevBtn, weekHolders: !!weekHoldersZ, hourLabel: !!hourLabelZ }));
+    return;
+  }
+
+  // A printed document's in-month cells: "YYYY-MM-DD" → its call line ("" when none)
+  const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+  const cellsZ = (doc) => {
+    const out = {};
+    String(doc).split('<div class="page">').slice(1).forEach((pg) => {
+      const t = /<div class="month-title">([A-Za-z]+) (\d{4})<\/div>/.exec(pg), mm = t ? String(MONTHS.indexOf(t[1]) + 1).padStart(2, "0") : null;
+      if (t) for (const c of pg.matchAll(/<div class="cell"><div class="day-num">(\d+)<\/div>(?:<div class="shift">([^<]*)<\/div>)?/g)) out[`${t[2]}-${mm}-${c[1].padStart(2, "0")}`] = c[2] || "";
+    });
+    return out;
+  };
+  const nov = (doc, d) => cellsZ(doc)[`2026-11-${String(d).padStart(2, "0")}`];
+  const diffZ = (a, b) => { const A = cellsZ(a), B = cellsZ(b); return [...new Set([...Object.keys(A), ...Object.keys(B)])].sort().filter((k) => A[k] !== B[k]).map((k) => `${k} ${J(A[k])}→${J(B[k])}`); };
+  // a one-month document with cell d's line put back: what is left must be main's, byte for byte
+  const swapCell = (doc, d, from, to) => doc.split(`<div class="day-num">${d}</div><div class="shift">${from}</div>`).join(`<div class="day-num">${d}</div><div class="shift">${to}</div>`);
+
+  const SURGZ = ["DJA", "MCC", "RPC", "KJH", "REH", "FAK", "ARW"].map((name, i) => ({ id: "s" + (i + 1), name }));
+  const APPSZ = [{ id: "a1", name: "MA" }, { id: "a2", name: "SJ" }];
+  const nameOfZ = (id) => (SURGZ.find((s) => s.id === id) || APPSZ.find((s) => s.id === id) || {}).name || id;
+  const VAC = { s2: [["2026-11-09", "2026-11-13"]], a1: [["2026-11-20", "2026-11-22"]] }, APPSH = { "2026-11-07": "a1", "2026-11-08": "a2" }, FBK = new Set(["2026-11-23"]);
+  const ins = (schedule, extra) => Object.assign({ startYear: 2026, startMonth: 10, numMonths: 1, schedule, vacations: VAC, surgeons: SURGZ, apps: APPSZ, appShifts: APPSH, fierceBackupSet: FBK }, extra || {});
+  const LIVEZ = JSON.parse(fs.readFileSync(path.join(FIXZ, "schedule-weeks-live-2026-10-02.json"), "utf8"));
+  // The live week 2026-11-02 as stored on 2026-11-02: KJH's service week and weekend, DJA's service Saturday (an override)
+  const WK = { dayCall: "s4", dayCallOverrides: { "2026-11-07": "s1" }, nights: { mon: "s7", tue: "s2", wed: "s3", thu: "s5", wknd: "s4" }, isBackup: false, isFierceBackup: false };
+  const HOZ = { "2026-11-08": { from: "s4", to: "s1", at: "17:00" } };
+  const schedWith = (wk) => Object.assign(clone(LIVEZ), { "2026-11-02": wk });
+  const wkWith = (extra) => Object.assign(clone(WK), clone(extra || {}));
+  const docOf = (wk) => printNew(ins(schedWith(wk)));
+
+  // CZ4a — WITH the handoff, from the Calendar's 🖨 button
+  const withHo = schedWith(wkWith({ handoffs: HOZ }));
+  const pa = press(calBtn, { printStartYear: 2026, printStartMonth: 10, printNumMonths: 1, schedule: withHo, vacations: VAC, surgeons: SURGZ, apps: APPSZ, appShifts: APPSH, fierceBackupSet: FBK });
+  const docA = pa.docs[0] || "", oldA = printOld(ins(withHo)), weekA = [2, 3, 4, 5, 6, 7, 8].map((d) => nov(docA, d));
+  check("CZ4a the live week WITH the handoff, from the Calendar's 🖨 button (its real handler: one window, written once and closed, no alert): Sun 11/8 reads \"KJH→DJA 5p\" (KJH until 5p, then DJA; main printed \"KJH\") and Sat 11/7 \"DJA\" (his override — main printed KJH); Mon–Fri as before (KJH / ARW … KJH / KJH); the APP line stays; the document is main's but for those two cells, byte for byte",
+    J(weekA) === J(["KJH / ARW", "KJH / MCC", "KJH / RPC", "KJH / REH", "KJH / KJH", "DJA", "KJH→DJA 5p"]) && ranClean(pa)
+      && docA.includes('<div class="day-num">8</div><div class="shift">KJH→DJA 5p</div><div class="app-shift">SJ</div></div>')
+      && nov(oldA, 7) === "KJH" && nov(oldA, 8) === "KJH" && swapCell(swapCell(docA, 8, "KJH→DJA 5p", "KJH"), 7, "DJA", "KJH") === oldA,
+    J({ week: weekA, vsMain: diffZ(oldA, docA), run: { opened: pa.opened, docs: pa.docs.length, closed: pa.closed, alerts: pa.alerts, errors: pa.errors, threw: pa.threw } }));
+
+  // CZ4b — WITHOUT it; and the handoff without the override
+  const docB = docOf(clone(WK)), oldB = printOld(ins(schedWith(clone(WK))));
+  const docB0 = docOf(wkWith({ handoffs: {} })), docBn = docOf(wkWith({ handoffs: null }));
+  const noOvr = wkWith({ handoffs: HOZ }); delete noOvr.dayCallOverrides;
+  const docB4 = docOf(noOvr), oldB4 = printOld(ins(schedWith(noOvr)));
+  check("CZ4b WITHOUT the handoff (none stored, handoffs {} or null): Sun 11/8 reads \"KJH\" as main printed it, and the only cell that differs from main's is Sat 11/7 (the override); with the handoff and no override, the only one is Sun 11/8 (\"KJH→DJA 5p\"; Sat 11/7 back to KJH)",
+    nov(docB, 8) === "KJH" && nov(docB, 7) === "DJA" && swapCell(docB, 7, "DJA", "KJH") === oldB && docB0 === docB && docBn === docB
+      && nov(docB4, 7) === "KJH" && nov(docB4, 8) === "KJH→DJA 5p" && swapCell(docB4, 8, "KJH→DJA 5p", "KJH") === oldB4,
+    J({ none: diffZ(oldB, docB), empty: docB0 === docB, nul: docBn === docB, noOverride: diffZ(oldB4, docB4) }));
+
+  // CZ4c — the hour and the taker; handoffs weekHolders does not honor; a covered Sunday; no weekend; a backup week
+  const sun8 = (ho) => nov(docOf(wkWith({ handoffs: ho })), 8);
+  const HOURS = { "12:00": "KJH→DJA 12p", "08:00": "KJH→DJA 8a", "13:00": "KJH→DJA 1p", "23:00": "KJH→DJA 11p" };
+  const hoursGot = Object.fromEntries(Object.keys(HOURS).map((at) => [at, sun8({ "2026-11-08": { from: "s4", to: "s1", at } })]));
+  const named = sun8({ "2026-11-08": { to: "s6", at: "17:00" } }); // the {to, at} form (no from recorded): FAK, by name
+  const INERT = {
+    "from MCC (no longer the weekend surgeon)": { "2026-11-08": { from: "s2", to: "s1", at: "17:00" } },
+    "to the weekend surgeon": { "2026-11-08": { from: "s4", to: "s4", at: "17:00" } },
+    "12:30": { "2026-11-08": { from: "s4", to: "s1", at: "12:30" } }, "07:00": { "2026-11-08": { from: "s4", to: "s1", at: "07:00" } },
+    "24:00": { "2026-11-08": { from: "s4", to: "s1", at: "24:00" } }, "5p": { "2026-11-08": { from: "s4", to: "s1", at: "5p" } },
+    "no to": { "2026-11-08": { from: "s4", at: "17:00" } }, "a string": { "2026-11-08": "s1 at 17:00" },
+    "keyed on Sat 11/7": { "2026-11-07": { from: "s4", to: "s1", at: "17:00" } }, "keyed on Fri 11/6": { "2026-11-06": { from: "s4", to: "s1", at: "17:00" } },
+    "keyed on Sun 11/15 (the next week's)": { "2026-11-15": { from: "s4", to: "s1", at: "17:00" } },
+  };
+  const inertBad = Object.keys(INERT).filter((k) => docOf(wkWith({ handoffs: INERT[k] })) !== docB);
+  const COV = { holidayCoverage: { "2026-11-08": { surgeonId: "s3", type: "minor", name: "Sun 24h" } } };
+  const covDoc = docOf(wkWith(Object.assign({ handoffs: HOZ }, COV)));
+  const noWknd = wkWith({ handoffs: HOZ }); noWknd.nights.wknd = null;
+  const noWkndPlain = clone(WK); noWkndPlain.nights.wknd = null;
+  const bkWk = wkWith({ handoffs: HOZ, isBackup: true }), bkDoc = docOf(bkWk), bkOld = printOld(ins(schedWith(bkWk)));
+  const c4 = {
+    hours: Object.keys(HOURS).every((at) => hoursGot[at] === HOURS[at]), named: named === "KJH→FAK 5p", inert: inertBad.length === 0,
+    covered: nov(covDoc, 8) === "RPC" && covDoc.includes('<div class="day-num">8</div><div class="shift">RPC</div><div class="app-shift">SJ</div><div class="holiday-note">Sun 24h</div></div>') && covDoc === docOf(wkWith(COV)),
+    noWeekend: nov(docOf(noWknd), 8) === "" && docOf(noWknd) === docOf(noWkndPlain),
+    backup: nov(bkDoc, 8) === "KJH→DJA 5p" && bkDoc.includes(">FIERCE 1ST/ND</div>") && swapCell(swapCell(bkDoc, 8, "KJH→DJA 5p", "KJH"), 7, "DJA", "KJH") === bkOld,
+  };
+  check("CZ4c the hour in the app's words (12:00 → \"KJH→DJA 12p\", 08:00 → 8a, 13:00 → 1p, 23:00 → 11p) and the taker by name ({to: FAK} with no from → \"KJH→FAK 5p\"); a handoff weekHolders does not honor prints exactly as none — from MCC (no longer the weekend surgeon), to the weekend surgeon, 12:30 / 07:00 / 24:00 / \"5p\", no to, a string, keyed on Fri 11/6, Sat 11/7 or the next week's Sun 11/15; a covered Sunday prints its coverer (RPC, \"Sun 24h\") as with no handoff; a week with no weekend surgeon prints no Sunday; a Fierce Primary (backup) week splits too, its FIERCE bar as main's",
+    Object.values(c4).every(Boolean), J({ c4, hoursGot, named, inertBad }));
+
+  // CZ4d — every printed holder is weekHolders' (the calendar's rule): the live weeks and 260 random weeks with overrides and handoffs
+  const expectZ = (sched, ds) => {
+    const x = parseZ(ds), dow = x.getDay(), m = fmtZ(addDZ(x, dow === 0 ? -6 : 1 - dow)), wk = sched[m];
+    if (!wk) return "";
+    const day = weekHoldersZ(m, wk).days[(dow + 6) % 7], nm = nameOfZ;
+    if (day.cover) return day.cover.sid ? nm(day.cover.sid) : "";
+    if (dow === 0) return day.handoff ? `${nm(day.handoff.from)}→${nm(day.handoff.to)} ${hourLabelZ(day.handoff.hour)}` : day.wkndSun ? nm(day.wkndSun) : "";
+    if (dow === 6) return day.sat ? nm(day.sat) : "";
+    const night = dow === 5 ? day.wkndFri : day.night;
+    return !day.svc ? "" : night ? `${nm(day.svc)} / ${nm(night)}` : nm(day.svc);
+  };
+  const spanOf = (sched) => { const ms = Object.keys(sched).sort(), a = parseZ(ms[0]), z = addDZ(parseZ(ms[ms.length - 1]), 6); return { startYear: a.getFullYear(), startMonth: a.getMonth(), numMonths: (z.getFullYear() - a.getFullYear()) * 12 + z.getMonth() - a.getMonth() + 1 }; };
+  const crossZ = (sched) => { const cells = cellsZ(printNew(ins(sched, spanOf(sched)))); return { n: Object.keys(cells).length, bad: Object.keys(cells).filter((ds) => cells[ds] !== expectZ(sched, ds)).map((ds) => `${ds} printed ${J(cells[ds])}, weekHolders ${J(expectZ(sched, ds))}`) }; };
+  let seedZ = 20261102;
+  const rndZ = () => { seedZ = (seedZ + 0x6D2B79F5) | 0; let t = Math.imul(seedZ ^ (seedZ >>> 15), 1 | seedZ); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+  const pickZ = (a) => a[Math.floor(rndZ() * a.length)], IDSZ = SURGZ.map((s) => s.id), maybeZ = (p) => (rndZ() < p ? pickZ(IDSZ) : null);
+  const AT = ["08:00", "12:00", "13:00", "17:00", "19:00", "23:00", "12:30", "07:00", "24:00", "5p"];
+  const randD = {};
+  for (let k = 0; k < 260; k++) {
+    const mon = addDZ(parseZ("2027-01-04"), 7 * k), day = (i) => fmtZ(addDZ(mon, i));
+    const wk = { dayCall: pickZ(IDSZ), isBackup: rndZ() < 0.12, nights: { mon: maybeZ(0.85), tue: maybeZ(0.85), wed: maybeZ(0.85), thu: maybeZ(0.85), wknd: maybeZ(0.9) } };
+    if (rndZ() < 0.6) { wk.dayCallOverrides = {}; for (let j = 1 + Math.floor(rndZ() * 3); j > 0; j--) wk.dayCallOverrides[day(Math.floor(rndZ() * 9) - 1)] = rndZ() < 0.2 ? wk.dayCall : pickZ(IDSZ); }
+    if (rndZ() < 0.1) wk.holidayCoverage = { [day(Math.floor(rndZ() * 7))]: { surgeonId: maybeZ(0.9), type: pickZ(["major", "minor", "swap"]), name: "Test 24h" } };
+    if (rndZ() < 0.65) {
+      const ho = { from: rndZ() < 0.8 ? wk.nights.wknd : pickZ(IDSZ), to: rndZ() < 0.9 ? pickZ(IDSZ) : wk.nights.wknd, at: pickZ(AT) };
+      if (rndZ() < 0.2) delete ho.from;
+      wk.handoffs = { [rndZ() < 0.85 ? day(6) : day(Math.floor(rndZ() * 9) - 1)]: ho };
+    }
+    randD[fmtZ(mon)] = wk;
+  }
+  const splitsD = Object.entries(randD).filter(([m, w]) => weekHoldersZ(m, w).days[6].handoff).length;
+  const inertD = Object.entries(randD).filter(([m, w]) => w.handoffs && !weekHoldersZ(m, w).days[6].handoff).length;
+  const ovrD = Object.entries(randD).reduce((n, [m, w]) => n + weekHoldersZ(m, w).days.filter((d) => (d.svc || d.sat) && (d.svc || d.sat) !== w.dayCall).length, 0);
+  const xLive = crossZ(LIVEZ), xNow = crossZ(withHo), xRand = crossZ(randD);
+  // a week with no dayCall (stored as null, "" or not at all) and three overrides
+  const noDcSame = [{ dayCall: null }, { dayCall: "" }, {}].every((dc) => {
+    const s = { "2026-11-02": Object.assign({ dayCallOverrides: { "2026-11-03": "s2", "2026-11-06": "s3", "2026-11-07": "s1" }, nights: { mon: "s7", tue: "s2", wknd: "s4" } }, dc) };
+    return printNew(ins(s)) === printOld(ins(s));
+  });
+  check(`CZ4d every printed cell names weekHolders' holders (the calendar's rule): Mon–Fri "service / night" (the date's override, else the dayCall), Sat the service Saturday's, Sun the weekend's or its split, a covered date its coverer — all ${xLive.n} cells of the 46 live weeks (two Friday overrides), the live week with its handoff, and ${xRand.n} cells of 260 random weeks (${ovrD} override days, ${splitsD} honored handoffs, ${inertD} not honored); a week with no dayCall (null, "" or none stored) prints its override dates as main does (weekHolders ignores those)`,
+    xLive.n >= 300 && xRand.n >= 1700 && ovrD >= 60 && splitsD >= 40 && inertD >= 15 && [xLive, xNow, xRand].every((x) => x.bad.length === 0) && noDcSame,
+    J({ live: xLive.bad.slice(0, 3), now: xNow.bad.slice(0, 3), rand: xRand.bad.slice(0, 3), ovrD, splitsD, inertD, noDcSame }));
+
+  // CZ4e — no handoff, no override: main's document, byte for byte
+  const strip = (s) => { const o = clone(s); Object.values(o).forEach((w) => { if (w && typeof w === "object") { delete w.dayCallOverrides; delete w.handoffs; } }); return o; };
+  const liveP = strip(LIVEZ);
+  const ownDc = clone(liveP); Object.entries(ownDc).forEach(([m, w]) => { w.dayCallOverrides = { [fmtZ(addDZ(parseZ(m), 2))]: w.dayCall, [fmtZ(addDZ(parseZ(m), 5))]: w.dayCall }; });
+  let seedE = 20160104;
+  const rndE = () => { seedE = (seedE + 0x6D2B79F5) | 0; let t = Math.imul(seedE ^ (seedE >>> 15), 1 | seedE); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+  const maybeE = (p) => (rndE() < p ? IDSZ[Math.floor(rndE() * IDSZ.length)] : null);
+  const randE = {};
+  for (let k = 0; k < 520; k++) {
+    const mon = addDZ(parseZ("2016-01-04"), 7 * k);
+    const wk = { dayCall: maybeE(0.9), off: maybeE(0.6), isBackup: rndE() < 0.12, isFierceBackup: rndE() < 0.1, nights: rndE() < 0.03 ? null : { mon: maybeE(0.85), tue: maybeE(0.85), wed: maybeE(0.85), thu: maybeE(0.85), wknd: maybeE(0.9) }, holidayCoverage: null };
+    if (!wk.dayCall) { const r = rndE(); if (r < 0.34) wk.dayCall = ""; else if (r < 0.67) delete wk.dayCall; } // no dayCall, stored as null, "" or not at all (main prints each its own way)
+    if (rndE() < 0.08) wk.holidayCoverage = { [fmtZ(addDZ(mon, Math.floor(rndE() * 7)))]: { surgeonId: maybeE(0.9), type: "major", name: "Test 24h", holiday: "Test" } };
+    randE[fmtZ(mon)] = wk;
+  }
+  const VACE = { s3: [["2016-02-01", "2016-02-12"]], s5: [["2025-12-24", "2026-01-02"]], a1: [["2026-03-09", "2026-03-13"]] };
+  const APPE = { "2016-01-09": "a1", "2026-02-14": "a2", "2026-11-08": "a2" }, FBE = new Set(["2016-03-07", "2026-04-06"]);
+  const same = (sched) => { const i = ins(sched, Object.assign(spanOf(sched), { vacations: VACE, appShifts: APPE, fierceBackupSet: FBE })), a = printNew(i), b = printOld(i); return { same: a === b, len: a.length, cells: Object.keys(cellsZ(a)).length, diff: a === b ? [] : diffZ(b, a).slice(0, 3), printed: a.includes("Printed 11/2/2026") }; };
+  const eLive = same(liveP), eOwn = same(ownDc), eRand = same(randE);
+  check(`CZ4e with no handoff and no override (or overrides naming the week's own dayCall), the whole printed document is main's, byte for byte — pages, cells, bars, mini calendars, the footer: every month of the 46 live weeks (overrides stripped; ${eLive.cells} cells) and of 520 random weeks (${eRand.cells} cells: no dayCall — null, "" or none stored — no nights, backup and Fierce backup weeks, holiday covers)`,
+    [eLive, eOwn, eRand].every((e) => e.same && e.printed) && eLive.cells >= 330 && eRand.cells >= 3600,
+    J({ eLive, eOwn, eRand }));
+
+  // CZ4f — the Generate preview's 🖨 Print Calendar prints its previewSchedule
+  const prevSched = { "2026-10-26": clone(LIVEZ["2026-10-26"]), "2026-11-02": wkWith({ handoffs: HOZ }) };
+  const pf = press(prevBtn, { previewSchedule: prevSched, schedule: schedWith(clone(WK)), vacations: VAC, surgeons: SURGZ, apps: APPSZ, appShifts: APPSH, fierceBackupSet: FBK });
+  const pc = press(calBtn, { printStartYear: 2026, printStartMonth: 9, printNumMonths: 2, schedule: prevSched, vacations: VAC, surgeons: SURGZ, apps: APPSZ, appShifts: APPSH, fierceBackupSet: FBK });
+  const docF = pf.docs[0] || "";
+  check("CZ4f the Generate preview's 🖨 Print Calendar (its real handler) prints its previewSchedule, not the live schedule: October–November 2026 for weeks 10/26 + 11/2, the same document the Calendar's 🖨 button prints for those months, with Sun 11/8 \"KJH→DJA 5p\" and Sat 11/7 \"DJA\"; one window, no alert; these two buttons are the sheet's only callers",
+    ranClean(pf) && ranClean(pc) && docF === pc.docs[0] && nov(docF, 8) === "KJH→DJA 5p" && nov(docF, 7) === "DJA" && docF.includes('<div class="month-title">October 2026</div>')
+      && count("buildPrintableCalendarHTML") === 2,
+    J({ sun: nov(docF, 8), sat: nov(docF, 7), sameAsCalendar: docF === pc.docs[0], callers: count("buildPrintableCalendarHTML"), run: { opened: pf.opened, alerts: pf.alerts, threw: pf.threw } }));
+})().catch(ex => check("CZ4 harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
+
 // ─── CC. Calendar is the first tab (owner decision 2026-10-20) ───
 // "Calendar should be first open item" — the owner chose Calendar as the
 // first tab, for everyone: the bar reads Calendar, Mine, Requests, Stats,
