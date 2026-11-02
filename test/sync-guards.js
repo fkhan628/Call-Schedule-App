@@ -18419,7 +18419,7 @@ await (async () => {
 //       of the "admin" row and — only when there is no row — one save of the sign-in e-mail. A render loop runs the
 //       REAL load, list sync, prefill and saveNotifPref on a Face ID unlock; the control without the wait saves an
 //       empty e-mail
-//   DE3 (QW13) Setup's No-Call Days card is the scheduler's and the Clinic Manager's (main's card, byte for byte) — MS
+//   DE3 (QW13) Setup's No-Call Days card is the scheduler's and the Clinic Manager's (QW15's card, byte for byte) — MS
 //       gets nothing above APP Call Shifts, so Setup opens there; Requests' trade note tells MS "You assign APP shifts
 //       in Setup → APP Call Shifts." (any other APP: main's note)
 //   DE4 (QW14) the app-open auth check (CI's slice) on GoTrue's answer for a dead reset link clears the address bar and,
@@ -18825,12 +18825,15 @@ await (async () => {
 
   // ── DE3 (QW13) — MS's Setup and Requests ──
   {
-    const SETUP_NAMES = "css, dk, mono, font, isScheduler, userProfile, ncSurgeon, setNcSurgeon, surgeons, apps, ncStart, ncEnd, setNcStart, setNcEnd, updateBannerRef, updateAvailable, addNoCall, noCallDays, fmt, showPastNoCall, setShowPastNoCall, MO, rmNoCall";
+    // (changed ON PURPOSE 2026-11-02, integration: the card is QW15's — each row's ✕ is named by the component's timeOffDates, the real one handed in)
+    const SETUP_NAMES = "css, dk, mono, font, isScheduler, userProfile, ncSurgeon, setNcSurgeon, surgeons, apps, ncStart, ncEnd, setNcStart, setNcEnd, updateBannerRef, updateAvailable, addNoCall, noCallDays, fmt, showPastNoCall, setShowPastNoCall, MO, rmNoCall, timeOffDates";
     const ncNew = cutD("          {/* No-Call Days */}\n", "\n\n          {/* APP Shift Assignments */}", true);
     const vNcNew = viewD(SETUP_NAMES, ncNew, "de-nocall.js"), vNcOld = viewD(SETUP_NAMES, OLD.noCall, "de-nocall-main.js");
-    const MOD = vm.runInContext("({ fmt, MO })", sandbox);
+    const MOD = vm.runInContext("({ fmt, MO, dayMonthLabel })", sandbox);
+    const todM = nsrcD.match(/\n  (const timeOffDates = \(s, e\) => \{\n[\s\S]*?\n  \};)\n/);
+    const todDE = todM ? mkD("fmt, dayMonthLabel", `(() => { ${todM[1]}\n return timeOffDates; })()`, "de-tod.js") : null;
     const ncEnv = (who, o = {}) => Object.assign({ css: CSSD, dk: !!o.dk, mono: "M", font: "F", ncSurgeon: "", ncStart: "2026-11-02", ncEnd: "2026-11-02", surgeons: SURGD, apps: APPSD, updateBannerRef: { current: null }, updateAvailable: null,
-      noCallDays: { s3: [["2026-12-01", "2026-12-01"], ["2026-10-01", "2026-10-02"]], a3: [["2026-11-20", "2026-11-20"]] }, fmt: MOD.fmt, MO: MOD.MO, showPastNoCall: !!o.past },
+      noCallDays: { s3: [["2026-12-01", "2026-12-01"], ["2026-10-01", "2026-10-02"]], a3: [["2026-11-20", "2026-11-20"]] }, fmt: MOD.fmt, MO: MOD.MO, showPastNoCall: !!o.past, timeOffDates: todDE ? todDE(MOD) : null },
       Object.fromEntries(["setNcSurgeon", "setNcStart", "setNcEnd", "addNoCall", "setShowPastNoCall", "rmNoCall"].map((n) => [n, stubD(n)])), WHO[who]);
     const ncMs = vNcNew ? vNcNew(ncEnv("ms")) : null;
     const ncSame = [];
@@ -18838,7 +18841,7 @@ await (async () => {
       const nw = vNcNew(ncEnv(who, { past })), od = vNcOld(ncEnv(who, { past }));
       if (!nw || nw.threw || od.threw || nw.tag !== "#frag" || nw.kids.length !== 1 || sigD(nw.kids[0]) !== sigD(od)) ncSame.push({ who, past, nw: nw && (nw.threw || nw.tag), od: od.threw || null });
     }
-    check("DE3a Setup's 🚫 No-Call Days card: not for MS (the gate run: nothing at all); the scheduler and the Clinic Manager get main's card byte for byte (completed days shown and hidden)",
+    check("DE3a Setup's 🚫 No-Call Days card: not for MS (the gate run: nothing at all); the scheduler and the Clinic Manager get the card byte for byte as it is without the gate — main's with QW15's + Add and ✕ (DD4 / DD5) — completed days shown and hidden",
       !!vNcNew && !!vNcOld && ncMs === false && ncSame.length === 0, J({ errs: viewErrD, ms: ncMs && (ncMs.threw || ncMs.tag), ncSame }));
     // everything Setup draws before the APP Call Shifts card, as one fragment: MS gets none of it — Setup opens on APP Call Shifts
     const aboveApp = cutD('        {view==="setup" && !isPublicMode && <>\n', "\n\n          {/* APP Shift Assignments */}");

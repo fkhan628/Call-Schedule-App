@@ -2,6 +2,9 @@
 // tools, the Clinic Manager's own notifications, MS's Setup and Requests, the reset link and the Welcome screen —
 // every path those items don't change must read exactly as before). Pieces of index-source.html, each after a line
 // "//@@ <name> — <where>".
+// (noCall re-frozen ON PURPOSE 2026-11-02, integration: the card as the Setup-lists change left it — 3200f94's with
+// QW15's "+ Add" that waits for a person and its finger-sized, named ✕ (DD4 / DD5), cut the same way from that
+// branch's head, 30c02da — so DE3a still compares only QW13's gate. Every other piece is 3200f94's, unchanged.)
 //@@ mount — the app-open auth effect's function: after "  // ─── Auth: Check session on mount ───\n  useEffect(", up to "\n  }, []);\n"
 () => {
     // Public mode: skip auth entirely. We render the calendar read-only
@@ -799,7 +802,7 @@ async () => {
                 {/* One calendar for start and end (DateRangeField); back-dating allowed here. */}
                 <DateRangeField label="No-call dates" start={ncStart} end={ncEnd} min="" onChange={(s, e) => { setNcStart(s); setNcEnd(e); }} dk={dk} css={css} bannerRef={updateBannerRef} bannerOn={updateAvailable} style={{minWidth:230}}/>
               </div>
-              <button onClick={addNoCall} style={css.btn(true)}>+ Add</button>
+              <button onClick={addNoCall} disabled={!ncSurgeon} title={ncSurgeon ? undefined : "Pick a person first"} style={{...css.btn(true),opacity:ncSurgeon?1:0.4,cursor:ncSurgeon?"pointer":"not-allowed"}}>+ Add</button>
             </div>
             {(()=>{
               const allPeople = [...surgeons.map(s=>({...s,type:"s"})), ...apps.map(a=>({...a,type:"a"}))];
@@ -844,9 +847,10 @@ async () => {
                   <div style={{display:"flex",gap:4,flexWrap:"wrap",marginLeft:"auto",alignItems:"center"}}>
                     {p.rows
                       .map(({s,e,origIdx})=>(
-                      <span key={origIdx} style={{display:"inline-flex",alignItems:"center",gap:4,fontFamily:mono,fontSize:10,color:"#6a6030",background:"#fcf6e8",padding:"1px 6px",borderRadius:4,border:"1px solid #e8dcae"}}>
+                      <span key={origIdx} style={{display:"inline-flex",alignItems:"center",gap:0,fontFamily:mono,fontSize:10,color:"#6a6030",background:"#fcf6e8",padding:"0 0 0 6px",borderRadius:4,border:"1px solid #e8dcae"}}>
                         {ncRange(s,e)}
-                        <button onClick={()=>rmNoCall(p.id,origIdx)} style={{background:"none",border:"none",color:"#a08040",cursor:"pointer",fontSize:11,padding:0,lineHeight:1}}>✕</button>
+                        {/* finger-sized and named (UX audit 2026-11-01, QW15); its ✕ in its own span, as the vacation chip's */}
+                        <button aria-label={`Remove ${p.name}'s no-call ${s===e?"day":"days"} ${timeOffDates(s,e)}`} onClick={()=>rmNoCall(p.id,origIdx)} style={{background:"none",border:"none",cursor:"pointer",fontSize:13,padding:0,lineHeight:1,minWidth:44,minHeight:44,fontFamily:font}}><span style={{color:"#7a5a18"}}>✕</span></button>
                       </span>
                     ))}
                   </div>
