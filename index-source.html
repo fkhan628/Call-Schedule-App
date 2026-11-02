@@ -5292,8 +5292,15 @@ function CallSchedule() {
     } catch(e) { if (sessionEpochRef.current === ep) alert("Publish error: " + (e?.message || e)); else console.error("Office publish notice error:", e); }
     finally { setOfficeNotifBusy(false); }
   };
-  const triggerDigestTest = async () => {
-    if (!confirm("Manually fire the Saturday digest now? This will send emails if any changes are detected since the last digest snapshot.")) return;
+  // Settings → 🛠 Developer tools (owner decision 2026-11-02, Q6 — UX audit 2026-11-01). The office digest, now:
+  // it was "🧪 Test Saturday Digest Now", but it is the real thing — office-notifications diffs the schedule against
+  // the last digest's snapshot, e-mails the active office contacts when anything changed, and moves the snapshot on.
+  // Its question names who gets it, and says that Saturday's run then starts from now.
+  const sendOfficeDigestNow = async () => {
+    const active = officeContacts.filter(c => c.active);
+    if (!active.length) return;
+    const who = active.map(c => `• ${c.name} (${c.email})${Array.isArray(c.departments) && c.departments.length ? ` — ${c.departments.join(" + ")} changes only` : ""}`).join("\n");
+    if (!confirm(`Send this week's office digest now?\n\nIf the schedule changed since the last digest, ${active.length === 1 ? "this office contact gets" : `these ${active.length} office contacts get`} an e-mail:\n${who}\n\nSaturday's automatic digest will then cover only the changes made after now.`)) return;
     const ep = sessionEpochRef.current; // (review r5 fix-1 — as the publish notice's)
     setOfficeNotifBusy(true);
     try {
@@ -5311,6 +5318,47 @@ function CallSchedule() {
       alert(`Digest run: ${body.sent ?? 0} email(s) sent.\nAffected surgeons: ${surgeons || "(none)"}`);
     } catch(e) { if (sessionEpochRef.current === ep) alert("Digest error: " + (e?.message || e)); else console.error("Digest run error:", e); }
     finally { setOfficeNotifBusy(false); }
+  };
+  // Settings → 🛠 Developer tools: a test push (owner decision 2026-11-02, Q6). It was "Test Push to All Devices",
+  // one tap, no question: send-push with no target is a broadcast to every subscribed phone in the group. Now the
+  // plain test goes to me only — targetIds [mySurgeon], OneSignal's external_id, so every device signed in to push as
+  // me and nobody else's (send-push can't aim at one device) — and the everyone test asks first, naming who gets it.
+  const sendTestPush = async (everyone) => {
+    if (!edgeFunctionUrl || (!everyone && !mySurgeon)) return;
+    if (everyone) {
+      const who = [surgeons.length ? `the surgeons (${surgeons.map(s => s.name).join(", ")})` : "", apps.length ? `the APPs (${apps.map(a => a.name).join(", ")})` : "", "the Clinic Manager"].filter(Boolean).join(", ");
+      if (!confirm(`Send a test push to EVERY phone with push turned on?\n\nThat is anyone in the group who turned it on: ${who}. Each of them gets "Test push from the scheduler — no action needed."\n\nSend it to everyone?`)) return;
+    }
+    const ep = sessionEpochRef.current; // (review r5 fix-1) its result is never said on the next session's screen
+    try {
+      const pushUrl = edgeFunctionUrl.replace(/\/[^/]+$/, "/send-push");
+      const resp = await fetch(pushUrl, {
+        method: "POST",
+        headers: dbAuthHeaders(), // JWT (or anon fallback) so the verify_jwt=true gateway accepts the call
+        body: JSON.stringify(everyone
+          ? { title: "DSG Call Schedule", message: "Test push from the scheduler — no action needed." }
+          : { title: "DSG Call Schedule", message: "Test push — if you see this, push works on your device.", targetIds: [mySurgeon] }),
+      });
+      const data = await resp.json().catch(()=>({}));
+      if (sessionEpochRef.current !== ep) return;
+      // Key success off resp.ok — a gateway 401 body is {code,message}
+      // (no `errors`/`error`), so the old fallthrough reported "Success" on failure.
+      alert(resp.ok
+        ? (everyone ? `Push test result:\nStatus: ${resp.status}\nSent to every subscribed phone.` : `Push test result:\nStatus: ${resp.status}\nSent to your devices only (${nameOf(mySurgeon)}) — if this phone shows nothing within a minute, tap 🔍 Diagnose.`)
+        : `Push test FAILED\nStatus: ${resp.status}\n${data.error || data.message || (data.errors ? "Errors: " + JSON.stringify(data.errors) : "unknown error")}`);
+    } catch(e) { if (sessionEpochRef.current === ep) alert("Push test error: " + e.message); }
+  };
+  // Settings → 🛠 Developer tools: the Edge Function URL changes only with ✏️ Edit, then Save (owner decision
+  // 2026-11-02, Q6). Its field saved on every keystroke — one stray character (".../send-notificationx") was
+  // written ~0.5 s later and every e-mail and push stopped, silently. Save takes only an https address ending in
+  // /functions/v1/send-notification; the save effect above still writes it (and says so in red if it can't).
+  const [edgeUrlDraft, setEdgeUrlDraft] = useState(null); // the open edit's text; null = not editing
+  const [edgeUrlErr, setEdgeUrlErr] = useState("");
+  const saveEdgeUrlDraft = () => {
+    const v = String(edgeUrlDraft || "").trim();
+    if (!/^https:\/\/[^\s/]+(\/[^\s/]+)*\/functions\/v1\/send-notification$/.test(v)) { setEdgeUrlErr("Not saved — the address must look like https://…/functions/v1/send-notification."); return; }
+    if (v !== edgeFunctionUrl) setEdgeFunctionUrl(v);
+    setEdgeUrlDraft(null); setEdgeUrlErr("");
   };
 
   const addVac = () => {
@@ -14179,10 +14227,6 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   style={{...css.btn(true),padding:"7px 16px",fontSize:12,opacity:(officeNotifBusy || officeContacts.filter(c=>c.active).length===0)?0.5:1}}>
                   📣 Publish New Period & Notify Office
                 </button>
-                <button onClick={triggerDigestTest} disabled={officeNotifBusy || officeContacts.filter(c=>c.active).length===0}
-                  style={{...css.btn(false),padding:"7px 14px",fontSize:12,opacity:(officeNotifBusy || officeContacts.filter(c=>c.active).length===0)?0.5:1}}>
-                  🧪 Test Saturday Digest Now
-                </button>
               </div>
               <p style={{fontSize:10,color:"#a0a8b0",margin:"8px 0 0",lineHeight:1.5}}>
                 Saturday digest fires automatically at 8 AM CDT. Public link: <span style={{fontFamily:mono}}>fkhan628.github.io/Call-Schedule-App/?public=1</span>
@@ -14266,60 +14310,9 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                     <strong style={{color:dkText}}>🔒 Push sending is configured server-side.</strong>
                     <br/>
                     The OneSignal REST API key lives in Supabase secrets and is accessed via the <code style={{fontFamily:mono,fontSize:10}}>send-push</code> Edge Function.
-                    {!edgeFunctionUrl && <span style={{color:"#b85020",display:"block",marginTop:4}}>⚠ Email and push sending are OFF — enter the Edge Function URL in the field below to enable them.</span>}
+                    {/* The URL field and the test buttons moved to 🛠 Developer tools, the scheduler's alone (owner decision 2026-11-02, Q6) */}
+                    {!edgeFunctionUrl && <span style={{color:"#b85020",display:"block",marginTop:4}}>⚠ Email and push sending are OFF — {userProfile?.role === "scheduler" ? "set the Edge Function URL under 🛠 Developer tools below to turn them on." : "ask the scheduler to set the Edge Function URL."}</span>}
                   </div>
-                  <div style={{marginBottom:8}}>
-                    <label style={{fontSize:10,color:"#7a8a98",fontWeight:600,textTransform:"uppercase",letterSpacing:0.5,display:"block",marginBottom:2}}>Edge Function URL (send-notification)</label>
-                    <input value={edgeFunctionUrl} onChange={e=>setEdgeFunctionUrl(e.target.value)}
-                      placeholder="https://…supabase.co/functions/v1/send-notification"
-                      style={{...css.inp,width:"100%",maxWidth:420,fontSize:11,fontFamily:mono,padding:"5px 8px"}}/>
-                    <p style={{fontSize:10,color:"#8a94a0",margin:"3px 0 0",lineHeight:1.4}}>
-                      Email sending posts here; push and the test buttons derive their URLs from it. Saves automatically — only a non-empty value is ever persisted, so this can't be blanked by accident.
-                    </p>
-                  </div>
-                  {edgeFunctionUrl && (
-                    <button onClick={async ()=>{
-                      const ep = sessionEpochRef.current; // (review r5 fix-1) its result is never said on the next session's screen
-                      try {
-                        const pushUrl = edgeFunctionUrl.replace(/\/[^/]+$/, "/send-push");
-                        const resp = await fetch(pushUrl, {
-                          method: "POST",
-                          headers: dbAuthHeaders(), // JWT (or anon fallback) so the verify_jwt=true gateway accepts the call
-                          body: JSON.stringify({
-                            title: "DSG Call Schedule",
-                            message: "Test push notification — if you see this, push is working!",
-                          }),
-                        });
-                        const data = await resp.json().catch(()=>({}));
-                        if (sessionEpochRef.current !== ep) return;
-                        // Key success off resp.ok — a gateway 401 body is {code,message}
-                        // (no `errors`/`error`), so the old fallthrough reported "Success" on failure.
-                        alert(resp.ok
-                          ? `Push test result:\nStatus: ${resp.status}\nSuccess — check your devices for the test push.`
-                          : `Push test FAILED\nStatus: ${resp.status}\n${data.error || data.message || (data.errors ? "Errors: " + JSON.stringify(data.errors) : "unknown error")}`);
-                      } catch(e) { if (sessionEpochRef.current === ep) alert("Push test error: " + e.message); }
-                    }} style={{...css.btn(false),padding:"4px 10px",fontSize:10,marginTop:4}}>
-                      Test Push to All Devices
-                    </button>
-                  )}
-                  {edgeFunctionUrl && (
-                    <button onClick={async ()=>{
-                      if (!confirm("This will trigger the vacation deadline reminder Edge Function.\n\nIt will only send a push if today + 2 days = the auto-detected deadline AND no reminder has been sent for that deadline yet.\n\nProceed?")) return;
-                      const ep = sessionEpochRef.current; // (review r5 fix-1) its result is never said on the next session's screen
-                      try {
-                        const url = edgeFunctionUrl.replace(/\/[^/]+$/, "/vacation-deadline-reminder");
-                        const resp = await fetch(url, {
-                          method: "POST",
-                          headers: { "Content-Type": "application/json" },
-                        });
-                        const data = await resp.json().catch(()=>({}));
-                        if (sessionEpochRef.current !== ep) return;
-                        alert(`Vacation deadline reminder result:\nStatus: ${resp.status}\n${JSON.stringify(data, null, 2)}`);
-                      } catch(e) { if (sessionEpochRef.current === ep) alert("Test error: " + e.message); }
-                    }} style={{...css.btn(false),padding:"4px 10px",fontSize:10,marginTop:4,marginLeft:6}}>
-                      Test Vacation Deadline Reminder
-                    </button>
-                  )}
                 </div>
               )}
             </div>
@@ -14435,6 +14428,94 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             </div>
             </>}
           </div>
+
+          {/* Developer tools — the scheduler's alone, closed until opened (owner decision 2026-11-02, Q6; UX audit
+              2026-11-01). The Edge Function URL and the tests moved here from Notification Settings and Office
+              Notifications, where the Clinic Manager saw them too and each reached real people in one tap: a test push
+              to every phone, a "test" digest that really e-mails the office list, and a URL field that saved on every
+              keystroke. A test that reaches anyone but you asks first and says who. */}
+          {userProfile?.role === "scheduler" && (
+            <div style={css.card}>
+              <div role="button" tabIndex={0} aria-expanded={!!openSettingsCards.devTools} onClick={()=>toggleSettingsCard("devTools")} onKeyDown={settingsCardKey("devTools")} onKeyUp={settingsCardKey("devTools")} style={{...css.cardT,margin:openSettingsCards.devTools?"0 0 12px":0,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"space-between",userSelect:"none"}}>
+                <span>🛠 Developer tools</span>
+                <span aria-hidden="true" style={{fontSize:12,color:"#7a8a98"}}>{openSettingsCards.devTools ? "▾" : "▸"}</span>
+              </div>
+              {openSettingsCards.devTools && <>
+              <p style={{fontSize:12,color:dk?dkSubtext:"#5a6a78",margin:"0 0 12px",lineHeight:1.5}}>
+                The address the app's e-mail and push go through, and tests of them. A test that reaches anyone but you asks first and says who.
+              </p>
+
+              {/* The Edge Function URL: ✏️ Edit, then Save (saveEdgeUrlDraft) */}
+              <div style={{marginBottom:14}}>
+                <div style={{fontSize:11,fontWeight:600,color:dkText,marginBottom:4}}>Edge Function URL (send-notification)</div>
+                {edgeUrlDraft === null ? (
+                  <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+                    <span style={{flex:"1 1 220px",minWidth:0,fontSize:11,fontFamily:mono,color:edgeFunctionUrl?dkText:"#b85020",wordBreak:"break-all"}}>{edgeFunctionUrl || "Not set — e-mail and push are off."}</span>
+                    <button onClick={()=>{setEdgeUrlDraft(edgeFunctionUrl);setEdgeUrlErr("");}} aria-label="Edit the Edge Function URL" style={{...css.btn(false),padding:"6px 14px",fontSize:12}}>✏️ Edit</button>
+                  </div>
+                ) : (
+                  <>
+                    <input value={edgeUrlDraft} onChange={e=>setEdgeUrlDraft(e.target.value)} aria-label="Edge Function URL" autoCapitalize="none" autoCorrect="off" spellCheck={false}
+                      placeholder="https://…supabase.co/functions/v1/send-notification"
+                      style={{...css.inp,width:"100%",maxWidth:420,fontSize:11,fontFamily:mono,padding:"5px 8px"}}/>
+                    {edgeUrlErr && <div role="alert" style={{fontSize:11,color:dk?"#f08080":"#a83232",marginTop:4}}>{edgeUrlErr}</div>}
+                    <div style={{display:"flex",gap:6,marginTop:6}}>
+                      <button onClick={saveEdgeUrlDraft} style={{...css.btn(true),padding:"6px 14px",fontSize:12}}>Save</button>
+                      <button onClick={()=>{setEdgeUrlDraft(null);setEdgeUrlErr("");}} style={{...css.btn(false),padding:"6px 14px",fontSize:12}}>Cancel</button>
+                    </div>
+                  </>
+                )}
+                <p style={{fontSize:10,color:dk?dkSubtext:"#5a6a78",margin:"4px 0 0",lineHeight:1.4}}>
+                  Every e-mail the app sends posts here; push and the tests below derive their URLs from it. It changes only with ✏️ Edit, then Save — a failed save says so in red.
+                </p>
+              </div>
+
+              {/* The tests: to me; to every phone (it asks, naming who); the deadline reminder (it asks) */}
+              {edgeFunctionUrl ? (
+                <div style={{display:"flex",flexDirection:"column",gap:10,marginBottom:14}}>
+                  <div>
+                    <button onClick={()=>sendTestPush(false)} disabled={!mySurgeon} style={{...css.btn(false),padding:"6px 14px",fontSize:12}}>🔔 Test push to me</button>
+                    <div style={{fontSize:10,color:dk?dkSubtext:"#5a6a78",marginTop:3,lineHeight:1.4}}>Only to the devices signed in to push as you ({nameOf(mySurgeon)}).</div>
+                  </div>
+                  <div>
+                    <button onClick={()=>sendTestPush(true)} style={{...css.btn(false),padding:"6px 14px",fontSize:12}}>📣 Test push to every phone…</button>
+                    <div style={{fontSize:10,color:dk?dkSubtext:"#5a6a78",marginTop:3,lineHeight:1.4}}>Every subscribed phone in the group — it asks first and says who.</div>
+                  </div>
+                  <div>
+                    <button onClick={async ()=>{
+                      if (!confirm("This will trigger the vacation deadline reminder Edge Function.\n\nIt will only send a push if today + 2 days = the auto-detected deadline AND no reminder has been sent for that deadline yet.\n\nProceed?")) return;
+                      const ep = sessionEpochRef.current; // (review r5 fix-1) its result is never said on the next session's screen
+                      try {
+                        const url = edgeFunctionUrl.replace(/\/[^/]+$/, "/vacation-deadline-reminder");
+                        const resp = await fetch(url, {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json" },
+                        });
+                        const data = await resp.json().catch(()=>({}));
+                        if (sessionEpochRef.current !== ep) return;
+                        alert(`Vacation deadline reminder result:\nStatus: ${resp.status}\n${JSON.stringify(data, null, 2)}`);
+                      } catch(e) { if (sessionEpochRef.current === ep) alert("Test error: " + e.message); }
+                    }} style={{...css.btn(false),padding:"6px 14px",fontSize:12}}>
+                      Test Vacation Deadline Reminder
+                    </button>
+                    <div style={{fontSize:10,color:dk?dkSubtext:"#5a6a78",marginTop:3,lineHeight:1.4}}>The real hourly reminder, run now: it reaches the surgeons only inside the deadline window — it asks first.</div>
+                  </div>
+                </div>
+              ) : (
+                <p style={{fontSize:11,color:"#b85020",margin:"0 0 14px"}}>The push tests need the Edge Function URL above.</p>
+              )}
+
+              {/* The office digest, now (sendOfficeDigestNow — its question names the office contacts) */}
+              <div style={{borderTop:`1px solid ${dkCardBorder}`,paddingTop:12}}>
+                <button onClick={sendOfficeDigestNow} disabled={officeNotifBusy || officeContacts.filter(c=>c.active).length===0}
+                  style={{...css.btn(false),padding:"6px 14px",fontSize:12,opacity:(officeNotifBusy || officeContacts.filter(c=>c.active).length===0)?0.5:1}}>
+                  📨 Send this week's office digest now
+                </button>
+                <div style={{fontSize:10,color:dk?dkSubtext:"#5a6a78",marginTop:3,lineHeight:1.4}}>Saturday's e-mail to the office list (📧 Office Notifications), sent now if the schedule changed — it asks first and names who gets it.</div>
+              </div>
+              </>}
+            </div>
+          )}
 
           {/* Account */}
           <div style={css.card}>

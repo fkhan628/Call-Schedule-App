@@ -960,8 +960,9 @@ const MUTANTS = [
     from: "if (sessionEpochRef.current !== ep) { if (error) console.error(\"APP-access update failed:\", error); return; }", to: "if (false) { if (error) console.error(\"APP-access update failed:\", error); return; }" },
   { id: "I4x", app: true, what: "I4 audit: the test notification's outcome said on the next session's screen",
     from: "        if (sessionEpochRef.current !== ep) return;\n        setNotifTestSent(\"Browser + email notifications sent!\");", to: "        setNotifTestSent(\"Browser + email notifications sent!\");" },
-  { id: "I4y", app: true, what: "I4 audit: the Settings panel's push test alerts its result on the next session's screen",
-    from: "                        const data = await resp.json().catch(()=>({}));\n                        if (sessionEpochRef.current !== ep) return;\n                        // Key success", to: "                        const data = await resp.json().catch(()=>({}));\n                        // Key success" },
+  // (sync-guards DE, 2026-11-02, on purpose: the push test is Developer tools' named sendTestPush, at the component's own indent)
+  { id: "I4y", app: true, what: "I4 audit: Developer tools' push test alerts its result on the next session's screen",
+    from: "      const data = await resp.json().catch(()=>({}));\n      if (sessionEpochRef.current !== ep) return;\n      // Key success", to: "      const data = await resp.json().catch(()=>({}));\n      // Key success" },
   { id: "I4y2", app: true, what: "I4 audit: the Settings panel's reminder test alerts its result on the next session's screen",
     from: "                        if (sessionEpochRef.current !== ep) return;\n                        alert(`Vacation deadline reminder result:", to: "                        alert(`Vacation deadline reminder result:" },
   { id: "I4r4", app: true, what: "I4 audit: an office contact removal's failure told on the next session's screen",
@@ -7670,7 +7671,8 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
       officeUpd: fnX("setOfficeContacts, db, alert, console, showToast, sessionEpochRef", decl("updateOfficeContact", "\n  };\n")),
       officeDel: fnX("officeContacts, confirm, setOfficeContacts, fetch, SUPABASE_URL, dbAuthHeaders, console, showToast, sessionEpochRef", decl("deleteOfficeContact", "\n  };\n")),
       officePub: fnX("confirm, officeContacts, setOfficeNotifBusy, SUPABASE_URL, fetch, dbAuthHeaders, publishLabel, alert, showToast, setShowPublishDialog, sessionEpochRef, console", decl("triggerPublishNotify", "\n  };\n")),
-      officeDigest: fnX("confirm, setOfficeNotifBusy, SUPABASE_URL, fetch, dbAuthHeaders, alert, sessionEpochRef, console", decl("triggerDigestTest", "\n  };\n")),
+      // (sync-guards DE, 2026-11-02, on purpose: the digest button is Developer tools' sendOfficeDigestNow — its question names the active office contacts, so it reads them)
+      officeDigest: fnX("officeContacts, confirm, setOfficeNotifBusy, SUPABASE_URL, fetch, dbAuthHeaders, alert, sessionEpochRef, console", decl("sendOfficeDigestNow", "\n  };\n")),
       pushPerm: fnX("setPushDiag, navigator, window, setPushPermission, setOneSignalSubscribed, mySurgeon, console, setTimeout, setPushSubscriptionId, setPushExternalId, sessionEpochRef", cbody("requestPushPermission", "[mySurgeon]")),
       testNote: fnX("sendBrowserNotif, setNotifTestSent, edgeFunctionUrl, mySurgeon, notifPrefs, sendEmailNotif, setTimeout, sessionEpochRef", cbody("sendTestNotification", "[sendBrowserNotif, sendEmailNotif, edgeFunctionUrl, notifPrefs, mySurgeon]")),
       upload: fnX("setScanning, setScanMsg, surgeons, setPriorCounts, console, fileRef, sessionEpochRef", cbody("handleTemplateUpload", "[surgeons]")),
@@ -7681,7 +7683,9 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
       appAccess: fnX("p, dbAuth, alert, setAllProfiles, authUser, setUserProfile, sessionEpochRef, console",
         (() => { const h = "<input type=\"checkbox\" checked={!!p.can_assign_apps} onChange={async (e)=>{", i = nsx.indexOf(h), e = i < 0 ? -1 : nsx.indexOf("\n                        }} style={{cursor:\"pointer\",width:16,height:16}}/>", i);
           return i < 0 || e < 0 || nsx.indexOf(h, i + 1) !== -1 ? null : "async (e) => {" + nsx.slice(i + h.length, e) + "\n}"; })()),
-      testPush: fnX("edgeFunctionUrl, fetch, dbAuthHeaders, alert, confirm, sessionEpochRef", jsx("/send-push\");\n                        const resp = await fetch(pushUrl", "<button onClick={async ()=>{")),
+      // (sync-guards DE, 2026-11-02, on purpose: the test push is Developer tools' named sendTestPush; run as its everyone
+      // test — the one that went to every phone, now asked first — so the env below adds what its question names)
+      testPush: (() => { const f = fnX("edgeFunctionUrl, mySurgeon, surgeons, apps, confirm, sessionEpochRef, fetch, dbAuthHeaders, alert, nameOf, console", decl("sendTestPush", "\n  };\n")); return f && ((env) => () => f(env)(true)); })(),
       testRemind: fnX("edgeFunctionUrl, fetch, dbAuthHeaders, alert, confirm, sessionEpochRef", jsx("/vacation-deadline-reminder\");", "<button onClick={async ()=>{")),
     };
     const hMiss = Object.keys(H).filter(k => typeof H[k] !== "function");
@@ -7807,7 +7811,7 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
     }, (x, x0, f, f0) => f.late.length === 0 && f0.early.some(k => /^toast: Couldn't remove the contact/.test(k)));
     for (const [id, fnK, okSaid, failSaid] of [["officePub", "officePub", /^toast: Sent 2 email/, /^alert: Publish failed/], ["officeDigest", "officeDigest", /^alert: Digest run: 2 email/, /^alert: Digest failed/]]) {
       add(id, `the office ${id === "officePub" ? "'new schedule published' e-mail" : "digest run"} (its POST): its result never said on the next screen`, async (r, fail) => {
-        await H[fnK]({ confirm: () => true, officeContacts: [], setOfficeNotifBusy: noopX, SUPABASE_URL: BASE, dbAuthHeaders: r.hdr, publishLabel: "Jan", alert: r.say("alert"), showToast: r.say("toast"), setShowPublishDialog: r.mark("dialog"),
+        await H[fnK]({ confirm: () => true, officeContacts: [{ id: 1, name: "Desk", email: "desk@dsg.test", active: true, departments: [] }], setOfficeNotifBusy: noopX, SUPABASE_URL: BASE, dbAuthHeaders: r.hdr, publishLabel: "Jan", alert: r.say("alert"), showToast: r.say("toast"), setShowPublishDialog: r.mark("dialog"),
           sessionEpochRef: r.ep, console: r.console, fetch: async (url, init) => { r.writes.push("POST " + init.headers.Authorization); await r.cross(); return fail ? r.resp(500, { error: "x" }) : r.resp(200, { sent: 2, affected_surgeons: [] }); } })();
       }, (x, x0, f, f0) => x.late.length === 0 && f.late.length === 0 && x0.early.some(k => okSaid.test(k)) && f0.early.some(k => failSaid.test(k)));
     }
@@ -7846,8 +7850,9 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
         dbAuth: { upsertProfile: async () => { r.write("UPSERT user_profiles"); await r.cross(); return { error: fail ? "RLS" : null }; } } })({ target: { checked: true } });
     }, (x, x0, f, f0) => x.late.length === 0 && f.late.length === 0 && ["list", "profile"].every(k => x0.early.includes(k)) && f0.early.some(k => /^alert: Failed to update/.test(k)));
     for (const id of ["testPush", "testRemind"]) {
-      add(id, `the Settings panel's '${id === "testPush" ? "Test Push to All Devices" : "Test Vacation Deadline Reminder"}' button: its result never said on the next screen`, async (r) => {
+      add(id, `Developer tools' '${id === "testPush" ? "📣 Test push to every phone…" : "Test Vacation Deadline Reminder"}' button: its result never said on the next screen`, async (r) => {
         await H[id]({ edgeFunctionUrl: "https://fn.test/functions/v1/send-notification", dbAuthHeaders: r.hdr, alert: r.say("alert"), confirm: () => true, sessionEpochRef: r.ep,
+          mySurgeon: "s1", surgeons: S7, apps: [], nameOf: (x) => x, console: r.console,
           fetch: async () => { r.write("POST"); await r.cross(); return r.resp(200, {}); } })();
       }, (x, x0) => x.late.length === 0 && x0.early.some(k => /^alert: /.test(k)), true);
     }

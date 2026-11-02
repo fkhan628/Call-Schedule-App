@@ -6001,7 +6001,8 @@ await (async () => {
   const SCK = nsrcBH.match(/\n  (const settingsCardKey = \(key\) => \(e\) => \{\n[\s\S]*?\n  \};)\n/);
   let mkCards = null;
   try { mkCards = TSC && SCK && SCK[1].length < 900 ? vm.runInContext(`(function (setOpenSettingsCards) { ${TSC[1]}\n${SCK[1]}\n return { toggleSettingsCard, settingsCardKey }; })`, sandbox) : null; } catch (ex) { mkCards = null; }
-  const CARDS = [["notifSettings", "🔔 Notification Settings"], ["officeNotif", "📧 Office Notifications"], ["restoreSnap", "📼 Restore from Snapshot"]];
+  // (DE, 2026-11-02, on purpose: a fourth ▸ card — the scheduler's 🛠 Developer tools — with the same header, run through the same steps)
+  const CARDS = [["notifSettings", "🔔 Notification Settings"], ["officeNotif", "📧 Office Notifications"], ["restoreSnap", "📼 Restore from Snapshot"], ["devTools", "🛠 Developer tools"]];
   const cardRun = (key, label) => {
     const m = nsrcBH.match(new RegExp(`\\n\\s*<div ([^\\n]*?onClick=\\{\\(\\)=>toggleSettingsCard\\("${key}"\\)\\}[^\\n]*?)>\\n\\s*<span>${label}</span>\\n\\s*<span ([^\\n]*?)>\\{openSettingsCards\\.${key} \\? "▾" : "▸"\\}</span>`));
     if (!m) return "header not found";
@@ -6020,10 +6021,10 @@ await (async () => {
     } catch (ex) { return "threw: " + String(ex).slice(0, 120); }
   };
   const cardsGot = CARDS.map(([k, l]) => cardRun(k, l));
-  check("BH5 (review fix) Settings' three ▸ cards (Notification Settings, Office Notifications, Restore from Snapshot), each header executed through its own attributes: a button (role, tabIndex 0) whose aria-expanded is the card's open state; Enter on keydown and Space on release toggle it (Space's keydown only stops the scroll); other keys, a key from inside it and Enter's release do nothing; a tap toggles as before; the ▸ / ▾ is aria-hidden (they were click-only divs: no keyboard, nothing announced)",
-    cardsGot.every((g) => g === "false Enter:PE SpaceDown:PE SpaceUp:-c a:-c childEnter:-c childSpaceUp:-c EnterUp:-c tap:E | button,0,true"), JSON.stringify(cardsGot));
-  check("BH5 …no click-only ▸ header is left: every toggleSettingsCard header carries role=\"button\" and the key handler (3 of each)",
-    count("<div onClick={()=>toggleSettingsCard(") === 0 && count("onClick={()=>toggleSettingsCard(") === 3 && (src.match(/<div role="button" tabIndex=\{0\} aria-expanded=\{!!openSettingsCards\.\w+\} onClick=\{\(\)=>toggleSettingsCard\("\w+"\)\} onKeyDown=\{settingsCardKey\("\w+"\)\} onKeyUp=\{settingsCardKey\("\w+"\)\}/g) || []).length === 3);
+  check("BH5 (review fix) Settings' ▸ cards (Notification Settings, Office Notifications, Restore from Snapshot — and, since DE, 🛠 Developer tools), each header executed through its own attributes: a button (role, tabIndex 0) whose aria-expanded is the card's open state; Enter on keydown and Space on release toggle it (Space's keydown only stops the scroll); other keys, a key from inside it and Enter's release do nothing; a tap toggles as before; the ▸ / ▾ is aria-hidden (they were click-only divs: no keyboard, nothing announced)",
+    cardsGot.length === 4 && cardsGot.every((g) => g === "false Enter:PE SpaceDown:PE SpaceUp:-c a:-c childEnter:-c childSpaceUp:-c EnterUp:-c tap:E | button,0,true"), JSON.stringify(cardsGot));
+  check("BH5 …no click-only ▸ header is left: every toggleSettingsCard header carries role=\"button\" and the key handler (4 of each — DE's Developer tools the fourth)",
+    count("<div onClick={()=>toggleSettingsCard(") === 0 && count("onClick={()=>toggleSettingsCard(") === 4 && (src.match(/<div role="button" tabIndex=\{0\} aria-expanded=\{!!openSettingsCards\.\w+\} onClick=\{\(\)=>toggleSettingsCard\("\w+"\)\} onKeyDown=\{settingsCardKey\("\w+"\)\} onKeyUp=\{settingsCardKey\("\w+"\)\}/g) || []).length === 4);
 })();
 
 // ─── S. Silvis feed-health warnings cannot be dismissed (owner decision 2026-09-24) ───
@@ -17674,6 +17675,282 @@ await (async () => {
     Object.keys(VAC_LIGHT_BA).every(k => VAC_BA[k] && JSON.stringify(VAC_BA[k].light) === JSON.stringify(VAC_LIGHT_BA[k])) && Object.keys(VAC_LIGHT_BA).every(k => readBA(VAC_LIGHT_BA[k]).cr < 4.5),
     JSON.stringify(Object.fromEntries(Object.keys(VAC_BA).map(k => [k, VAC_BA[k] && VAC_BA[k].light]))));
 })().catch(ex => check("BA harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
+
+// ─── DE. Settings' developer tools, the Clinic Manager's own notifications, MS's Setup and Requests, a dead reset link, the Welcome screen (2026-11-02) ───
+// UX audit 2026-11-01, quick wins QW6, QW12, QW13 and QW14, on the lead's decisions for the owner's questions (owner,
+// 2026-11-02: "do what you think is good for the app and us"): Q6 the developer test tools are the scheduler's only,
+// inside a closed "Developer tools" section; Q5 the Clinic Manager gets their own e-mail / push settings, prefilled,
+// which they can switch off; Q4 MS (the APP lead) loses the No-Call card — MS's own no-call days go through Requests.
+// The real code, sliced and run with stubs; the JSX through CZ2's h() compiler (copied here, as is). Every path these
+// items leave alone is compared with main's code at 3200f94 (test/fixtures/settings-auth-main-3200f94.txt), byte for
+// byte (a handler by its source):
+//   DE1 (QW6) 🛠 Developer tools — the scheduler's alone, closed until opened — holds the Edge Function URL (✏️ Edit,
+//       then Save: saveEdgeUrlDraft takes only https://…/functions/v1/send-notification), "🔔 Test push to me"
+//       (send-push aimed at the scheduler's own person_id), "📣 Test push to every phone…" (asks first, naming the
+//       surgeons, the APPs and the Clinic Manager), the deadline reminder test, and "📨 Send this week's office digest
+//       now" (asks first, naming each active office contact; the request main's "Test Saturday Digest" sent). Notification
+//       Settings and Office Notifications lose those, and read as main's otherwise — byte for byte for everyone else
+console.log("\nDE. Settings' developer tools, the Clinic Manager's notifications, MS's Setup and Requests, the reset link, the Welcome screen");
+await (async () => {
+  const nsrcD = src.replace(/\r\n/g, "\n"), J = JSON.stringify;
+  // main's pieces (the "old" reference, frozen), as CZ2 reads its fixture
+  const FIXD = fs.readFileSync(path.join(ROOT, "test", "fixtures", "settings-auth-main-3200f94.txt"), "utf8").replace(/\r\n/g, "\n");
+  const OLD = {};
+  { const p = FIXD.split(/\n?\/\/@@ (\w+) — [^\n]*\n/); for (let k = 1; k + 1 < p.length; k += 2) OLD[p[k]] = k + 2 >= p.length ? p[k + 1].replace(/\n$/, "") : p[k + 1]; }
+  // today's pieces: a unique start anchor (kept with keepA) up to the first end anchor after it
+  const cutD = (a, b, keepA) => { const i = nsrcD.indexOf(a); if (i < 0 || nsrcD.indexOf(a, i + 1) !== -1) return null; const j = nsrcD.indexOf(b, i + a.length); return j < 0 ? null : nsrcD.slice(keepA ? i : i + a.length, j); };
+  const declD = (name) => { const s = cutD(`  const ${name} = `, "\n  };\n"); return s === null ? null : s + "\n  }"; };
+  const tryD = (fn) => { try { return fn(); } catch (ex) { return { threw: String((ex && ex.message) || ex).slice(0, 160) }; } };
+  const tryAD = async (fn) => { try { return await fn(); } catch (ex) { return { threw: String((ex && ex.message) || ex).slice(0, 160) }; } };
+  const mkD = (names, code, filename) => { if (!code) return null; try { return vm.runInContext(`(function (env) { const { ${names} } = env; return (${code}); })`, sandbox, { filename }); } catch (ex) { return null; } };
+  // JSX → h() calls: CZ2's compiler (CJ's), with three additions these cards need — a // or /* */ comment in code is
+  // skipped (a trailing one may hold an apostrophe or a brace), an element right after `return` is JSX, and a brace
+  // match steps over a whole element inside it (its text may hold an apostrophe: "you're", "can't"); comment lines
+  // are dropped first, and a {cond && (…)} container is unwrapped (exprD)
+  const jsxD = (code) => {
+    const q = (x) => JSON.stringify(x);
+    const skipStr = (k) => { const ch = code[k]; for (let m = k + 1; m < code.length; m++) { if (code[m] === "\\") { m++; continue; } if (code[m] === ch) return m; } return code.length; };
+    const skipCmt = (k) => { if (code[k] !== "/") return -1; if (code[k + 1] === "/") { const e = code.indexOf("\n", k); return e < 0 ? code.length - 1 : e - 1; } if (code[k + 1] === "*") { const e = code.indexOf("*/", k + 2); return e < 0 ? code.length - 1 : e + 1; } return -1; };
+    const skipTpl = (k) => { for (k = k + 1; k < code.length && code[k] !== "`"; k++) { if (code[k] === "\\") k++; else if (code[k] === "$" && code[k + 1] === "{") k = close(k + 1); } return k; };
+    const opens = (k) => code[k] === "<" && (/[A-Za-z]/.test(code[k + 1] || "") || code[k + 1] === ">");
+    const jsxAt = (k, before) => opens(k) && (/^\s*$/.test(before) || /(?:[(?:,&|>{[=]|\breturn)$/.test(before.replace(/\s+$/, "")));
+    const close = (j) => {
+      let depth = 0;
+      for (let k = j; k < code.length; k++) {
+        const ch = code[k];
+        if (ch === '"' || ch === "'") { k = skipStr(k); continue; }
+        if (ch === "`") { k = skipTpl(k); continue; }
+        const c = skipCmt(k); if (c >= 0) { k = c; continue; }
+        if (k > j && jsxAt(k, code.slice(j + 1, k))) { k = el(k)[1] - 1; continue; }
+        if (ch === "{") depth++; else if (ch === "}" && --depth === 0) return k;
+      }
+      throw new Error("unbalanced { at " + j);
+    };
+    const el = (k) => {
+      let j = k + 1, tag = "#frag";
+      if (code[j] !== ">") { tag = /^[A-Za-z][\w.]*/.exec(code.slice(j))[0]; j += tag.length; }
+      const props = [], kids = [];
+      for (;;) {
+        while (/\s/.test(code[j])) j++;
+        if (code[j] === "/" && code[j + 1] === ">") return [`h(${q(tag)}, {${props.join(", ")}})`, j + 2];
+        if (code[j] === ">") { j++; break; }
+        const nm = (/^[\w-]+/.exec(code.slice(j)) || [""])[0];
+        if (!nm) throw new Error("attribute at " + j + ": " + code.slice(j, j + 30));
+        j += nm.length;
+        if (code[j] !== "=") { props.push(`${q(nm)}: true`); continue; }
+        j++;
+        if (code[j] === '"') { const e = skipStr(j); props.push(`${q(nm)}: ${code.slice(j, e + 1)}`); j = e + 1; }
+        else if (code[j] === "{") { const e = close(j); props.push(`${q(nm)}: (${jsxD(code.slice(j + 1, e))})`); j = e + 1; }
+        else throw new Error("attribute value at " + j);
+      }
+      let text = "";
+      const flush = () => {
+        if (!text) return;
+        const lines = text.split("\n");
+        const t = lines.length === 1 ? text : lines.map((l, i) => (i > 0 ? l.replace(/^\s+/, "") : l)).map((l, i, a) => (i < a.length - 1 ? l.replace(/\s+$/, "") : l)).filter((l) => l.length).join(" ");
+        if (t.length && !(lines.length > 1 && !t.trim())) kids.push(q(t));
+        text = "";
+      };
+      for (;;) {
+        if (j >= code.length) throw new Error("unclosed <" + tag + ">");
+        if (code.startsWith("</", j)) { flush(); j = code.indexOf(">", j) + 1; break; }
+        if (opens(j)) { flush(); const [js, e] = el(j); kids.push(js); j = e; continue; }
+        if (code[j] === "{") { flush(); const e = close(j); const inner = code.slice(j + 1, e); if (inner.replace(/\/\*[\s\S]*?\*\//g, "").trim()) kids.push(`(${jsxD(inner)})`); j = e + 1; continue; }
+        text += code[j]; j++;
+      }
+      return [`h(${q(tag)}, {${props.join(", ")}}${kids.length ? ", " + kids.join(", ") : ""})`, j];
+    };
+    let out = "";
+    for (let i = 0; i < code.length;) {
+      const ch = code[i];
+      if (ch === '"' || ch === "'") { const e = skipStr(i); out += code.slice(i, e + 1); i = e + 1; continue; }
+      if (ch === "`") { const e = skipTpl(i); out += code.slice(i, e + 1); i = e + 1; continue; }
+      const c = skipCmt(i); if (c >= 0) { i = c + 1; continue; }
+      if (jsxAt(i, out)) { const [js, e] = el(i); out += js; i = e; continue; }
+      out += ch; i++;
+    }
+    return out;
+  };
+  const stripD = (s) => s.replace(/^\s*\/\/[^\n]*$/gm, "").replace(/\{\/\*[\s\S]*?\*\/\}/g, "");
+  const exprD = (s) => { let t = stripD(s).trim(); if (t.startsWith("{") && t.endsWith("}")) t = t.slice(1, -1).trim(); return t; };
+  const hD = (tag, props, ...kids) => ({ tag, props: props || {}, kids: kids.flat(Infinity).filter((k) => k !== null && k !== undefined && k !== false && k !== true && k !== "") });
+  const allD = (n, out = []) => { if (n && typeof n === "object" && Array.isArray(n.kids)) { out.push(n); n.kids.forEach((k) => allD(k, out)); } return out; };
+  const textD = (n) => (n == null ? "" : typeof n !== "object" ? String(n) : (n.kids || []).map(textD).join(""));
+  // the env's stubs by name; every call they get, in one log
+  const STUBS = new Map(), callsD = [];
+  const stubD = (name, ret) => { const f = (...a) => { callsD.push([name, ...a]); return typeof ret === "function" ? ret(...a) : ret; }; STUBS.set(f, name); return f; };
+  // a render tree as text — a stub by its name, any other function by its source (an unchanged handler compares equal)
+  const sigD = (n) => J(n, (k, v) => (typeof v === "function" ? (STUBS.has(v) ? "stub:" + STUBS.get(v) : "fn:" + String(v)) : v));
+  // a piece of JSX, compiled once, rendered with an env (a throw comes back as { threw })
+  const viewErrD = {};
+  const viewD = (names, code, filename) => { let f = null; try { f = code ? vm.runInContext(`(function (env) { const { h, ${names} } = env; return (${jsxD(exprD(code))}); })`, sandbox, { filename }) : null; } catch (ex) { f = null; viewErrD[filename] = String(ex).slice(0, 160); } return f ? (env) => tryD(() => f(Object.assign({ h: hD }, env))) : null; };
+  const findD = (tree, pred) => allD(tree).filter(pred);
+  const byTextD = (tree, t) => findD(tree, (n) => textD(n).replace(/\s+/g, " ").trim() === t);
+  const SURGD = ["DJA", "MCC", "RPC", "KJH", "REH", "FAK", "ARW"].map((name, i) => ({ id: "s" + (i + 1), name }));
+  const APPSD = ["MA", "SJ", "MS", "SS", "JH"].map((name, i) => ({ id: "a" + (i + 1), name }));
+  const nameOfD = (id) => (SURGD.find((s) => s.id === id) || APPSD.find((a) => a.id === id) || {}).name || id || "?";
+  const CSSD = { card: { card: 1 }, cardT: { cardT: 1 }, inp: { inp: 1 }, btn: (on) => ({ btn: !!on }), badge: (i, n) => ({ badge: n }) };
+  const EDGE = "https://xq.supabase.co/functions/v1/send-notification";
+  // who is signed in: the scheduler (FAK), the Clinic Manager (role admin, person_id "admin"), a member (RPC), an APP (MA), MS (the APP lead)
+  const WHO = {
+    sched: { userProfile: { person_id: "s6", role: "scheduler", display_name: "FAK" }, isScheduler: true, mySurgeon: "s6" },
+    admin: { userProfile: { person_id: "admin", role: "admin", display_name: "ADMIN" }, isScheduler: true, mySurgeon: "admin" },
+    member: { userProfile: { person_id: "s3", role: "member", display_name: "RPC" }, isScheduler: false, mySurgeon: "s3" },
+    app: { userProfile: { person_id: "a1", role: "member", display_name: "MA" }, isScheduler: false, mySurgeon: "a1" },
+    ms: { userProfile: { person_id: "a3", role: "member", display_name: "MS", can_assign_apps: true }, isScheduler: false, mySurgeon: "a3" },
+  };
+
+  // ── DE1 (QW6) — Settings' developer tools ──
+  const SET_NAMES = "css, dk, dkText, dkSubtext, dkCardBorder, mono, font, openSettingsCards, toggleSettingsCard, settingsCardKey, oneSignalSubscribed, pushPermission, requestPushPermission, pushDiag, refreshPushDiag, resetPushSubscription, "
+    + "isScheduler, userProfile, sendTestNotification, notifTestSent, edgeFunctionUrl, setEdgeFunctionUrl, sessionEpochRef, fetch, dbAuthHeaders, alert, confirm, mySurgeon, notifPrefs, saveNotifPref, authUser, notifPrefsSaving, notifPrefsSaved, "
+    + "surgeons, apps, edgeUrlDraft, setEdgeUrlDraft, edgeUrlErr, setEdgeUrlErr, saveEdgeUrlDraft, sendTestPush, nameOf, sendOfficeDigestNow, officeNotifBusy, officeContacts, newOfficeName, setNewOfficeName, newOfficeEmail, setNewOfficeEmail, "
+    + "newOfficeDepts, setNewOfficeDepts, addOfficeContact, toggleOfficeContactDept, updateOfficeContact, deleteOfficeContact, openPublishDialog, triggerDigestTest, showPublishDialog, setShowPublishDialog, publishLabel, setPublishLabel, triggerPublishNotify";
+  const OFFICE = [{ id: 1, name: "Front Office", email: "office@dsg.test", active: true, departments: [] }, { id: 2, name: "Weight Management Desk", email: "wm@dsg.test", active: true, departments: ["CWM"] },
+    { id: 3, name: "Breast Health Coordinator", email: "bh@dsg.test", active: false, departments: ["CBH"] }];
+  // one Settings env: who, the open cards, the URL, light / dark (every handler a named stub)
+  const setEnvD = (who, o = {}) => Object.assign({
+    css: CSSD, dk: !!o.dk, dkText: o.dk ? "#e0e0f0" : "#2c3e50", dkSubtext: o.dk ? "#8a8aaa" : "#7a8a98", dkCardBorder: o.dk ? "#2a3a5e" : "#e0e4ea", mono: "M", font: "F",
+    openSettingsCards: o.open || {}, oneSignalSubscribed: !!o.subscribed, pushPermission: o.perm || "granted", pushDiag: { msg: "", loading: false }, notifTestSent: "",
+    edgeFunctionUrl: "url" in o ? o.url : EDGE, sessionEpochRef: { current: 0 }, notifPrefs: o.prefs || { s3: { email: "rpc@dsg.test" }, s6: { email: "fak@dsg.test" } }, authUser: { id: "u-" + who, email: who + "@dsg.test" },
+    notifPrefsSaving: false, notifPrefsSaved: null, surgeons: SURGD, apps: APPSD, edgeUrlDraft: "draft" in o ? o.draft : null, edgeUrlErr: o.err || "", nameOf: nameOfD,
+    officeNotifBusy: false, officeContacts: OFFICE, newOfficeName: "", newOfficeEmail: "", newOfficeDepts: [], showPublishDialog: false, publishLabel: "",
+  }, Object.fromEntries(["toggleSettingsCard", "settingsCardKey", "requestPushPermission", "refreshPushDiag", "resetPushSubscription", "sendTestNotification", "setEdgeFunctionUrl", "fetch", "dbAuthHeaders", "alert", "confirm",
+    "saveNotifPref", "setEdgeUrlDraft", "setEdgeUrlErr", "saveEdgeUrlDraft", "sendTestPush", "sendOfficeDigestNow", "setNewOfficeName", "setNewOfficeEmail", "setNewOfficeDepts", "addOfficeContact", "toggleOfficeContactDept",
+    "updateOfficeContact", "deleteOfficeContact", "openPublishDialog", "triggerDigestTest", "setShowPublishDialog", "setPublishLabel", "triggerPublishNotify"].map((n) => [n, stubD(n)])), WHO[who]);
+  const NEWP = {
+    notifCard: (() => { const s = cutD("          {/* Notifications */}\n", "\n          </div>\n", true); return s === null ? null : s + "\n          </div>"; })(),
+    officeCard: (() => { const s = cutD("          {/* Office Notifications — scheduler/admin only */}\n", "\n          )}\n", true); return s === null ? null : s + "\n          )}"; })(),
+    devCard: cutD("          {/* Developer tools — ", "\n\n          {/* Account */}", true),
+  };
+  const V = { notifNew: viewD(SET_NAMES, NEWP.notifCard, "de-notif.js"), notifOld: viewD(SET_NAMES, OLD.notifCard, "de-notif-main.js"), officeNew: viewD(SET_NAMES, NEWP.officeCard, "de-office.js"),
+    officeOld: viewD(SET_NAMES, OLD.officeCard, "de-office-main.js"), dev: viewD(SET_NAMES, NEWP.devCard, "de-dev.js") };
+  const vOk = Object.values(V).every(Boolean);
+  check("DE1 the pieces — Notification Settings, Office Notifications, 🛠 Developer tools (today's) and main's two cards (the fixture) — are found once each and compile", vOk && Object.keys(OLD).length === 11,
+    J({ views: Object.fromEntries(Object.entries(V).map(([k, f]) => [k, !!f])), errs: viewErrD, pieces: Object.keys(OLD) }));
+  if (vOk) {
+    // DE1a — the card: whose, closed, then opened
+    const OPEN_ALL = { notifSettings: true, officeNotif: true, devTools: true };
+    const devOf = (who, o) => V.dev(setEnvD(who, o));
+    const closed = devOf("sched"), opened = devOf("sched", { open: OPEN_ALL }), others = ["admin", "member", "app", "ms"].map((w) => devOf(w, { open: OPEN_ALL }));
+    const head = closed && closed.kids ? findD(closed, (n) => n.props.role === "button")[0] : null;
+    const btns = opened && opened.kids ? findD(opened, (n) => n.tag === "button").map((b) => textD(b).trim()) : null;
+    check("DE1a 🛠 Developer tools is the scheduler's alone — its gate run: the scheduler yes; the Clinic Manager (role admin), a member, an APP and MS no — and closed until opened (no open cards: its header only, aria-expanded false, ▸); opened: ✏️ Edit, 🔔 Test push to me, 📣 Test push to every phone…, Test Vacation Deadline Reminder, 📨 Send this week's office digest now — in that order, nothing else",
+      !!head && head.props["aria-expanded"] === false && closed.kids.length === 1 && textD(closed).includes("🛠 Developer tools") && textD(closed).includes("▸")
+        && others.every((x) => x === false) && J(btns) === J(["✏️ Edit", "🔔 Test push to me", "📣 Test push to every phone…", "Test Vacation Deadline Reminder", "📨 Send this week's office digest now"]),
+      J({ closed: closed && (closed.threw || closed.kids.length), others, btns }));
+
+    // DE1b/c — Notification Settings: theirs and everyone else's
+    const MOVED = ["Edge Function URL (send-notification)", "Email sending posts here; push and the test buttons derive their URLs from it. Saves automatically — only a non-empty value is ever persisted, so this can't be blanked by accident.",
+      "Test Push to All Devices", "Test Vacation Deadline Reminder"];
+    const inputsD = (t) => findD(t, (n) => n.tag === "input").length;
+    const nb = [];
+    for (const who of ["sched", "admin"]) for (const dk of [false, true]) {
+      const o = { open: OPEN_ALL, dk }, nw = V.notifNew(setEnvD(who, o)), od = V.notifOld(setEnvD(who, o));
+      let want = textD(od); for (const m of MOVED) want = want.split(m).join("");
+      const ok = !nw.threw && !od.threw && textD(nw) === want && inputsD(nw) === inputsD(od) - 1 && !MOVED.some((m) => textD(nw).includes(m))
+        && !findD(nw, (n) => Object.values(n.props).some((v) => STUBS.get(v) === "setEdgeFunctionUrl" || (typeof v === "function" && /setEdgeFunctionUrl|send-push|vacation-deadline-reminder/.test(String(v))))).length;
+      if (!ok) nb.push({ who, dk, nw: nw.threw || textD(nw).slice(0, 300), want: want.slice(0, 300) });
+    }
+    const offLine = (who) => { const t = V.notifNew(setEnvD(who, { open: OPEN_ALL, url: "" })); return t.threw || (textD(t).match(/⚠ Email and push sending are OFF[^.]*\./) || [""])[0]; };
+    check("DE1b Notification Settings, opened, for the scheduler and the Clinic Manager (light and dark): no URL field, no 'Test Push to All Devices', no 'Test Vacation Deadline Reminder' and nothing that writes the URL or calls send-push — the card's text is main's minus exactly those; with no URL set, the OFF line sends the scheduler to 🛠 Developer tools and tells the Clinic Manager to ask the scheduler",
+      nb.length === 0 && offLine("sched") === "⚠ Email and push sending are OFF — set the Edge Function URL under 🛠 Developer tools below to turn them on." && offLine("admin") === "⚠ Email and push sending are OFF — ask the scheduler to set the Edge Function URL.",
+      J({ nb: nb.slice(0, 2), sched: offLine("sched"), admin: offLine("admin") }));
+    const same = [];
+    for (const who of ["member", "app", "ms"]) for (const open of [{}, OPEN_ALL]) for (const dk of [false, true]) for (const url of [EDGE, ""]) {
+      const nw = V.notifNew(setEnvD(who, { open, dk, url })), od = V.notifOld(setEnvD(who, { open, dk, url }));
+      if (nw.threw || sigD(nw) !== sigD(od)) same.push({ who, open: !!open.notifSettings, dk, url: !!url, nw: nw.threw || null });
+    }
+    check("DE1c …a member (RPC), an APP (MA) and MS: Notification Settings byte for byte main's (its handlers by their source) — closed and opened, light and dark, with and without the URL (24 renders)",
+      same.length === 0, J(same.slice(0, 3)));
+
+    // DE1d — Office Notifications: main's, without the digest button
+    const ob = [];
+    for (const who of ["sched", "admin"]) for (const open of [{}, OPEN_ALL]) {
+      const nw = V.officeNew(setEnvD(who, { open })), od = JSON.parse(sigD(V.officeOld(setEnvD(who, { open }))));
+      const strip = (n) => { if (n && typeof n === "object" && Array.isArray(n.kids)) n.kids = n.kids.filter((k) => !(k && k.tag === "button" && textD(k).trim() === "🧪 Test Saturday Digest Now")).map(strip); return n; };
+      const gone = sigD(strip(od));
+      if (nw.threw || sigD(nw) !== gone || (open.officeNotif && !byTextD(nw, "📣 Publish New Period & Notify Office").length) || textD(nw).includes("Digest")) ob.push({ who, open: !!open.officeNotif, nw: nw.threw || textD(nw).slice(-200) });
+    }
+    const memberOffice = ["member", "app", "ms"].map((w) => V.officeNew(setEnvD(w, { open: OPEN_ALL })));
+    check("DE1d 📧 Office Notifications for the scheduler and the Clinic Manager (closed and opened): main's card byte for byte without its '🧪 Test Saturday Digest Now' button — 📣 Publish New Period & Notify Office stays; a member, an APP and MS still don't get the card",
+      ob.length === 0 && memberOffice.every((x) => x === false), J({ ob: ob.slice(0, 2), memberOffice }));
+
+    // DE1e — the push tests, executed
+    const tpSrc = declD("sendTestPush");
+    const mkTP = mkD("edgeFunctionUrl, mySurgeon, surgeons, apps, confirm, sessionEpochRef, fetch, dbAuthHeaders, alert, nameOf, console", tpSrc && "async (everyone) => {" + tpSrc.slice(tpSrc.indexOf("{") + 1), "de-testpush.js");
+    const runTP = async (everyone, o = {}) => {
+      const log = [], ep = { current: 0 };
+      const env = { edgeFunctionUrl: "url" in o ? o.url : EDGE, mySurgeon: "me" in o ? o.me : "s6", surgeons: SURGD, apps: APPSD, nameOf: nameOfD, sessionEpochRef: ep, console: { error() {}, warn() {}, log() {} },
+        confirm: (m) => { log.push({ confirm: m }); return !!o.yes; }, dbAuthHeaders: () => ({ Authorization: "Bearer TOK" }), alert: (m) => log.push({ alert: m }),
+        fetch: async (u, opt) => { log.push({ fetch: u, method: opt.method, headers: opt.headers, body: JSON.parse(opt.body) }); if (o.cross) ep.current++; if (o.offline) throw new TypeError("Load failed"); return { ok: !o.fail, status: o.fail ? 500 : 200, json: async () => (o.fail ? { error: "OneSignal send failed" } : { id: "n1" }) }; } };
+      const r = await tryAD(() => mkTP(env)(everyone));
+      return r && r.threw ? [{ threw: r.threw }] : log;
+    };
+    const PUSH = "https://xq.supabase.co/functions/v1/send-push";
+    const me = mkTP ? await runTP(false) : null, all0 = mkTP ? await runTP(true) : null, all1 = mkTP ? await runTP(true, { yes: true }) : null;
+    const meFail = mkTP ? await runTP(false, { fail: true }) : null, meCross = mkTP ? await runTP(false, { cross: true }) : null, noUrl = mkTP ? await runTP(true, { url: "", yes: true }) : null;
+    const ask = all0 && all0[0] && all0[0].confirm;
+    check("DE1e 🔔 Test push to me, executed: no question; ONE POST to send-push with the scheduler's token and targetIds [\"s6\"] (OneSignal's external_id — no broadcast); its answer says it went to FAK's devices only. 📣 Test push to every phone…: asks first, naming every surgeon, every APP and the Clinic Manager — No sends nothing; Yes sends the broadcast (no targetIds) with a 'no action needed' message",
+      !!me && me.length === 2 && me[0].fetch === PUSH && me[0].method === "POST" && me[0].headers.Authorization === "Bearer TOK" && J(me[0].body.targetIds) === J(["s6"]) && !me.some((x) => x.confirm) && /devices only \(FAK\)/.test(me[1].alert)
+        && !!ask && SURGD.concat(APPSD).every((p) => ask.includes(p.name)) && ask.includes("the Clinic Manager") && all0.length === 1
+        && !!all1 && all1.length === 3 && all1[1].fetch === PUSH && !("targetIds" in all1[1].body) && /no action needed/.test(all1[1].body.message) && /every subscribed phone/.test(all1[2].alert),
+      J({ me, all0: all0 && all0.length, ask, all1 }));
+    check("DE1e …a failed send says FAILED with the server's words; a session change while it is out says nothing; no Edge Function URL: nothing at all",
+      !!meFail && /^Push test FAILED\nStatus: 500\nOneSignal send failed$/.test(meFail[meFail.length - 1].alert || "") && !!meCross && meCross.length === 1 && !!meCross[0].fetch && J(noUrl) === "[]",
+      J({ meFail, meCross, noUrl }));
+
+    // DE1f — the office digest, executed; its request is main's
+    const dgSrc = declD("sendOfficeDigestNow");
+    const DG_NAMES = "officeContacts, confirm, sessionEpochRef, setOfficeNotifBusy, fetch, SUPABASE_URL, dbAuthHeaders, alert, console";
+    const mkDG = mkD(DG_NAMES, dgSrc), mkDGOld = mkD(DG_NAMES, OLD.digest);
+    const runDG = async (mk, o = {}) => {
+      const log = [];
+      const env = { officeContacts: o.contacts || OFFICE, sessionEpochRef: { current: 0 }, SUPABASE_URL: "https://xq.supabase.co", console: { error() {}, warn() {}, log() {} },
+        confirm: (m) => { log.push({ confirm: m }); return !!o.yes; }, setOfficeNotifBusy: (v) => log.push("busy:" + v), dbAuthHeaders: () => ({ Authorization: "Bearer TOK" }), alert: (m) => log.push({ alert: m }),
+        fetch: async (u, opt) => { log.push({ fetch: u, method: opt.method, headers: opt.headers, body: opt.body }); return { ok: true, status: 200, json: async () => ({ sent: 2, affected_surgeons: ["RPC"] }) }; } };
+      const r = await tryAD(() => mk(env)());
+      return r && r.threw ? [{ threw: r.threw }] : log;
+    };
+    const dNo = mkDG ? await runDG(mkDG) : null, dYes = mkDG ? await runDG(mkDG, { yes: true }) : null, dMain = mkDGOld ? await runDG(mkDGOld, { yes: true }) : null;
+    const dNone = mkDG ? await runDG(mkDG, { yes: true, contacts: [OFFICE[2]] }) : null;
+    const dq = dNo && dNo[0] && dNo[0].confirm;
+    check("DE1f 📨 Send this week's office digest now, executed: it asks first, naming each ACTIVE office contact with their e-mail (and a department filter), not the inactive one, and that Saturday's run then starts from now — No sends nothing; Yes sends main's request exactly (URL, method, headers, body {mode:\"digest\"}) and says the same after; no active contact: nothing",
+      !!dq && dq.includes("• Front Office (office@dsg.test)") && dq.includes("• Weight Management Desk (wm@dsg.test) — CWM changes only") && !dq.includes("Breast Health") && /these 2 office contacts get an e-mail/.test(dq) && /Saturday's automatic digest will then cover only the changes made after now\./.test(dq)
+        && dNo.length === 1 && !!dYes && !!dMain && J(dYes.slice(1)) === J(dMain.slice(1)) && dYes.some((x) => x.fetch === "https://xq.supabase.co/functions/v1/office-notifications" && x.body === J({ mode: "digest" })) && J(dNone) === "[]",
+      J({ dq, dYes, dMain, dNone }));
+
+    // DE1g — the Edge Function URL: Edit, then Save
+    const sdSrc = declD("saveEdgeUrlDraft");
+    const mkSD = mkD("edgeUrlDraft, edgeFunctionUrl, setEdgeFunctionUrl, setEdgeUrlDraft, setEdgeUrlErr", sdSrc, "de-edgeurl.js");
+    const runSD = (draft, cur) => { const log = []; const r = tryD(() => mkSD({ edgeUrlDraft: draft, edgeFunctionUrl: cur === undefined ? EDGE : cur, setEdgeFunctionUrl: (v) => log.push("url:" + v), setEdgeUrlDraft: (v) => log.push("draft:" + v), setEdgeUrlErr: (v) => log.push("err:" + v) })()); return r && r.threw ? ["threw " + r.threw] : log; };
+    const BAD = [EDGE + "x", EDGE.replace("https:", "http:"), "", "   ", "https://xq.supabase.co/functions/v1/send-push", "xq.supabase.co/functions/v1/send-notification", "https://xq supabase.co/functions/v1/send-notification", "https:///functions/v1/send-notification"];
+    const badRuns = mkSD ? BAD.map((b) => runSD(b)) : null;
+    const NEWURL = "https://abc.supabase.co/functions/v1/send-notification";
+    const good = mkSD ? runSD("  " + NEWURL + " ") : null, sameUrl = mkSD ? runSD(EDGE, EDGE) : null, fromEmpty = mkSD ? runSD(NEWURL, "") : null;
+    const row = (o) => V.dev(setEnvD("sched", Object.assign({ open: OPEN_ALL }, o)));
+    const r0 = row({}), r1 = row({ draft: EDGE }), r2 = row({ draft: EDGE + "x", err: "Not saved — x" });
+    const editBtn = r0.threw ? null : byTextD(r0, "✏️ Edit")[0];
+    callsD.length = 0; if (editBtn) tryD(() => editBtn.props.onClick());
+    const editCalls = callsD.slice(); callsD.length = 0;
+    const cancel = r1.threw ? null : byTextD(r1, "Cancel")[0]; if (cancel) tryD(() => cancel.props.onClick());
+    const cancelCalls = callsD.slice(); callsD.length = 0;
+    const inp1 = r1.threw ? null : findD(r1, (n) => n.tag === "input")[0];
+    check("DE1g the Edge Function URL row: shown as text with ✏️ Edit, no field (a keystroke can't reach it); Edit opens the field on the current URL; Cancel closes it untouched; the field writes only the draft — never the URL; an error line is a red role=\"alert\"",
+      !r0.threw && findD(r0, (n) => n.tag === "input").length === 0 && textD(r0).includes(EDGE) && !!editBtn && editBtn.props["aria-label"] === "Edit the Edge Function URL" && J(editCalls) === J([["setEdgeUrlDraft", EDGE], ["setEdgeUrlErr", ""]])
+        && J(cancelCalls) === J([["setEdgeUrlDraft", null], ["setEdgeUrlErr", ""]]) && !!inp1 && inp1.props.value === EDGE && STUBS.get(inp1.props.onChange) === undefined && /setEdgeUrlDraft\(e\.target\.value\)/.test(String(inp1.props.onChange))
+        && STUBS.get(byTextD(r1, "Save")[0] && byTextD(r1, "Save")[0].props.onClick) === "saveEdgeUrlDraft" && findD(r2, (n) => n.props.role === "alert" && textD(n) === "Not saved — x").length === 1,
+      J({ r0: r0.threw || textD(r0).slice(0, 160), editCalls, cancelCalls, inp: inp1 && inp1.props.value }));
+    check("DE1g …Save, executed: a draft that isn't https://…/functions/v1/send-notification — a stray character, http, empty, blank, another function, no scheme, a space, no host — writes nothing and says so (the field stays open); a good one is trimmed and written once, the field closed; the same URL again writes nothing (no echo); from no URL, the first one is written",
+      !!badRuns && badRuns.every((l) => J(l) === J(["err:Not saved — the address must look like https://…/functions/v1/send-notification."]))
+        && J(good) === J(["url:" + NEWURL, "draft:null", "err:"]) && J(sameUrl) === J(["draft:null", "err:"]) && J(fromEmpty) === J(["url:" + NEWURL, "draft:null", "err:"]),
+      J({ badRuns, good, sameUrl, fromEmpty }));
+    const oldLabels = (nsrcD.match(/^\s*(?:Test Push to All Devices|🧪 Test Saturday Digest Now)\s*$/gm) || []).length;
+    check("DE1h pins: no field writes the URL as it is typed (no onChange={e=>setEdgeFunctionUrl…); setEdgeFunctionUrl( is called by the three loads and Save alone; the old one-tap buttons are gone (no 'Test Push to All Devices' or '🧪 Test Saturday Digest Now' label, no triggerDigestTest); the save effect is still the one that writes it",
+      count("onChange={e=>setEdgeFunctionUrl(") === 0 && count("setEdgeFunctionUrl(") === 4 && count("if (v !== edgeFunctionUrl) setEdgeFunctionUrl(v);") === 1 && oldLabels === 0
+        && count("triggerDigestTest") === 0 && count(".upsert({ id: \"config\", edge_function_url: edgeFunctionUrl.trim(), updated_at: new Date().toISOString() });") === 1,
+      J({ onChange: count("onChange={e=>setEdgeFunctionUrl("), sets: count("setEdgeFunctionUrl("), oldLabels, digest: count("triggerDigestTest"), upsert: count(".upsert({ id: \"config\", edge_function_url: edgeFunctionUrl.trim(), updated_at: new Date().toISOString() });") }));
+  }
+})().catch(ex => check("DE harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
 
 // ─── AJ. Owner decisions 2026-10-13: Silvis next to a Davenport night, the spacing box, holiday pairs ───
 console.log("\nAJ. owner decisions 2026-10-13");

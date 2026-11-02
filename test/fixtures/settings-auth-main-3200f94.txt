@@ -1,0 +1,862 @@
+// main's code at 3200f94 (the branch base), byte-for-byte: the "old" reference for sync-guards DE (Settings' developer
+// tools, the Clinic Manager's own notifications, MS's Setup and Requests, the reset link and the Welcome screen —
+// every path those items don't change must read exactly as before). Pieces of index-source.html, each after a line
+// "//@@ <name> — <where>".
+//@@ mount — the app-open auth effect's function: after "  // ─── Auth: Check session on mount ───\n  useEffect(", up to "\n  }, []);\n"
+() => {
+    // Public mode: skip auth entirely. We render the calendar read-only
+    // using the Supabase anon key, which has SELECT access to the schedule.
+    if (isPublicMode) {
+      setAuthLoading(false);
+      return;
+    }
+    (async () => {
+      try {
+        // Check for password recovery token in URL hash (Supabase sends #access_token=...&type=recovery)
+        const hash = window.location.hash;
+        if (hash && hash.includes("type=recovery")) {
+          const params = new URLSearchParams(hash.substring(1));
+          const accessToken = params.get("access_token");
+          const refreshToken = params.get("refresh_token");
+          if (accessToken) {
+            auth._saveSession({ access_token: accessToken, refresh_token: refreshToken });
+            // Clear the hash from URL
+            window.history.replaceState(null, "", window.location.pathname + window.location.search);
+            setAuthMode("newpassword");
+            setAuthLoading(false);
+            return;
+          }
+        }
+
+        const bioResult = await biometric.isAvailable();
+        setBiometricAvail(bioResult.available);
+        setBiometricReason(bioResult.reason);
+        const bioEnrolled = biometric.isEnrolled();
+        setBiometricEnrolled(bioEnrolled);
+        const session = auth.getSession();
+
+        if (bioEnrolled && session) {
+          // Has biometric + stored session — require biometric to unlock
+          setBiometricPending(true);
+          setAuthLoading(false);
+          return; // Don't auto-login; wait for biometric prompt
+        }
+
+        if (session && !bioEnrolled) {
+          // Has session but no biometric — auto-login (legacy behavior)
+          const { user, error } = await auth.getUser();
+          if (user) {
+            auth.bindUser(user.id); // this tab is this account's (review r4 branch-4: another tab's sign-in is no session here)
+            setAuthUser(user);
+            let profile;
+            try { profile = await dbAuth.getProfile(user.id); }
+            catch (e) {
+              // The profile read failed after getUser answered — the signal
+              // dropped (review fix 2026-10-20), or (2026-10-26) anything else:
+              // a body that dropped mid-read (Chrome's "network error", which
+              // isNoConnectionError doesn't name), a reply that isn't the
+              // profile, a code error. Either way the app opened
+              // signed in with no profile (any other error went to the catch
+              // below, which left this tab bound with no profile). Undo the
+              // half-done auto-login (nothing bound or signed in), keep the
+              // stored session, and say what an open with no signal says: the
+              // note, with Retry. Anything but no signal is logged, as the
+              // catch below logged it (an old cached helpers.js: logged too).
+              if (!(typeof isNoConnectionError === "function" && isNoConnectionError(e))) console.error("Auth check error:", e);
+              auth.bindUser(null); setAuthUser(null);
+              setAuthNetErr(true);
+              setAuthLoading(false);
+              return;
+            }
+            if (profile) { setUserProfile(profile); setMySurgeon(profile.person_id); }
+            else { setNeedsProfile(true); }
+            // Same second-pass reload the biometric path gets (line ~525):
+            // getUser() may have just REFRESHED a >1h-stale token AFTER the
+            // mount data-load already ran with the dead one. Without this
+            // bump, auto-login sessions never re-read — vacations stayed
+            // empty all session and (pre-PR#14) the first edit autosaved the
+            // wiped state into the blob mirror (the digest-poison vector).
+            setReloadTrigger(t => t + 1);
+          } else if (error === "network") {
+            // No signal (owner decision 2026-10-20): getUser() kept the
+            // stored session, so nothing is signed out — the card says so,
+            // with Retry, instead of a plain "Sign in to your account".
+            setAuthNetErr(true);
+          }
+        }
+      } catch(e) { console.error("Auth check error:", e); }
+      setAuthLoading(false);
+    })();
+//@@ osLogin — the OneSignal login effect: the "useEffect(" before "window.OneSignal.login(mySurgeon).catch(" through its "]);" (AM's effectAt)
+useEffect(() => {
+    if (!oneSignalReady || !mySurgeon || mySurgeon === "admin") return;
+    try {
+      if (window.OneSignal?.login) {
+        window.OneSignal.login(mySurgeon).catch(e => console.error("OneSignal.login error:", e));
+      }
+    } catch(e) { console.error("OneSignal external id set error:", e); }
+  }, [oneSignalReady, mySurgeon]);
+//@@ requestPushPermission — requestPushPermission's callback: after "  const requestPushPermission = useCallback(", up to "\n  }, [mySurgeon]);"
+async () => {
+    // The session at the tap (review r5 fix-1): after a session change while
+    // the prompt (or OneSignal's login) is out — a sign-out, or "Sign in
+    // again" on another account — this device's push subscription is never
+    // associated with the previous account (OneSignal.login with its
+    // person_id) in the next session, and nothing of it is said there.
+    const ep = sessionEpochRef.current;
+    setPushDiag({ msg: "Requesting permission…", loading: true });
+    try {
+      // iOS Safari requires the app to be installed as a PWA (home screen) for
+      // web push to work. Detect that up front so users aren't left wondering.
+      const ua = navigator.userAgent || "";
+      const isIOS = /iPad|iPhone|iPod/.test(ua) && !window.MSStream;
+      const isStandalone = window.navigator.standalone === true ||
+        window.matchMedia?.("(display-mode: standalone)").matches;
+      if (isIOS && !isStandalone) {
+        setPushDiag({ msg: "On iPhone/iPad, push notifications only work after adding this app to your home screen (Share → Add to Home Screen), then opening it from the home-screen icon.", loading: false });
+        setPushPermission("unsupported");
+        return;
+      }
+
+      // If OneSignal isn't loaded yet, tell the user to wait instead of falling
+      // through to the native API (which wouldn't register with OneSignal and
+      // silently leaves them unable to receive pushes).
+      if (!window.OneSignal?.Notifications) {
+        setPushDiag({ msg: "Notification service still loading. Wait a few seconds and tap Enable again.", loading: false });
+        return;
+      }
+
+      // (review r5 fix-1) The permission prompt can stay up for minutes: a
+      // session change meanwhile stops it here (ep, at the tap — above).
+      await window.OneSignal.Notifications.requestPermission();
+      if (sessionEpochRef.current !== ep) return;
+      const perm = window.OneSignal.Notifications.permission;
+      setOneSignalSubscribed(perm);
+      setPushPermission(perm ? "granted" : "denied");
+
+      if (!perm) {
+        setPushDiag({ msg: "Permission was not granted. If you didn't see a prompt, notifications may be blocked at the browser or OS level — check your device notification settings for this site.", loading: false });
+        return;
+      }
+
+      // Associate this subscription with the logged-in person_id so targeted
+      // pushes (manual edits, vacation updates, etc.) can reach this device.
+      // Without this, only broadcast pushes arrive.
+      if (mySurgeon && mySurgeon !== "admin" && window.OneSignal?.login) {
+        try { await window.OneSignal.login(mySurgeon); } catch(e) { console.error("OneSignal login after permission:", e); }
+        if (sessionEpochRef.current !== ep) return; // (review r5 fix-1) another session now: nothing said on its screen
+      }
+
+      // Read back the subscription ID and external ID so the Settings panel can
+      // prove the device is fully registered.
+      setTimeout(() => {
+        if (sessionEpochRef.current !== ep) return; // (review r5 fix-1) another session now
+        try {
+          const subId = window.OneSignal?.User?.PushSubscription?.id || null;
+          const extId = window.OneSignal?.User?.externalId || null;
+          setPushSubscriptionId(subId);
+          setPushExternalId(extId);
+          if (subId) {
+            setPushDiag({ msg: `✓ Subscribed successfully${extId ? ` (as ${extId})` : ""}.`, loading: false });
+          } else {
+            setPushDiag({ msg: "Permission granted, but subscription ID not yet available. Reload the app and check Settings again — if it still says no ID, the service worker may be blocked.", loading: false });
+          }
+        } catch(e) { console.error("Push diag readback:", e); }
+      }, 1500);
+    } catch(e) {
+      console.error("Push permission error:", e);
+      if (sessionEpochRef.current !== ep) return; // (review r5 fix-1) another session now: nothing said on its screen
+      setPushPermission("unsupported");
+      setPushDiag({ msg: `Error: ${e.message || e}. Check browser console for details.`, loading: false });
+    }
+  }
+//@@ digest — the office digest handler (triggerDigestTest): after "  const triggerDigestTest = ", up to "\n  };\n"
+async () => {
+    if (!confirm("Manually fire the Saturday digest now? This will send emails if any changes are detected since the last digest snapshot.")) return;
+    const ep = sessionEpochRef.current; // (review r5 fix-1 — as the publish notice's)
+    setOfficeNotifBusy(true);
+    try {
+      const url = `${SUPABASE_URL}/functions/v1/office-notifications`;
+      const res = await fetch(url, {
+        method: "POST",
+        // dbAuthHeaders (scheduler JWT) — same groundwork as the publish button.
+        headers: dbAuthHeaders(),
+        body: JSON.stringify({ mode: "digest" }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (sessionEpochRef.current !== ep) { if (!res.ok) console.error("Digest run failed:", JSON.stringify(body)); return; } // another session now
+      if (!res.ok) { alert("Digest failed: " + JSON.stringify(body)); return; }
+      const surgeons = (body.affected_surgeons || []).join(", ");
+      alert(`Digest run: ${body.sent ?? 0} email(s) sent.\nAffected surgeons: ${surgeons || "(none)"}`);
+    } catch(e) { if (sessionEpochRef.current === ep) alert("Digest error: " + (e?.message || e)); else console.error("Digest run error:", e); }
+    finally { setOfficeNotifBusy(false); }
+  }
+//@@ handleSetProfile — the profile screen's Continue: after "  const handleSetProfile = ", up to "\n  };\n"
+async () => {
+    if (!signupPersonId || !authUser) return;
+    // The session at the tap (review r5 fix-1): a sign-out from this screen
+    // while its reads / its profile write are out — and this account's
+    // profile, roles and reload are never taken into the next session
+    // (the sign-in screen, then whoever signs in); nothing said there.
+    const ep = sessionEpochRef.current;
+    const gone = () => { if (sessionEpochRef.current === ep) return false; setAuthBusy(false); return true; };
+    setAuthBusy(true); setAuthError("");
+    try {
+      const profiles = await dbAuth.getAllProfiles();
+      if (gone()) return;
+      if (profiles.some(p => p.person_id === signupPersonId && p.id !== authUser.id)) {
+        setAuthError("This name is already registered to another account");
+        setAuthBusy(false); return;
+      }
+      const personName = allPeople.find(p=>p.id===signupPersonId)?.name || signupPersonId;
+      // `role` is deliberately NOT in this payload. merge-duplicates leaves
+      // unlisted columns untouched on conflict (and the column defaults to
+      // 'member' on a fresh insert), so re-claiming your own name can no longer
+      // rewrite a scheduler/admin row to "member" — the silent downgrade that
+      // needed only one transient getProfile failure (which drops an existing
+      // user onto this screen) plus one tap, and could only be undone in SQL.
+      // Adopt the row the DB returns so local state matches persisted truth,
+      // and check the previously-discarded error instead of assuming success.
+      const { data: savedProfile, error: profileErr } = await dbAuth.upsertProfile({
+        id: authUser.id, person_id: signupPersonId, display_name: personName,
+      });
+      if (gone()) { if (profileErr) console.error("Profile save failed:", profileErr); return; }
+      if (profileErr) {
+        console.error("Profile save failed:", profileErr);
+        setAuthError("Couldn't save your profile — please try again.");
+        setAuthBusy(false); return;
+      }
+      const savedRole = savedProfile?.role || "member";
+      setUserProfile(savedProfile || { person_id: signupPersonId, display_name: personName, role: savedRole });
+      setMySurgeon(signupPersonId);
+      setNeedsProfile(false);
+      if (savedRole === "admin" || savedRole === "scheduler") setIsScheduler(true);
+      // Re-run the data-load effect now that the session JWT is established,
+      // without a page reload.
+      setReloadTrigger(t => t + 1);
+      setAuthBusy(false);
+      return;
+    } catch(e) { if (gone()) return; setAuthError(typeof authErrorText === "function" ? authErrorText(e) : (e && e.message) || "Something went wrong — please try again."); }
+    setAuthBusy(false);
+  }
+//@@ signInCard — the sign-in card's JSX: after ") : !authUser && !isPublicMode ? (", up to ") : needsProfile ? ("
+
+        <div style={{display:"flex",justifyContent:"center",alignItems:"center",minHeight:"80vh",padding:20}}>
+          <div style={{...css.card,maxWidth:380,width:"100%",padding:28}}>
+            {/* Opened with no signal (owner decision 2026-10-20): the stored
+                session is still on this phone — say so at the top of the card,
+                with Retry (a reload runs the auto-login again). The Retry's
+                fill is a gradient so the dark sheet keeps its text white (it
+                forces every other button's text light grey). */}
+            {authNetErr && authMode==="login" && (
+              <div role="status" style={{background:"#fdf0e0",color:"#7a4a00",border:"1px solid #e0b070",borderRadius:8,padding:"10px 12px",marginBottom:16,fontSize:13,fontWeight:600,lineHeight:1.45,fontFamily:font}}>
+                <div>No connection — you're still signed in on this phone. Check your signal, then tap Retry.</div>
+                <button type="button" onClick={()=>window.location.reload()}
+                  style={{display:"block",width:"100%",minHeight:44,marginTop:10,background:"linear-gradient(135deg,#7a4a00,#8a5a10)",border:"none",borderRadius:7,color:"#fff",fontSize:14,fontWeight:700,cursor:"pointer",fontFamily:font}}>
+                  Retry
+                </button>
+              </div>
+            )}
+            <div style={{textAlign:"center",marginBottom:20}}>
+              <div style={{width:48,height:48,borderRadius:10,background:"linear-gradient(135deg,#1a6fa8,#2488c8)",display:"inline-flex",alignItems:"center",justifyContent:"center",marginBottom:10}}>
+                <span style={{color:"#fff",fontSize:18,fontWeight:800,fontFamily:font}}>DSG</span>
+              </div>
+              <h2 style={{fontSize:18,fontWeight:700,color:dkText,margin:"0 0 4px"}}>DSG Call Schedule</h2>
+              <p style={{fontSize:12,color:"#7a8a98",margin:0}}>
+                {authMode==="login" ? "Sign in to your account" : authMode==="signup" ? "Create your account" : authMode==="reset" ? "Reset your password" : "Set a new password"}
+              </p>
+            </div>
+
+            {/* ─── New Password Mode (after clicking reset link) ─── */}
+            {authMode==="newpassword" ? (
+              <div style={{display:"flex",flexDirection:"column",gap:10}}>
+                <p style={{fontSize:13,color:"#2c5a80",margin:0}}>Enter your new password below.</p>
+                <input type="password" placeholder="New password" value={newPassword} onChange={e=>setNewPassword(e.target.value)} autoComplete="new-password"
+                  style={{...css.inp,width:"100%",padding:"10px 12px",fontSize:14}}/>
+                <input type="password" placeholder="Confirm new password" value={newPasswordConfirm} onChange={e=>setNewPasswordConfirm(e.target.value)} autoComplete="new-password"
+                  onKeyDown={e=>{if(e.key==="Enter"){
+                    if(!newPassword||newPassword.length<6){setAuthError("Password must be at least 6 characters");return;}
+                    if(newPassword!==newPasswordConfirm){setAuthError("Passwords don't match");return;}
+                    setAuthBusy(true);setAuthError("");
+                    auth.updatePassword(newPassword).then(r=>{
+                      setAuthBusy(false);
+                      if(r.error){setAuthError(r.error);}
+                      else{setAuthMode("login");setAuthError("");setNewPassword("");setNewPasswordConfirm("");alert("Password updated! Please sign in with your new password.");auth.signOut();}
+                    }).catch(e=>{setAuthBusy(false);setAuthError(typeof authErrorText === "function" ? authErrorText(e) : (e && e.message) || "Something went wrong — please try again.");});
+                  }}}
+                  style={{...css.inp,width:"100%",padding:"10px 12px",fontSize:14}}/>
+                {authError && <div role="alert" style={{fontSize:12,color:"#a83232",padding:"6px 10px",background:"#fce8e8",borderRadius:6,border:"1px solid #e8c0c0"}}>{authError}</div>}
+                <button onClick={()=>{
+                  if(!newPassword||newPassword.length<6){setAuthError("Password must be at least 6 characters");return;}
+                  if(newPassword!==newPasswordConfirm){setAuthError("Passwords don't match");return;}
+                  setAuthBusy(true);setAuthError("");
+                  auth.updatePassword(newPassword).then(r=>{
+                    setAuthBusy(false);
+                    if(r.error){setAuthError(r.error);}
+                    else{setAuthMode("login");setAuthError("");setNewPassword("");setNewPasswordConfirm("");alert("Password updated! Please sign in with your new password.");auth.signOut();}
+                  }).catch(e=>{setAuthBusy(false);setAuthError(typeof authErrorText === "function" ? authErrorText(e) : (e && e.message) || "Something went wrong — please try again.");});
+                }} disabled={authBusy}
+                  style={{...css.btn(true),width:"100%",padding:"11px 16px",fontSize:14,fontWeight:700,opacity:authBusy?0.6:1}}>
+                  {authBusy ? "Updating…" : "Update Password"}
+                </button>
+              </div>
+
+            ) : authMode==="reset" ? (
+              /* ─── Password Reset Request Mode ─── */
+              <div style={{display:"flex",flexDirection:"column",gap:10}}>
+                {resetSent ? (
+                  <>
+                    <div style={{fontSize:13,color:"#1a6030",padding:"12px 14px",background:"#e8f8e8",borderRadius:8,border:"1px solid #a0d8a0",lineHeight:1.5}}>
+                      Password reset email sent! Check your inbox for a link to reset your password.
+                    </div>
+                    <button onClick={()=>{setAuthMode("login");setResetSent(false);setResetEmail("");setAuthError("");}}
+                      style={{background:"none",border:"none",color:"#1a6fa8",fontSize:12,cursor:"pointer",fontFamily:font,textDecoration:"underline",textAlign:"center"}}>
+                      Back to Sign In
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <p style={{fontSize:13,color:"#5a6a78",margin:0}}>Enter the email address you signed up with. We'll send you a link to reset your password.</p>
+                    <input type="email" placeholder="Email address" value={resetEmail} onChange={e=>setResetEmail(e.target.value)}
+                      autoComplete="username" inputMode="email" autoCapitalize="none" autoCorrect="off"
+                      onKeyDown={e=>{if(e.key==="Enter"&&resetEmail){
+                        setAuthBusy(true);setAuthError("");
+                        auth.resetPassword(resetEmail).then(r=>{
+                          setAuthBusy(false);
+                          if(r.error){setAuthError(r.error);}
+                          else{setResetSent(true);}
+                        }).catch(e=>{setAuthBusy(false);setAuthError(typeof authErrorText === "function" ? authErrorText(e) : (e && e.message) || "Something went wrong — please try again.");});
+                      }}}
+                      style={{...css.inp,width:"100%",padding:"10px 12px",fontSize:14}}/>
+                    {authError && <div role="alert" style={{fontSize:12,color:"#a83232",padding:"6px 10px",background:"#fce8e8",borderRadius:6,border:"1px solid #e8c0c0"}}>{authError}</div>}
+                    <button onClick={()=>{
+                      if(!resetEmail){setAuthError("Please enter your email");return;}
+                      setAuthBusy(true);setAuthError("");
+                      auth.resetPassword(resetEmail).then(r=>{
+                        setAuthBusy(false);
+                        if(r.error){setAuthError(r.error);}
+                        else{setResetSent(true);}
+                      }).catch(e=>{setAuthBusy(false);setAuthError(typeof authErrorText === "function" ? authErrorText(e) : (e && e.message) || "Something went wrong — please try again.");});
+                    }} disabled={authBusy}
+                      style={{...css.btn(true),width:"100%",padding:"11px 16px",fontSize:14,fontWeight:700,opacity:authBusy?0.6:1}}>
+                      {authBusy ? "Sending…" : "Send Reset Link"}
+                    </button>
+                    <div style={{textAlign:"center",marginTop:4}}>
+                      <button onClick={()=>{setAuthMode("login");setAuthError("");setResetEmail("");}}
+                        style={{background:"none",border:"none",color:"#1a6fa8",fontSize:12,cursor:"pointer",fontFamily:font,textDecoration:"underline"}}>
+                        Back to Sign In
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+
+            ) : (
+              /* ─── Normal Login / Signup Mode ─── */
+              <div style={{display:"flex",flexDirection:"column",gap:10}}>
+              <input type="email" placeholder="Email address" value={authEmail} onChange={e=>setAuthEmail(e.target.value)}
+                autoComplete="username" inputMode="email" autoCapitalize="none" autoCorrect="off"
+                onKeyDown={e=>e.key==="Enter"&&startSignIn()}
+                style={{...css.inp,width:"100%",padding:"10px 12px",fontSize:14}}/>
+              <input type="password" placeholder="Password" value={authPassword} onChange={e=>setAuthPassword(e.target.value)}
+                autoComplete={authMode==="login" ? "current-password" : "new-password"}
+                onKeyDown={e=>e.key==="Enter"&&startSignIn()}
+                style={{...css.inp,width:"100%",padding:"10px 12px",fontSize:14}}/>
+              {authMode==="signup" && (
+                <select value={signupPersonId} onChange={e=>setSignupPersonId(e.target.value)}
+                  style={{...css.inp,width:"100%",padding:"10px 12px",fontSize:14}}>
+                  <option value="">Select your name…</option>
+                  {/* ADMIN is deliberately NOT self-selectable — signup is open
+                      to anyone with the public URL, and the duplicate-claim
+                      check cannot work client-side (anon can't read
+                      user_profiles), so this option was an unauthenticated
+                      route to role:"admin". Admin accounts are provisioned in
+                      the DB. */}
+                  <optgroup label="Surgeons">
+                    {surgeons.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
+                  </optgroup>
+                  <optgroup label="APPs">
+                    {apps.map(a=><option key={a.id} value={a.id}>{a.name}</option>)}
+                  </optgroup>
+                </select>
+              )}
+              {/* Announced as it appears, and #a83232 on its fill (5.6:1; #c04040 was 4.4:1) — review fix 2026-10-20, as the
+                  card's reset and new-password lines above and the Face ID screen's */}
+              {authError && <div role="alert" style={{fontSize:12,color:"#a83232",padding:"6px 10px",background:"#fce8e8",borderRadius:6,border:"1px solid #e8c0c0"}}>{authError}</div>}
+              <button onClick={startSignIn} disabled={authBusy}
+                style={{...css.btn(true),width:"100%",padding:"11px 16px",fontSize:14,fontWeight:700,opacity:authBusy?0.6:1}}>
+                {authBusy ? "Please wait…" : authMode==="login" ? "Sign In" : "Create Account"}
+              </button>
+              <div style={{textAlign:"center",marginTop:4}}>
+                <button onClick={()=>{setAuthMode(m=>m==="login"?"signup":"login");setAuthError("");}}
+                  style={{background:"none",border:"none",color:"#1a6fa8",fontSize:12,cursor:"pointer",fontFamily:font,textDecoration:"underline"}}>
+                  {authMode==="login" ? "Don't have an account? Sign up" : "Already have an account? Sign in"}
+                </button>
+                {authMode==="login" && (
+                  <div style={{marginTop:8}}>
+                    <button onClick={()=>{setAuthMode("reset");setAuthError("");}}
+                      style={{background:"none",border:"none",color:"#7a8a98",fontSize:11,cursor:"pointer",fontFamily:font,textDecoration:"underline"}}>
+                      Forgot your password?
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+            )}
+          </div>
+        </div>
+      
+//@@ welcome — the profile screen's JSX: after ") : needsProfile ? (", up to "\n      ) : <>\n"
+
+        <div style={{display:"flex",justifyContent:"center",alignItems:"center",minHeight:"80vh",padding:20}}>
+          <div style={{...css.card,maxWidth:380,width:"100%",padding:28}}>
+            <div style={{textAlign:"center",marginBottom:16}}>
+              <h2 style={{fontSize:18,fontWeight:700,color:dkText,margin:"0 0 4px"}}>Welcome!</h2>
+              <p style={{fontSize:12,color:"#7a8a98",margin:0}}>Select your name to complete setup</p>
+            </div>
+            <select value={signupPersonId} onChange={e=>setSignupPersonId(e.target.value)}
+              style={{...css.inp,width:"100%",padding:"10px 12px",fontSize:14,marginBottom:10}}>
+              <option value="">Select your name…</option>
+              {/* ADMIN not self-selectable here either — see the signup screen. */}
+              <optgroup label="Surgeons">
+                {surgeons.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
+              </optgroup>
+              <optgroup label="APPs">
+                {apps.map(a=><option key={a.id} value={a.id}>{a.name}</option>)}
+              </optgroup>
+            </select>
+            {authError && <div style={{fontSize:12,color:"#c04040",padding:"6px 10px",background:"#fce8e8",borderRadius:6,border:"1px solid #e8c0c0",marginBottom:8}}>{authError}</div>}
+            <button onClick={handleSetProfile} disabled={authBusy||!signupPersonId}
+              style={{...css.btn(true),width:"100%",padding:"11px 16px",fontSize:14,fontWeight:700,opacity:authBusy||!signupPersonId?0.6:1}}>
+              {authBusy ? "Saving…" : "Continue"}
+            </button>
+          </div>
+        </div>
+//@@ notifCard — the Notification Settings card: "          {/* Notifications */}" through its own "\n          </div>"
+          {/* Notifications */}
+          <div style={css.card}>
+            <div role="button" tabIndex={0} aria-expanded={!!openSettingsCards.notifSettings} onClick={()=>toggleSettingsCard("notifSettings")} onKeyDown={settingsCardKey("notifSettings")} onKeyUp={settingsCardKey("notifSettings")} style={{...css.cardT,margin:openSettingsCards.notifSettings?"0 0 12px":0,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"space-between",userSelect:"none"}}>
+              <span>🔔 Notification Settings</span>
+              <span aria-hidden="true" style={{fontSize:12,color:"#7a8a98"}}>{openSettingsCards.notifSettings ? "▾" : "▸"}</span>
+            </div>
+            {openSettingsCards.notifSettings && <>
+
+            {/* Push Notifications via OneSignal */}
+            <div style={{background:dk?"#1a2a3e":"#f8f9fb",border:`1px solid ${dkCardBorder}`,borderRadius:8,padding:"12px 14px",marginBottom:12}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+                <span style={{fontSize:12,fontWeight:600,color:dkText}}>Push Notifications (OneSignal)</span>
+                {oneSignalSubscribed && <span style={{fontSize:11,color:"#1a8040",fontWeight:600}}>✓ Subscribed on this device</span>}
+                {pushPermission === "denied" && <span style={{fontSize:11,color:"#c04040",fontWeight:600}}>✕ Blocked</span>}
+              </div>
+              <p style={{fontSize:11,color:dkSubtext,margin:"0 0 8px",lineHeight:1.5}}>
+                Each partner needs to click "Enable" once on their device. Notifications will arrive even when the browser is closed.
+                {" "}On iPhone/iPad you must first install the app to the home screen (Share → Add to Home Screen) and open it from there.
+              </p>
+              {!oneSignalSubscribed && pushPermission !== "denied" && (
+                <button onClick={requestPushPermission} disabled={pushDiag.loading} style={{...css.btn(true),padding:"6px 14px",fontSize:12,opacity:pushDiag.loading?0.6:1}}>
+                  {pushDiag.loading ? "Working…" : "Enable Push Notifications"}
+                </button>
+              )}
+              {pushPermission === "denied" && (
+                <p style={{fontSize:11,color:"#c04040",lineHeight:1.5}}>
+                  Notifications are blocked. Please allow notifications for this site in your browser settings.
+                </p>
+              )}
+              {pushDiag.msg && (
+                <div style={{marginTop:8,padding:"6px 10px",background:dk?"#0f1e30":"#eef3f8",border:`1px solid ${dkCardBorder}`,borderRadius:6,fontSize:11,color:dkText,lineHeight:1.5,fontFamily:mono,wordBreak:"break-all"}}>
+                  {pushDiag.msg}
+                </div>
+              )}
+              <div style={{marginTop:8,display:"flex",gap:6,flexWrap:"wrap"}}>
+                <button onClick={refreshPushDiag} style={{...css.btn(false),padding:"4px 10px",fontSize:11}}>
+                  🔍 Diagnose
+                </button>
+                <button onClick={resetPushSubscription} disabled={pushDiag.loading} style={{...css.btn(false),padding:"4px 10px",fontSize:11,opacity:pushDiag.loading?0.6:1}}>
+                  🔄 Reset Subscription
+                </button>
+                {pushPermission === "granted" && isScheduler && (
+                  <button onClick={sendTestNotification} style={{...css.btn(false),padding:"4px 10px",fontSize:11}}>
+                    🔔 Send Test Notification
+                  </button>
+                )}
+                {notifTestSent && <span style={{fontSize:11,color:"#1a8040",fontWeight:600,alignSelf:"center"}}>{notifTestSent}</span>}
+              </div>
+              {(isScheduler || userProfile?.role === "admin") && (
+                <div style={{marginTop:8,paddingTop:8,borderTop:"1px dashed #e0e4ea"}}>
+                  <div style={{fontSize:11,color:dkSubtext,lineHeight:1.5,marginBottom:6}}>
+                    <strong style={{color:dkText}}>🔒 Push sending is configured server-side.</strong>
+                    <br/>
+                    The OneSignal REST API key lives in Supabase secrets and is accessed via the <code style={{fontFamily:mono,fontSize:10}}>send-push</code> Edge Function.
+                    {!edgeFunctionUrl && <span style={{color:"#b85020",display:"block",marginTop:4}}>⚠ Email and push sending are OFF — enter the Edge Function URL in the field below to enable them.</span>}
+                  </div>
+                  <div style={{marginBottom:8}}>
+                    <label style={{fontSize:10,color:"#7a8a98",fontWeight:600,textTransform:"uppercase",letterSpacing:0.5,display:"block",marginBottom:2}}>Edge Function URL (send-notification)</label>
+                    <input value={edgeFunctionUrl} onChange={e=>setEdgeFunctionUrl(e.target.value)}
+                      placeholder="https://…supabase.co/functions/v1/send-notification"
+                      style={{...css.inp,width:"100%",maxWidth:420,fontSize:11,fontFamily:mono,padding:"5px 8px"}}/>
+                    <p style={{fontSize:10,color:"#8a94a0",margin:"3px 0 0",lineHeight:1.4}}>
+                      Email sending posts here; push and the test buttons derive their URLs from it. Saves automatically — only a non-empty value is ever persisted, so this can't be blanked by accident.
+                    </p>
+                  </div>
+                  {edgeFunctionUrl && (
+                    <button onClick={async ()=>{
+                      const ep = sessionEpochRef.current; // (review r5 fix-1) its result is never said on the next session's screen
+                      try {
+                        const pushUrl = edgeFunctionUrl.replace(/\/[^/]+$/, "/send-push");
+                        const resp = await fetch(pushUrl, {
+                          method: "POST",
+                          headers: dbAuthHeaders(), // JWT (or anon fallback) so the verify_jwt=true gateway accepts the call
+                          body: JSON.stringify({
+                            title: "DSG Call Schedule",
+                            message: "Test push notification — if you see this, push is working!",
+                          }),
+                        });
+                        const data = await resp.json().catch(()=>({}));
+                        if (sessionEpochRef.current !== ep) return;
+                        // Key success off resp.ok — a gateway 401 body is {code,message}
+                        // (no `errors`/`error`), so the old fallthrough reported "Success" on failure.
+                        alert(resp.ok
+                          ? `Push test result:\nStatus: ${resp.status}\nSuccess — check your devices for the test push.`
+                          : `Push test FAILED\nStatus: ${resp.status}\n${data.error || data.message || (data.errors ? "Errors: " + JSON.stringify(data.errors) : "unknown error")}`);
+                      } catch(e) { if (sessionEpochRef.current === ep) alert("Push test error: " + e.message); }
+                    }} style={{...css.btn(false),padding:"4px 10px",fontSize:10,marginTop:4}}>
+                      Test Push to All Devices
+                    </button>
+                  )}
+                  {edgeFunctionUrl && (
+                    <button onClick={async ()=>{
+                      if (!confirm("This will trigger the vacation deadline reminder Edge Function.\n\nIt will only send a push if today + 2 days = the auto-detected deadline AND no reminder has been sent for that deadline yet.\n\nProceed?")) return;
+                      const ep = sessionEpochRef.current; // (review r5 fix-1) its result is never said on the next session's screen
+                      try {
+                        const url = edgeFunctionUrl.replace(/\/[^/]+$/, "/vacation-deadline-reminder");
+                        const resp = await fetch(url, {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json" },
+                        });
+                        const data = await resp.json().catch(()=>({}));
+                        if (sessionEpochRef.current !== ep) return;
+                        alert(`Vacation deadline reminder result:\nStatus: ${resp.status}\n${JSON.stringify(data, null, 2)}`);
+                      } catch(e) { if (sessionEpochRef.current === ep) alert("Test error: " + e.message); }
+                    }} style={{...css.btn(false),padding:"4px 10px",fontSize:10,marginTop:4,marginLeft:6}}>
+                      Test Vacation Deadline Reminder
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Email Notifications */}
+            <div style={{background:dk?"#1a2a3e":"#f8f9fb",border:`1px solid ${dkCardBorder}`,borderRadius:8,padding:"12px 14px",marginBottom:12}}>
+              <div style={{fontSize:12,fontWeight:600,color:dkText,marginBottom:6}}>📧 Email Notifications</div>
+
+              {/* Personal notification settings (shown to everyone) */}
+              {mySurgeon && mySurgeon !== "admin" && (() => {
+                const myPref = notifPrefs[mySurgeon] || {};
+                // A plain function called inline, not a component: a component defined here is a new
+                // type every render, so React remounted the <select> on each re-render (a poll, a save)
+                // and an open picker lost its place (UX audit 2026-10-19).
+                const hourPicker = (field, label) => (
+                  <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
+                    <span style={{fontSize:12,color:"#3a4a58",minWidth:180}}>{label}:</span>
+                    <select
+                      value={typeof myPref[field] === "number" ? myPref[field] : 8}
+                      onChange={e=>saveNotifPref(mySurgeon, {[field]:parseInt(e.target.value,10)})}
+                      style={{...css.inp,padding:"4px 8px",fontSize:12,width:100}}>
+                      {Array.from({length:24}, (_,i)=>{
+                        const h12 = i===0?12:i>12?i-12:i;
+                        const ampm = i<12?"AM":"PM";
+                        return <option key={i} value={i}>{h12}:00 {ampm}</option>;
+                      })}
+                    </select>
+                  </div>
+                );
+                return (
+                  <div style={{marginTop:12,paddingTop:10,borderTop:"1px solid #e8ecf0"}}>
+                    <div style={{fontSize:11,fontWeight:600,color:"#5a6a78",marginBottom:6}}>My Email for Notifications</div>
+                    <input value={myPref.email || ""} onChange={e=>saveNotifPref(mySurgeon, {email:e.target.value})}
+                      placeholder={authUser?.email || "email@example.com"} type="email"
+                      style={{...css.inp,width:280,fontSize:11,fontFamily:mono,padding:"4px 8px",marginBottom:4}}/>
+                    <p style={{fontSize:10,color:"#8a94a0",margin:"0 0 12px"}}>Leave blank to use your signup email ({authUser?.email}). Or enter a different email.</p>
+
+                    <div style={{fontSize:11,fontWeight:600,color:"#5a6a78",marginBottom:6}}>How do you want to be notified?</div>
+                    <div style={{background:"#f8f9fb",border:"1px solid #e0e4ea",borderRadius:6,padding:"8px 10px",marginBottom:12}}>
+                      <div style={{display:"grid",gridTemplateColumns:"1fr 60px 60px",gap:6,alignItems:"center"}}>
+                        <span style={{fontSize:10,color:"#7a8a98",fontWeight:600,textTransform:"uppercase",letterSpacing:0.4}}></span>
+                        <span style={{fontSize:10,color:"#7a8a98",fontWeight:600,textTransform:"uppercase",letterSpacing:0.4,textAlign:"center"}}>Email</span>
+                        <span style={{fontSize:10,color:"#7a8a98",fontWeight:600,textTransform:"uppercase",letterSpacing:0.4,textAlign:"center"}}>Push</span>
+                        {[
+                          ["schedule_changes", "Schedule changes & swaps"],
+                          ["vacation_updates", "Vacation requests & approvals"],
+                          ["shift_reminders", "Shift reminders"],
+                        ].map(([key, label]) => (
+                          <React.Fragment key={key}>
+                            <span style={{fontSize:12,color:"#3a4a58"}}>{label}</span>
+                            <label style={{display:"flex",justifyContent:"center",cursor:"pointer"}}>
+                              <input type="checkbox" checked={myPref[`${key}_email`] !== false}
+                                onChange={e=>saveNotifPref(mySurgeon, {[`${key}_email`]:e.target.checked})}/>
+                            </label>
+                            <label style={{display:"flex",justifyContent:"center",cursor:"pointer"}}>
+                              <input type="checkbox" checked={myPref[`${key}_push`] !== false}
+                                onChange={e=>saveNotifPref(mySurgeon, {[`${key}_push`]:e.target.checked})}/>
+                            </label>
+                          </React.Fragment>
+                        ))}
+                      </div>
+                    </div>
+
+                    <label style={{display:"flex",alignItems:"flex-start",gap:8,marginBottom:12,cursor:"pointer"}}>
+                      <input type="checkbox" checked={myPref.browser_push !== false}
+                        onChange={e=>saveNotifPref(mySurgeon, {browser_push:e.target.checked})} style={{marginTop:2}}/>
+                      <span style={{fontSize:12,color:"#3a4a58"}}>Show pop-up alerts on <strong>this device</strong> <span style={{color:"#8a94a0"}}>— the in-app/browser notification banner while the app is open. Separate from the cross-device Push and Email categories above.</span></span>
+                    </label>
+
+                    <div style={{fontSize:11,fontWeight:600,color:"#5a6a78",marginBottom:6}}>Reminder Times (Central time)</div>
+                    {hourPicker("daily_reminder_hour", "Daily call reminder")}
+                    {hourPicker("vac_deadline_hour", "Vacation deadline reminder")}
+                    <p style={{fontSize:10,color:"#8a94a0",margin:"4px 0 0",fontStyle:"italic"}}>
+                      Reminders fire only on days you're on call (for call reminder) or 2 days before the vacation deadline.
+                    </p>
+                    {/* "Saved ✓" for this person's own prefs only; readable in dark mode too (review fix 2026-10-19) */}
+                    <div aria-live="polite" style={{fontSize:10,color:dk?"#8ad0a0":"#1a8040",marginTop:6,minHeight:14}}>{notifPrefsSaving ? "Saving…" : notifPrefsSaved && notifPrefsSaved.id === mySurgeon ? "Saved ✓" : ""}</div>
+                  </div>
+                );
+              })()}
+
+              {/* Scheduler-only: all surgeon emails */}
+              {isScheduler && (
+                <div style={{marginTop:12,paddingTop:10,borderTop:"1px solid #e8ecf0"}}>
+                  <div style={{fontSize:11,fontWeight:600,color:"#5a6a78",marginBottom:6}}>All Surgeon Email Addresses (Scheduler Only)</div>
+                  {surgeons.map(s => {
+                    const pref = notifPrefs[s.id] || {};
+                    return (
+                      <div key={s.id} style={{display:"flex",gap:6,alignItems:"center",marginBottom:6,flexWrap:"wrap"}}>
+                        <Badge id={s.id} small/>
+                        <input value={pref.email || ""} onChange={e=>saveNotifPref(s.id, {email:e.target.value})}
+                          placeholder="email@example.com" type="email"
+                          style={{...css.inp,width:200,fontSize:11,fontFamily:mono,padding:"4px 8px"}}/>
+                      </div>
+                    );
+                  })}
+
+                  <div style={{fontSize:11,fontWeight:600,color:"#5a6a78",margin:"12px 0 6px"}}>All APP Email Addresses (Scheduler Only)</div>
+                  {apps.map(a => {
+                    const pref = notifPrefs[a.id] || {};
+                    return (
+                      <div key={a.id} style={{display:"flex",gap:6,alignItems:"center",marginBottom:6,flexWrap:"wrap"}}>
+                        <AppBadge id={a.id} small/>
+                        <input value={pref.email || ""} onChange={e=>saveNotifPref(a.id, {email:e.target.value})}
+                          placeholder="email@example.com" type="email"
+                          style={{...css.inp,width:200,fontSize:11,fontFamily:mono,padding:"4px 8px"}}/>
+                      </div>
+                    );
+                  })}
+                  {notifPrefsSaving && <span style={{fontSize:10,color:"#1a8040"}}>Saving…</span>}
+                </div>
+              )}
+            </div>
+            </>}
+          </div>
+//@@ officeCard — the Office Notifications card: "          {/* Office Notifications — scheduler/admin only */}" through its "\n          )}"
+          {/* Office Notifications — scheduler/admin only */}
+          {(isScheduler || userProfile?.role === "admin") && (
+            <div style={css.card}>
+              <div role="button" tabIndex={0} aria-expanded={!!openSettingsCards.officeNotif} onClick={()=>toggleSettingsCard("officeNotif")} onKeyDown={settingsCardKey("officeNotif")} onKeyUp={settingsCardKey("officeNotif")} style={{...css.cardT,margin:openSettingsCards.officeNotif?"0 0 12px":0,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"space-between",userSelect:"none"}}>
+                <span>📧 Office Notifications</span>
+                <span aria-hidden="true" style={{fontSize:12,color:"#7a8a98"}}>{openSettingsCards.officeNotif ? "▾" : "▸"}</span>
+              </div>
+              {openSettingsCards.officeNotif && <>
+              <p style={{fontSize:12,color:"#7a8a98",margin:"0 0 12px",lineHeight:1.5}}>
+                Office staff on this list receive a weekly Saturday email if the schedule changed in the past 7 days, plus a one-time email whenever you publish a new period. Department filter: leave empty to receive all changes, or select Weight Mgmt / Breast Health to only receive changes affecting those surgeons.
+              </p>
+
+              {/* Add new contact */}
+              <div style={{background:"#f8f9fb",border:"1px solid #e0e4ea",borderRadius:8,padding:"10px 12px",marginBottom:14}}>
+                <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"flex-end"}}>
+                  <div style={{flex:"1 1 140px"}}>
+                    <label style={{fontSize:10,color:"#7a8a98",fontWeight:600,textTransform:"uppercase",letterSpacing:0.5,display:"block",marginBottom:2}}>Name</label>
+                    <input value={newOfficeName} onChange={e=>setNewOfficeName(e.target.value)} placeholder="Jane Doe" style={{...css.inp,width:"100%"}}/>
+                  </div>
+                  <div style={{flex:"1 1 200px"}}>
+                    <label style={{fontSize:10,color:"#7a8a98",fontWeight:600,textTransform:"uppercase",letterSpacing:0.5,display:"block",marginBottom:2}}>Email</label>
+                    <input value={newOfficeEmail} onChange={e=>setNewOfficeEmail(e.target.value)} placeholder="jane@example.com" style={{...css.inp,width:"100%"}}/>
+                  </div>
+                  <div style={{flex:"0 0 auto"}}>
+                    <label style={{fontSize:10,color:"#7a8a98",fontWeight:600,textTransform:"uppercase",letterSpacing:0.5,display:"block",marginBottom:2}}>Departments</label>
+                    <div style={{display:"flex",gap:4}}>
+                      {["CWM","CBH"].map(d => (
+                        <button key={d} type="button" onClick={()=>setNewOfficeDepts(prev=>prev.includes(d)?prev.filter(x=>x!==d):[...prev,d])}
+                          style={{
+                            background: newOfficeDepts.includes(d) ? "#1a6fa8" : "#fff",
+                            border: `1px solid ${newOfficeDepts.includes(d) ? "#1a6fa8" : "#c8d0d8"}`,
+                            color: newOfficeDepts.includes(d) ? "#fff" : "#5a6a78",
+                            borderRadius:6, padding:"5px 10px", fontSize:11, fontWeight:600, cursor:"pointer", fontFamily:font,
+                          }}>{d}</button>
+                      ))}
+                    </div>
+                  </div>
+                  <button onClick={addOfficeContact} disabled={officeNotifBusy} style={{...css.btn(true),padding:"6px 14px",fontSize:12,opacity:officeNotifBusy?0.6:1}}>+ Add</button>
+                </div>
+                {newOfficeDepts.length === 0 && (
+                  <p style={{fontSize:10,color:"#7a8a98",margin:"6px 0 0",fontStyle:"italic"}}>No departments selected = receives all schedule changes.</p>
+                )}
+              </div>
+
+              {/* Contact list */}
+              {officeContacts.length === 0 ? (
+                <p style={{fontSize:12,color:"#a0a8b0",fontStyle:"italic",margin:"0 0 12px"}}>No office contacts yet. Add one above.</p>
+              ) : (
+                <div style={{display:"flex",flexDirection:"column",gap:6,marginBottom:12}}>
+                  {officeContacts.map(c => (
+                    <div key={c.id} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 12px",background:c.active?"#fff":"#f4f6f8",borderRadius:6,border:"1px solid #e0e4ea",opacity:c.active?1:0.6}}>
+                      <div style={{flex:"1 1 auto",minWidth:0}}>
+                        <div style={{fontSize:13,fontWeight:600,color:"#2c3e50"}}>{c.name}</div>
+                        <div style={{fontSize:11,color:"#7a8a98",fontFamily:mono,overflow:"hidden",textOverflow:"ellipsis"}}>{c.email}</div>
+                      </div>
+                      <div style={{display:"flex",gap:4,flexShrink:0}}>
+                        {["CWM","CBH"].map(d => {
+                          const on = (c.departments||[]).includes(d);
+                          return (
+                            <button key={d} type="button" onClick={()=>toggleOfficeContactDept(c.id, d)}
+                              style={{
+                                background: on ? "#1a6fa8" : "#fff",
+                                border: `1px solid ${on ? "#1a6fa8" : "#c8d0d8"}`,
+                                color: on ? "#fff" : "#7a8a98",
+                                borderRadius:5, padding:"3px 8px", fontSize:10, fontWeight:600, cursor:"pointer", fontFamily:font,
+                              }}>{d}</button>
+                          );
+                        })}
+                      </div>
+                      <label style={{display:"flex",alignItems:"center",gap:4,cursor:"pointer",flexShrink:0}}>
+                        <span style={{fontSize:10,color:c.active?"#1a8040":"#a0a8b0",fontWeight:600}}>{c.active?"Active":"Off"}</span>
+                        <input type="checkbox" checked={!!c.active} onChange={e=>updateOfficeContact(c.id,{active:e.target.checked})} style={{cursor:"pointer",width:14,height:14}}/>
+                      </label>
+                      <button onClick={()=>deleteOfficeContact(c.id)} style={{background:"none",border:"none",color:"#c04040",cursor:"pointer",fontSize:14,flexShrink:0,padding:"0 4px"}}>✕</button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Action buttons */}
+              <div style={{display:"flex",gap:8,flexWrap:"wrap",borderTop:"1px solid #e0e4ea",paddingTop:12}}>
+                <button onClick={openPublishDialog} disabled={officeNotifBusy || officeContacts.filter(c=>c.active).length===0}
+                  style={{...css.btn(true),padding:"7px 16px",fontSize:12,opacity:(officeNotifBusy || officeContacts.filter(c=>c.active).length===0)?0.5:1}}>
+                  📣 Publish New Period & Notify Office
+                </button>
+                <button onClick={triggerDigestTest} disabled={officeNotifBusy || officeContacts.filter(c=>c.active).length===0}
+                  style={{...css.btn(false),padding:"7px 14px",fontSize:12,opacity:(officeNotifBusy || officeContacts.filter(c=>c.active).length===0)?0.5:1}}>
+                  🧪 Test Saturday Digest Now
+                </button>
+              </div>
+              <p style={{fontSize:10,color:"#a0a8b0",margin:"8px 0 0",lineHeight:1.5}}>
+                Saturday digest fires automatically at 8 AM CDT. Public link: <span style={{fontFamily:mono}}>fkhan628.github.io/Call-Schedule-App/?public=1</span>
+                {" · "}Office link (opens with 🚑 Silvis on): <span style={{fontFamily:mono}}>fkhan628.github.io/Call-Schedule-App/?public=1&silvis=1</span>
+              </p>
+
+              {/* Publish dialog */}
+              {showPublishDialog && (
+                <div onClick={()=>setShowPublishDialog(false)} style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.45)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:9999,padding:20}}>
+                  <div onClick={e=>e.stopPropagation()} style={{background:"#fff",borderRadius:12,padding:24,maxWidth:440,width:"100%",boxShadow:"0 8px 32px rgba(0,0,0,0.2)"}}>
+                    <h3 style={{margin:"0 0 8px",fontSize:16,color:"#1a2a3a"}}>Publish New Period</h3>
+                    <p style={{fontSize:13,color:"#5a6a78",margin:"0 0 16px",lineHeight:1.5}}>
+                      Sends a "new schedule published" email to all <strong>{officeContacts.filter(c=>c.active).length}</strong> active office contact(s). They'll get a link to the public calendar.
+                    </p>
+                    <label style={{fontSize:11,color:"#7a8a98",fontWeight:600,textTransform:"uppercase",letterSpacing:0.5,display:"block",marginBottom:4}}>Period Label (shown in subject line)</label>
+                    <input value={publishLabel} onChange={e=>setPublishLabel(e.target.value)} placeholder="e.g. Nov 16, 2026 – Feb 21, 2027" style={{...css.inp,width:"100%",marginBottom:16}}/>
+                    <div style={{display:"flex",justifyContent:"flex-end",gap:8}}>
+                      <button onClick={()=>setShowPublishDialog(false)} style={{...css.btn(false),padding:"7px 14px",fontSize:12}}>Cancel</button>
+                      <button onClick={triggerPublishNotify} disabled={officeNotifBusy} style={{...css.btn(true),padding:"7px 16px",fontSize:12,opacity:officeNotifBusy?0.6:1}}>
+                        {officeNotifBusy?"Sending…":"Send Emails"}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+              </>}
+            </div>
+          )}
+//@@ noCall — Setup's No-Call Days card: "          {/* No-Call Days */}" up to "\n\n          {/* APP Shift Assignments */}"
+          {/* No-Call Days */}
+          <div style={css.card}>
+            <div style={css.cardT}>🚫 No-Call Days <span style={{fontWeight:400,fontSize:11,color:"#7a8a98"}}>— working, not on call</span></div>
+            <p style={{fontSize:12,color:"#7a8a98",margin:"0 0 10px",lineHeight:1.5}}>
+              Days a person is at work but should not be assigned call. Tracked separately from vacations; the generator treats them the same as time off and won't assign call on these dates.
+            </p>
+            <div style={{display:"flex",gap:8,alignItems:"flex-end",flexWrap:"wrap",marginBottom:12}}>
+              <div>
+                <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>Person</label>
+                <select value={ncSurgeon} onChange={e=>setNcSurgeon(e.target.value)} style={{...css.inp,width:150}}>
+                  <option value="">Select…</option>
+                  <optgroup label="Surgeons">
+                    {surgeons.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
+                  </optgroup>
+                  <optgroup label="APPs">
+                    {apps.map(a=><option key={a.id} value={a.id}>{a.name}</option>)}
+                  </optgroup>
+                </select>
+              </div>
+              <div style={{minWidth:0,maxWidth:"100%"}}>
+                <label style={{fontSize:10,color:"#7a8a98",display:"block",marginBottom:2}}>Dates</label>
+                {/* One calendar for start and end (DateRangeField); back-dating allowed here. */}
+                <DateRangeField label="No-call dates" start={ncStart} end={ncEnd} min="" onChange={(s, e) => { setNcStart(s); setNcEnd(e); }} dk={dk} css={css} bannerRef={updateBannerRef} bannerOn={updateAvailable} style={{minWidth:230}}/>
+              </div>
+              <button onClick={addNoCall} style={css.btn(true)}>+ Add</button>
+            </div>
+            {(()=>{
+              const allPeople = [...surgeons.map(s=>({...s,type:"s"})), ...apps.map(a=>({...a,type:"a"}))];
+              const withNc = allPeople.filter(p=>(noCallDays[p.id]||[]).length>0);
+              if(!withNc.length) return <div style={{padding:"10px",fontSize:12,color:"#8a94a0",fontStyle:"italic"}}>No no-call days recorded.</div>;
+              // Same show-past idiom as the vacations list above: completed
+              // entries (end < today) hide by default, a toggle brings them
+              // back, and NOTHING is deleted — origIdx keeps ✕ targeting the
+              // stored array even when the display is filtered/sorted.
+              const ncTodayStr = fmt(new Date());
+              let ncPastCount = 0;
+              withNc.forEach(p => { (noCallDays[p.id]||[]).forEach(([,e]) => { if (e < ncTodayStr) ncPastCount++; }); });
+              const ncRange = (s,e)=>{
+                const sp=s.split("-"), ep=e.split("-");
+                const sm=MO[parseInt(sp[1])-1]?.slice(0,3), sd=parseInt(sp[2]);
+                const em=MO[parseInt(ep[1])-1]?.slice(0,3), ed=parseInt(ep[2]);
+                if(s===e) return `${sm} ${sd}`;
+                if(sp[1]===ep[1]) return `${sm} ${sd}–${ed}`;
+                return `${sm} ${sd} – ${em} ${ed}`;
+              };
+              const ncVisible = withNc
+                .map(p => ({ ...p, rows: (noCallDays[p.id]||[])
+                  .map((r,origIdx)=>({s:r[0],e:r[1],origIdx}))
+                  .filter(({e}) => showPastNoCall || e >= ncTodayStr)
+                  .sort((a,b)=>a.s<b.s?-1:a.s>b.s?1:0) }))
+                .filter(p => p.rows.length > 0);
+              return <>
+                {ncPastCount > 0 && (
+                  <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8,padding:"6px 10px",background:"#f8f9fb",border:"1px solid #e0e4ea",borderRadius:6,fontSize:11}}>
+                    <label style={{display:"flex",alignItems:"center",gap:6,cursor:"pointer",color:"#5a6a78"}}>
+                      <input type="checkbox" checked={showPastNoCall} onChange={e=>setShowPastNoCall(e.target.checked)} style={{margin:0}}/>
+                      <span>Show completed no-call days</span>
+                    </label>
+                    <span style={{color:"#8a94a0",fontFamily:mono}}>
+                      ({showPastNoCall ? "showing all" : `${ncPastCount} past hidden`})
+                    </span>
+                  </div>
+                )}
+                {ncVisible.map(p=>(
+                <div key={p.id} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 10px",marginBottom:5,border:"1px solid #e8dcae",borderRadius:7,background:"#fcf9ef",flexWrap:"wrap"}}>
+                  {p.type==="s"?<Badge id={p.id}/>:<AppBadge id={p.id}/>}
+                  <div style={{display:"flex",gap:4,flexWrap:"wrap",marginLeft:"auto",alignItems:"center"}}>
+                    {p.rows
+                      .map(({s,e,origIdx})=>(
+                      <span key={origIdx} style={{display:"inline-flex",alignItems:"center",gap:4,fontFamily:mono,fontSize:10,color:"#6a6030",background:"#fcf6e8",padding:"1px 6px",borderRadius:4,border:"1px solid #e8dcae"}}>
+                        {ncRange(s,e)}
+                        <button onClick={()=>rmNoCall(p.id,origIdx)} style={{background:"none",border:"none",color:"#a08040",cursor:"pointer",fontSize:11,padding:0,lineHeight:1}}>✕</button>
+                      </span>
+                    ))}
+                  </div>
+                </div>
+                ))}
+              </>;
+            })()}
+          </div>
+//@@ tradeNote — Requests' APP trade note, the trade form gate's else branch: after "          ) : (\n", up to "\n          )}\n\n          {/* Pending Trades */}"
+          <div style={css.card}>
+            <div style={css.cardT}>🔄 Shift Trades</div>
+            <p style={{fontSize:13,color:"#5a6a78",margin:0,lineHeight:1.5}}>Shift trades are for the surgeon call schedule. For an APP shift change, ask the scheduler.</p>
+          </div>
