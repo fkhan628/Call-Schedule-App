@@ -18326,9 +18326,10 @@ await (async () => {
 //       too; On Call Today names DJA the day's Service Week, "Sat 7a–Sun 7a", with no Weekend chip; the text says so;
 //       the legend's W is the weekend's Friday night and Sunday
 //   DA2 QW2: appOnCallNow minute by minute for three weeks against the shifts' own spans (a weekday's 5p → 7a, a
-//       Sat / Sun's 7a → 7a), every change of answer on a new window key (the card re-renders), pure, never a throw;
-//       the component's two real lines at a pinned clock (F3's nights) and with an older helpers.js; the line
-//       rendered, in the banner's head, ungated; today's weekday APP chip "APP tonight 5p–7a"
+//       Sat / Sun's 7a → 7a), every change of answer on a new window key (the card re-renders), pure, never a throw,
+//       on the Central clock's hour whatever the device reads; the component's two real lines at a pinned clock
+//       (F3's nights) and with an older helpers.js; the line rendered, in the banner's head, ungated; today's
+//       weekday APP chip "APP tonight 5p–7a"
 //   DA3 QW9: the whole text, word for word, on every day of the week of 11/2, a handed-off Sunday, a backup week,
 //       Thanksgiving and an empty day; its link is one the app's own isPublicMode reads as the public view; the button
 //       rendered (label, 44px, not on ?public=1, no "Send Notification" left); the real shareTonightMsg behind it
@@ -18560,8 +18561,17 @@ await (async () => {
   check("DA2 QW2 appOnCallNow is pure (no Date.now, no new Date(); the shifts passed in untouched) and never throws: no time, a bad time, a date string, no shifts, none that night, a shift that is not an APP id → null",
     !!aocD && !/Date\.now|new Date\(\s*\)/.test(String(aocD)) && !!junkD && junkD.length === 6 && junkD.every((r) => r === null) && Object.keys(APPW).length === 18 && JD(APPW) === APPW0,
     JD({ junkD, src: aocD ? String(aocD).slice(0, 80) : "appOnCallNow is not defined in helpers.js" }));
+  // Central hours on any device, as onCallNow (AY3 proves centralClock in four zones): appOnCallNow takes the date and the
+  // hour from centralClock, never from the device — a minute sweep alone can't tell the two apart on a Central machine
+  const ccCtx = (() => { try { const sb = { console, window: {}, document: undefined, navigator: { userAgent: "node-test" }, localStorage: { getItem: () => null, setItem() {}, removeItem() {} }, setTimeout, clearTimeout }; sb.globalThis = sb; vm.createContext(sb);
+    for (const f of ["helpers.js", "config.js"]) vm.runInContext(fs.readFileSync(path.join(ROOT, f), "utf8"), sb, { filename: f });
+    vm.runInContext('centralClock = function () { return { ds: "2026-11-06", h: 3 }; };', sb); return sb; } catch (ex) { return null; } })();
+  const ccAoc = ccCtx ? vm.runInContext('typeof appOnCallNow === "function" ? appOnCallNow : null', ccCtx) : null;
+  const ccGot = ccAoc ? [new Date(2026, 10, 6, 12), new Date(2026, 10, 7, 23), new Date(2026, 10, 9, 18)].map((d) => { try { return sigD(ccAoc({ "2026-11-05": "a1", "2026-11-06": "a2", "2026-11-07": "a3", "2026-11-09": "a2" }, d)); } catch (ex) { return threwD(ex); } }) : null;
+  check("DA2 QW2 appOnCallNow reads the Central clock, never the device's: with centralClock saying Fri 11/6 03:00, a device reading Fri noon, Sat 11p or Mon 6p still gets Thursday night's APP, until 7a — a phone in another zone names the same APP",
+    !!ccGot && ccGot.every((g) => g === "a1|2026-11-05|7a|L"), JD(ccGot));
   // the component's two real lines, at a pinned clock
-  const AN0 = '  const appNow = typeof appOnCallNow === "function" ? appOnCallNow(appShifts, new Date()) : null;';
+  const AN0 ='  const appNow = typeof appOnCallNow === "function" ? appOnCallNow(appShifts, new Date()) : null;';
   const AN1 = "  const appUntil7a = appNow && appNow.lastNight ? (aMap[appNow.aid]?.name || null) : null;";
   const anAt = nsrcDA.indexOf(AN0), anOk = anAt > 0 && count(AN0) === 1 && count(AN1) === 1 && nsrcDA.indexOf(AN1) === anAt + AN0.length + 1;
   const anCompile = (ctx) => mkD(() => vm.runInContext(`(function (env) { const { appShifts, aMap } = env; const Date = env.Date;\n${AN0}\n${AN1}\n  return { appNow, appUntil7a }; })`, ctx, { filename: "da-app-now.js" }));
