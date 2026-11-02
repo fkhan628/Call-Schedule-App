@@ -9864,7 +9864,8 @@ console.log("\nAN. bell notification panel");
 
   // AN3 — the row tap, executed with recording setters
   {
-    const rowLine = restOfLine(panel, "<div key={n.id} onClick={");
+    // (changed on purpose 2026-11-02, section DB: a notice that opens something is a real <button> now — same onClick)
+    const rowLine = restOfLine(panel, '<button key={n.id} type="button" aria-label={notifLabel} onClick={');
     const rowSrc = rowLine ? rowLine.replace(/\}$/, "") : null; // drop the JSX expression's closing brace
     const tap = (targetTab, jumpWeek) => {
       const calls = [];
@@ -9922,7 +9923,8 @@ console.log("\nAN. bell notification panel");
 
   // AN5 — the time, the bell's name, the phone width, and pins
   {
-    const dateSrc = between(panel, '<span style={{fontSize:10,color:"#a0a8b0"}}>{', "}</span>");
+    // (changed on purpose 2026-11-02, section DB: the stamp is the row's `when`, drawn in #5a6a78 — it read 2.24:1)
+    const dateSrcLine = restOfLine(panel, "const when = "), dateSrc = dateSrcLine ? dateSrcLine.replace(/;$/, "") : null;
     const when = dateSrc ? run("n", "return " + dateSrc + ";", [{ created_at: "2026-10-18T17:05:00.000Z" }]) : null;
     check("AN5 a row's stamp shows the time as well as the date (the real expression, executed)",
       typeof when === "string" && /\d:\d\d/.test(when), JSON.stringify(when));
@@ -12496,7 +12498,8 @@ console.log("\nAV. Pending requests: a collapsed group shows a coverage-floor br
   // AV2 — where the chip renders, and that it reads in dark mode
   const CHIP = "⚠ below floor";
   const iPend = nsrcAV.indexOf('const expanded = expandedVacGroups["p_"+pid];');
-  const iHead = iPend < 0 ? -1 : nsrcAV.indexOf('{/* Collapsed header row */}\n                    <div onClick={()=>toggleVacGroup("p_"+pid)}', iPend);
+  // (changed on purpose 2026-11-02, section DB: the header is a real <button aria-expanded> now — same toggle)
+  const iHead = iPend < 0 ? -1 : nsrcAV.indexOf('{/* Collapsed header row */}\n                    <button type="button" aria-expanded={!!expanded} onClick={()=>toggleVacGroup("p_"+pid)}', iPend);
   const iDetail = iPend < 0 ? -1 : nsrcAV.indexOf("{/* Expanded detail rows */}", iPend);
   const iRev = nsrcAV.indexOf('const expanded = expandedVacGroups["r_"+pid];');
   const iChip = nsrcAV.indexOf(CHIP);
@@ -19224,6 +19227,239 @@ console.log("\nAJ. owner decisions 2026-10-13");
         }
       }
     }
+  }
+}
+
+// ─── DB. Quick wins: the bell, Stats for APPs and members, "This year", Mine's dates everywhere, a member's Monthly CSV (2026-11-02) ───
+// The UX audit of 2026-11-01 (quick wins QW8, QW11, QW17, QW18) with the lead's answers of 2026-11-02 (Q8 "This year",
+// Q9 a member's Monthly CSV). The real code, sliced and run with stubs; the JSX through CJ's h() compiler (copied here,
+// as CZ2 did).
+//   DB1 (QW8) the bell's panel, rendered: a dialog named "Notifications"; its title reads in both modes (dark: dkText on
+//       the panel's dark fill — it read 1.09:1); a finger-sized ✕ that hands focus back to the bell; the times in
+//       #5a6a78, ≥ 4.5:1 on both notice fills (they read 2.24:1); a notice that opens something is a <button> named by
+//       its title, text and time, one that opens nothing stays plain. Its effects, executed: a tab change closes it; open,
+//       a tap outside it (not on it, not on the bell — the bell's tap is its own toggle) or Escape closes it (Escape
+//       hands focus back to the bell); opening it focuses it; its listeners go when it closes. The Requests person-group
+//       headers (pending and reviewed) are <button aria-expanded>, with the same toggle
+console.log("\nDB. Quick wins: the bell, Stats for APPs and members, \"This year\", Mine's dates everywhere, a member's Monthly CSV");
+{
+  const nsrcDB = src.replace(/\r\n/g, "\n"), JDB = JSON.stringify;
+  const countDB = (s) => nsrcDB.split(s).length - 1;
+  // a piece of the source, found once: from a (kept with withA) to the first b after it
+  const cutDB = (a, b, withA) => { const i = nsrcDB.indexOf(a); if (i < 0 || nsrcDB.indexOf(a, i + 1) !== -1) return null; const j = nsrcDB.indexOf(b, i + a.length); return j < 0 ? null : nsrcDB.slice(withA ? i : i + a.length, j); };
+  const tryDB = (fn) => { try { return fn(); } catch (ex) { return "threw: " + String((ex && ex.message) || ex).slice(0, 160); } };
+  // a slice compiled in the sandbox (the helpers.js / config.js globals it reads) as a function of env; a broken slice → null
+  const mkDB = (names, body, filename) => { if (!body) return null; try { return vm.runInContext(`(function (env) { const { ${names} } = env;\n${body}\n})`, sandbox, { filename }); } catch (ex) { console.log("  (DB compile) " + filename + ": " + String(ex).slice(0, 200)); return null; } };
+  // JSX → h() calls: CJ's compiler, as is (fragments <>…</> as tag "#frag"); comment lines are dropped first (an
+  // apostrophe in one would read as a string)
+  const jsxDB = (code) => {
+    const q = (x) => JSON.stringify(x);
+    const skipStr = (k) => { const ch = code[k]; for (let m = k + 1; m < code.length; m++) { if (code[m] === "\\") { m++; continue; } if (code[m] === ch) return m; } return code.length; };
+    const close = (j) => {
+      let depth = 0;
+      for (let k = j; k < code.length; k++) {
+        const ch = code[k];
+        if (ch === '"' || ch === "'") { k = skipStr(k); continue; }
+        if (ch === "`") { for (k = k + 1; k < code.length && code[k] !== "`"; k++) { if (code[k] === "\\") k++; else if (code[k] === "$" && code[k + 1] === "{") k = close(k + 1); } continue; }
+        if (ch === "{") depth++; else if (ch === "}" && --depth === 0) return k;
+      }
+      throw new Error("unbalanced { at " + j);
+    };
+    const opens = (k) => code[k] === "<" && (/[A-Za-z]/.test(code[k + 1] || "") || code[k + 1] === ">");
+    const el = (k) => {
+      let j = k + 1, tag = "#frag";
+      if (code[j] !== ">") { tag = /^[A-Za-z][\w.]*/.exec(code.slice(j))[0]; j += tag.length; }
+      const props = [], kids = [];
+      for (;;) {
+        while (/\s/.test(code[j])) j++;
+        if (code[j] === "/" && code[j + 1] === ">") return [`h(${q(tag)}, {${props.join(", ")}})`, j + 2];
+        if (code[j] === ">") { j++; break; }
+        const nm = (/^[\w-]+/.exec(code.slice(j)) || [""])[0];
+        if (!nm) throw new Error("attribute at " + j + ": " + code.slice(j, j + 30));
+        j += nm.length;
+        if (code[j] !== "=") { props.push(`${q(nm)}: true`); continue; }
+        j++;
+        if (code[j] === '"') { const e = skipStr(j); props.push(`${q(nm)}: ${code.slice(j, e + 1)}`); j = e + 1; }
+        else if (code[j] === "{") { const e = close(j); props.push(`${q(nm)}: (${jsxDB(code.slice(j + 1, e))})`); j = e + 1; }
+        else throw new Error("attribute value at " + j);
+      }
+      let text = "";
+      const flush = () => {
+        if (!text) return;
+        const lines = text.split("\n");
+        const t = lines.length === 1 ? text : lines.map((l, i) => (i > 0 ? l.replace(/^\s+/, "") : l)).map((l, i, a) => (i < a.length - 1 ? l.replace(/\s+$/, "") : l)).filter((l) => l.length).join(" ");
+        if (t.length && !(lines.length > 1 && !t.trim())) kids.push(q(t));
+        text = "";
+      };
+      for (;;) {
+        if (j >= code.length) throw new Error("unclosed <" + tag + ">");
+        if (code.startsWith("</", j)) { flush(); j = code.indexOf(">", j) + 1; break; }
+        if (opens(j)) { flush(); const [js, e] = el(j); kids.push(js); j = e; continue; }
+        if (code[j] === "{") { flush(); const e = close(j); const inner = code.slice(j + 1, e); if (inner.replace(/\/\*[\s\S]*?\*\//g, "").trim()) kids.push(`(${jsxDB(inner)})`); j = e + 1; continue; }
+        text += code[j]; j++;
+      }
+      return [`h(${q(tag)}, {${props.join(", ")}}${kids.length ? ", " + kids.join(", ") : ""})`, j];
+    };
+    let out = "";
+    for (let i = 0; i < code.length;) {
+      const ch = code[i];
+      if (ch === '"' || ch === "'") { const e = skipStr(i); out += code.slice(i, e + 1); i = e + 1; continue; }
+      if (ch === "`") { const e0 = i; let k = i + 1; for (; k < code.length && code[k] !== "`"; k++) { if (code[k] === "\\") k++; else if (code[k] === "$" && code[k + 1] === "{") k = close(k + 1); } out += code.slice(e0, k + 1); i = k + 1; continue; }
+      if (opens(i) && (/^\s*$/.test(out) || /[(?:,&|>{[=]$/.test(out.replace(/\s+$/, "")))) { const [js, e] = el(i); out += js; i = e; continue; }
+      out += ch; i++;
+    }
+    return out;
+  };
+  const stripDB = (s) => s.replace(/^\s*\/\/[^\n]*$/gm, "").replace(/\{\/\*[\s\S]*?\*\/\}/g, "");
+  const hDB = (tag, props, ...kids) => ({ tag, props: props || {}, kids: kids.flat(Infinity).filter((k) => k !== null && k !== undefined && k !== false && k !== true && k !== "") });
+  const allDB = (n, out = []) => { if (n && typeof n === "object") { out.push(n); n.kids.forEach((k) => allDB(k, out)); } return out; };
+  const textDB = (n) => (n == null ? "" : typeof n !== "object" ? String(n) : n.kids.map(textDB).join(""));
+  // WCAG contrast of two #rrggbb colours
+  const lumDB = (hex) => { const v = hex.slice(1).match(/../g).map((x) => parseInt(x, 16) / 255).map((c) => (c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4))); return 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2]; };
+  const ratioDB = (a, b) => { const x = lumDB(a), y = lumDB(b); return Math.round((Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05) * 100) / 100; };
+  // a JSX slice (one element, comments dropped) compiled as a function of env that returns its h() tree
+  const viewDB = (names, jsx, filename) => { if (!jsx) return null; let body; try { body = "return " + jsxDB(stripDB(jsx)) + ";"; } catch (ex) { console.log("  (DB jsx) " + filename + ": " + String(ex).slice(0, 160)); return null; } return mkDB(names, body, filename); };
+
+  // ── DB1 (QW8) — the bell's panel and the Requests group headers ──
+  {
+    const PANEL = cutDB('<div data-notif-panel="1"', "\n        )}", true);
+    const panelOf = viewDB("h, myNotifications, clearAllNotifications, font, setShowNotifs, notifFocusBell, dk, dkText, notifSeenAtOpen, notifLastSeen, setCalMonth, setCalYear, setView, markNotifsSeen", PANEL, "db1-panel.js");
+    const NOTES = [
+      { id: 1, type: "schedule_changed", title: "Schedule Change", message: "Thu Night: RPC → REH", data: { week: "2026-12-07" }, created_at: "2026-11-01T18:05:00.000Z" },
+      { id: 2, type: "vacation_approved", title: "Vacation Approved", message: "RPC's vacation was approved", data: {}, created_at: "2026-10-20T14:30:00.000Z" },
+      { id: 3, type: "office_note", title: "Office", message: "Nothing to open", data: {}, created_at: "2026-10-19T09:00:00.000Z" },
+    ];
+    const whenDB = (n) => new Date(n.created_at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+    const drawPanel = (o) => {
+      const calls = [];
+      const rec = (nm) => (v) => calls.push(nm + "(" + JDB(v) + ")");
+      const tree = panelOf ? tryDB(() => panelOf({ h: hDB, myNotifications: o.notes, clearAllNotifications: () => calls.push("clearAll()"), font: "F", setShowNotifs: rec("setShowNotifs"), notifFocusBell: () => calls.push("focusBell()"),
+        dk: !!o.dk, dkText: o.dk ? "#e0e0f0" : "#2c3e50", notifSeenAtOpen: "2026-10-25T00:00:00.000Z", notifLastSeen: "2026-11-02T00:00:00.000Z", setCalMonth: rec("setCalMonth"), setCalYear: rec("setCalYear"), setView: rec("setView"), markNotifsSeen: () => calls.push("markNotifsSeen()") })) : "not found";
+      return { tree, calls };
+    };
+    const lightP = drawPanel({ notes: NOTES }), darkP = drawPanel({ notes: NOTES, dk: true }), emptyL = drawPanel({ notes: [] }), emptyD = drawPanel({ notes: [], dk: true });
+    const okTree = (t) => !!t && typeof t === "object";
+    const nodesL = okTree(lightP.tree) ? allDB(lightP.tree) : [], nodesD = okTree(darkP.tree) ? allDB(darkP.tree) : [];
+    const titleOf = (nodes) => nodes.find((x) => x.tag === "span" && x.kids.length === 1 && x.kids[0] === "Notifications");
+    const closeOf = (nodes) => nodes.find((x) => x.tag === "button" && x.props["aria-label"] === "Close notifications");
+    const rowsOf = (nodes) => nodes.filter((x) => x.props.style && x.props.style.marginBottom === 6 && x.props.style.borderRadius === 6);
+    const t1 = { light: titleOf(nodesL), dark: titleOf(nodesD) }, x1 = closeOf(nodesL), rows = rowsOf(nodesL);
+    // the panel's own fill: #fff, which the dark sheet turns #16213e (div[style*="background: rgb(255, 255, 255)"])
+    const PANEL_BG = { light: "#ffffff", dark: "#16213e" };
+    const db1a = okTree(lightP.tree) ? {
+      root: [lightP.tree.tag, lightP.tree.props.role, lightP.tree.props["aria-label"], lightP.tree.props.tabIndex, lightP.tree.props["data-notif-panel"]],
+      title: t1.light && t1.dark ? [t1.light.props.style.color, ratioDB(t1.light.props.style.color, PANEL_BG.light), t1.dark.props.style.color, ratioDB(t1.dark.props.style.color, PANEL_BG.dark)] : null,
+      oldTitleDark: ratioDB("#1a2a3a", PANEL_BG.dark),
+      close: x1 ? [x1.props.style.minWidth, x1.props.style.minHeight, x1.props.style.color, ratioDB(x1.props.style.color, PANEL_BG.light)] : null,
+    } : { err: lightP.tree };
+    check("DB1 the bell's panel (the real JSX, rendered) is a dialog named \"Notifications\" that can take focus; its title reads in both modes — #1a2a3a on white, dkText (#e0e0f0) on the dark sheet's #16213e (the old title read 1.09:1 there); the ✕ is 44×44 in #5a6a78 (5.6:1 on white)",
+      !!db1a.root && JDB(db1a.root) === JDB(["div", "dialog", "Notifications", -1, "1"]) && !!db1a.title && db1a.title[0] === "#1a2a3a" && db1a.title[1] >= 4.5 && db1a.title[2] === "#e0e0f0" && db1a.title[3] >= 4.5
+        && db1a.oldTitleDark < 1.2 && !!db1a.close && db1a.close[0] >= 44 && db1a.close[1] >= 44 && db1a.close[2] === "#5a6a78" && db1a.close[3] >= 4.5, JDB(db1a));
+    // the rows: a tappable notice is a button (type, name, tap), an untappable one a plain div; the time reads
+    const rowInfo = rows.map((r) => {
+      const stamp = allDB(r).find((x) => x.tag === "span" && x.props.style && x.props.style.whiteSpace === "nowrap");
+      const tapTo = allDB(r).find((x) => x.props["aria-hidden"] === "true");
+      return { tag: r.tag, type: r.props.type || null, label: r.props["aria-label"] || null, tap: typeof r.props.onClick === "function", fill: r.props.style.background,
+        stamp: stamp ? [textDB(stamp), stamp.props.style.color, stamp.props.style.fontSize] : null, tapTo: tapTo ? textDB(tapTo) : null,
+        blocks: allDB(r).filter((x) => x !== r && (x.tag === "div" || x.tag === "p")).length, text: textDB(r) };
+    });
+    const W = NOTES.map(whenDB);
+    const want1 = [
+      { tag: "button", type: "button", label: "New: Schedule Change. Thu Night: RPC → REH (" + W[0] + ")", tap: true, fill: "#f0f8ff", stamp: [W[0], "#5a6a78", 11], tapTo: "Tap to view →", blocks: 0 },
+      { tag: "button", type: "button", label: "Vacation Approved. RPC's vacation was approved (" + W[1] + ")", tap: true, fill: "#f8f9fb", stamp: [W[1], "#5a6a78", 11], tapTo: "Tap to view →", blocks: 0 },
+      { tag: "div", type: null, label: null, tap: false, fill: "#f8f9fb", stamp: [W[2], "#5a6a78", 11], tapTo: null, blocks: 0 },
+    ];
+    const rowsOk = rowInfo.length === 3 && rowInfo.every((r, i) => JDB(Object.assign({}, r, { text: undefined })) === JDB(want1[i]) && r.text.includes(NOTES[i].title) && r.text.includes(NOTES[i].message));
+    check("DB1 each notice (rendered): one that opens something is a <button type=button> named by its title, text and time (\"New: …\" while unread) — VoiceOver and a keyboard reach it; one that opens nothing (an unknown type) stays a plain div with no handler; no block element inside a button; the time is 11px #5a6a78 at ≥ 4.5:1 on both notice fills (it was 10px #a0a8b0, 2.24:1)",
+      rowsOk && ratioDB("#5a6a78", "#f0f8ff") >= 4.5 && ratioDB("#5a6a78", "#f8f9fb") >= 4.5 && ratioDB("#a0a8b0", "#f0f8ff") < 2.5, JDB(rowInfo).slice(0, 900));
+    // a tap on a notice: what it did before (AN3's onClick, unchanged) — on the rendered button
+    const tap1 = drawPanel({ notes: NOTES });
+    if (okTree(tap1.tree)) { const b = rowsOf(allDB(tap1.tree))[0]; if (b && b.props.onClick) tryDB(() => b.props.onClick()); }
+    const closeTap = drawPanel({ notes: NOTES });
+    if (okTree(closeTap.tree)) { const c = closeOf(allDB(closeTap.tree)); if (c) tryDB(() => c.props.onClick()); }
+    check("DB1 a tap on the rendered notice button opens its week (setCalMonth(11) setCalYear(2026) setView(\"calendar\")), closes the panel and marks seen — the same onClick, byte for byte; the ✕ closes it and hands focus back to the bell",
+      JDB(tap1.calls) === JDB(['setCalMonth(11)', 'setCalYear(2026)', 'setView("calendar")', 'setShowNotifs(false)', 'markNotifsSeen()']) && JDB(closeTap.calls) === JDB(['setShowNotifs(false)', 'focusBell()'])
+        && countDB("onClick={()=>{if(targetTab){ if (jumpWeek) { const [y, m] = jumpWeek.split(\"-\").map(Number); setCalMonth(m - 1); setCalYear(y); } setView(targetTab); setShowNotifs(false); markNotifsSeen(); }}}") === 1,
+      JDB({ tap: tap1.calls, close: closeTap.calls }));
+    const emptyP = (d) => (okTree(d.tree) ? allDB(d.tree).find((x) => x.tag === "p") : null), eL = emptyP(emptyL), eD = emptyP(emptyD);
+    check("DB1 no notices: \"No notifications yet\" reads in both modes — #5a6a78 on white (it was #8a94a0, 2.97:1), #8a94a0 on the dark panel",
+      !!eL && !!eD && textDB(eL) === "No notifications yet" && eL.props.style.color === "#5a6a78" && ratioDB(eL.props.style.color, PANEL_BG.light) >= 4.5 && ratioDB(eD.props.style.color, PANEL_BG.dark) >= 4.5,
+      JDB({ light: eL && eL.props.style.color, dark: eD && eD.props.style.color }));
+
+    // the effects, executed with a recording useEffect and a stub document
+    const EFF = cutDB("  const notifFocusBell = () => {", "\n  }, [showNotifs]);", true);
+    const effOf = mkDB("setShowNotifs, document, useEffect, view, showNotifs", EFF && EFF + "\n  }, [showNotifs]);\n  return notifFocusBell;", "db1-effects.js");
+    const runFx = (showNotifs) => {
+      const rec = { calls: [], adds: [], removes: [], focus: [] };
+      const panel = { focus: (o) => rec.focus.push("panel " + JDB(o)) }, bell = { focus: () => rec.focus.push("bell") };
+      const document = {
+        querySelector: (sel) => (sel === "[data-notif-panel]" ? panel : sel === "[data-notif-bell]" ? bell : null),
+        addEventListener: (type, fn) => rec.adds.push([type, fn]), removeEventListener: (type, fn) => rec.removes.push([type, fn]),
+      };
+      const effects = [];
+      const fb = effOf ? tryDB(() => effOf({ setShowNotifs: (v) => rec.calls.push(v), document, useEffect: (fn, deps) => effects.push({ fn, deps }), view: "stats", showNotifs })) : null;
+      return { rec, effects, fb };
+    };
+    // an element the tap lands on: what its closest() finds
+    const on = (...marks) => ({ closest: (sel) => (sel.split(",").some((s) => marks.includes(s.trim())) ? {} : null) });
+    let db1b = null;
+    {
+      const shut = runFx(false), open = runFx(true);
+      if (shut.effects.length === 2 && open.effects.length === 2 && typeof open.fb === "function") {
+        const tabFx = runFx(true); tabFx.effects[0].fn();
+        const shutRet = shut.effects[1].fn();
+        const cleanup = open.effects[1].fn();
+        const pd = (open.rec.adds.find((a) => a[0] === "pointerdown") || [])[1], kd = (open.rec.adds.find((a) => a[0] === "keydown") || [])[1];
+        const tapAt = (target) => { const n = open.rec.calls.length; pd({ target }); return open.rec.calls.slice(n); };
+        const keyAt = (key) => { const n = open.rec.calls.length, f = open.rec.focus.length; kd({ key }); return [open.rec.calls.slice(n), open.rec.focus.slice(f)]; };
+        db1b = {
+          deps: [JDB(tabFx.effects[0].deps), JDB(open.effects[1].deps)], tab: tabFx.rec.calls,
+          closed: [shutRet === undefined, shut.rec.adds.length, shut.rec.focus.length], opened: [open.rec.adds.map((a) => a[0]), open.rec.focus.slice(0, 1)],
+          outside: pd ? tapAt(on()) : "no pointerdown", inPanel: pd ? tapAt(on("[data-notif-panel]")) : null, onBell: pd ? tapAt(on("[data-notif-bell]")) : null,
+          noTarget: pd ? tapAt(null) : null, textNode: pd ? tapAt({}) : null,
+          enter: kd ? keyAt("Enter") : "no keydown", escape: kd ? keyAt("Escape") : null,
+        };
+        if (typeof cleanup === "function") cleanup();
+        db1b.removed = open.rec.removes.length === 2 && open.rec.removes.every(([t, fn]) => open.rec.adds.some(([t2, fn2]) => t === t2 && fn === fn2));
+        open.fb(); db1b.focusBell = open.rec.focus.slice(-1);
+      } else db1b = { effects: [shut.effects.length, open.effects.length], fb: typeof open.fb };
+    }
+    check("DB1 the panel's effects (executed): a tab change closes it ([view]); closed, nothing listens; open ([showNotifs]), it takes focus (no scroll) and a tap outside it — anywhere but the panel and the bell, a text node too — closes it, a tap in it or on the bell (its own toggle) does not; Escape closes it and hands focus to the bell, Enter does nothing; closing removes both listeners",
+      !!db1b && !!db1b.deps && db1b.deps[0] === '["stats"]' && db1b.deps[1] === "[true]" && JDB(db1b.tab) === "[false]" && JDB(db1b.closed) === JDB([true, 0, 0])
+        && JDB(db1b.opened) === JDB([["pointerdown", "keydown"], ['panel {"preventScroll":true}']]) && JDB(db1b.outside) === "[false]" && JDB(db1b.inPanel) === "[]" && JDB(db1b.onBell) === "[]"
+        && JDB(db1b.noTarget) === "[false]" && JDB(db1b.textNode) === "[false]" && JDB(db1b.enter) === JDB([[], []]) && JDB(db1b.escape) === JDB([[false], ["bell"]]) && db1b.removed === true && JDB(db1b.focusBell) === '["bell"]',
+      JDB(db1b));
+    const iView = nsrcDB.indexOf('  const [view, setView] = useState('), iShow = nsrcDB.indexOf("  const [showNotifs, setShowNotifs] = useState(false);"), iEff = nsrcDB.indexOf("  const notifFocusBell = () => {");
+    const bellTag = cutDB("{/* Notification Bell */}", "</button>", true) || "";
+    check("DB1 the effects are declared after the state they list (view, showNotifs — the 2026.09.24a TDZ class) and once; the bell is what they look for (data-notif-bell, aria-haspopup=\"dialog\") and the panel is (data-notif-panel)",
+      iView > 0 && iShow > iView && iEff > iShow && countDB("useEffect(() => { setShowNotifs(false); }, [view]);") === 1 && countDB("[data-notif-panel],[data-notif-bell]") === 1
+        && bellTag.includes('aria-expanded={showNotifs} aria-haspopup="dialog" data-notif-bell="1"') && countDB('data-notif-bell="1"') === 1 && countDB('data-notif-panel="1"') === 1,
+      JDB({ iView, iShow, iEff }));
+
+    // the Requests person-group headers, rendered
+    // (the Requests one: Setup has its own, 2 deeper)
+    const SR = cutDB("\n            const shortRange = (s, e) => {", "\n            };", true);
+    const shortRangeDB = SR ? tryDB(() => vm.runInContext(`(function () { ${SR}\n            };\n return shortRange; })()`, sandbox)) : null;
+    const HP = cutDB('<button type="button" aria-expanded={!!expanded} onClick={()=>toggleVacGroup("p_"+pid)}', "\n                    </button>", true);
+    const HR = cutDB('<button type="button" aria-expanded={!!expanded} onClick={()=>toggleVacGroup("r_"+pid)}', "\n                      </button>", true);
+    const headP = viewDB("h, expanded, toggleVacGroup, sMap, pid, reqs, belowFloor, shortRange, mono", HP && HP + "\n                    </button>", "db1-head-p.js");
+    const headR = viewDB("h, expanded, toggleVacGroup, sMap, pid, reqs, approvedCt, deniedCt, revokedCt, shortRange, mono", HR && HR + "\n                      </button>", "db1-head-r.js");
+    const REQS = [{ id: 1, start_date: "2026-11-09", end_date: "2026-11-13", status: "approved" }, { id: 2, start_date: "2026-12-21", end_date: "2026-12-21", status: "denied" }];
+    const head = (mk, expanded) => {
+      const toggled = [];
+      const t = mk && typeof shortRangeDB === "function" ? tryDB(() => mk({ h: hDB, expanded, toggleVacGroup: (id) => toggled.push(id), sMap: { s3: { name: "RPC" } }, pid: "s3", reqs: REQS, belowFloor: true, shortRange: shortRangeDB, mono: "M", approvedCt: 1, deniedCt: 1, revokedCt: 0 })) : "not found";
+      if (!okTree(t)) return { err: t };
+      if (typeof t.props.onClick === "function") t.props.onClick();
+      return { tag: t.tag, type: t.props.type, expanded: t.props["aria-expanded"], toggled, arrowHidden: allDB(t).some((x) => x.props["aria-hidden"] === "true" && textDB(x) === "▶"),
+        blocks: allDB(t).filter((x) => x !== t && (x.tag === "div" || x.tag === "p")).length, fill: t.props.style.background, wide: t.props.style.width, chips: allDB(t).filter((x) => x.props.key !== undefined).map(textDB) };
+    };
+    const db1c = { pClosed: head(headP, undefined), pOpen: head(headP, true), rClosed: head(headR, undefined), rOpen: head(headR, true) };
+    const hdrOk = (h, id, exp) => !!h && h.tag === "button" && h.type === "button" && h.expanded === exp && JDB(h.toggled) === JDB([id]) && h.arrowHidden && h.blocks === 0 && h.fill === "none" && h.wide === "100%";
+    check("DB1 the Requests person-group headers (the real JSX, rendered) are <button type=button aria-expanded> — false while closed, true open — whose tap is the same toggleVacGroup(\"p_…\" / \"r_…\"); the ▶ is hidden from VoiceOver; no block element inside; transparent and full width, so the group looks as before",
+      hdrOk(db1c.pClosed, "p_s3", false) && hdrOk(db1c.pOpen, "p_s3", true) && hdrOk(db1c.rClosed, "r_s3", false) && hdrOk(db1c.rOpen, "r_s3", true)
+        && JDB(db1c.pClosed.chips) === JDB(["Nov 9–13", "Dec 21"]) && countDB('<div onClick={()=>toggleVacGroup("p_"') === 0 && countDB('<div onClick={()=>toggleVacGroup("r_"') === 0
+        && countDB('onClick={()=>toggleVacGroup("p_"+pid)}') === 1 && countDB('onClick={()=>toggleVacGroup("r_"+pid)}') === 1,
+      JDB(db1c).slice(0, 900));
   }
 }
 

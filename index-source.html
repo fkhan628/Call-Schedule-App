@@ -1102,6 +1102,21 @@ function CallSchedule() {
   const [notifClearedBefore, setNotifClearedBefore] = useState(() => {
     try { return localStorage.getItem("dsg-notif-cleared") || "2000-01-01T00:00:00Z"; } catch(e) { return "2000-01-01T00:00:00Z"; }
   });
+  // The bell's panel closes when the tab changes (UX audit 2026-11-01, QW8): it stayed open over the top of the next
+  // tab. While it is open, a tap outside it (not on the panel, not on the bell — the bell's own tap toggles it) closes
+  // it, and so does Escape, which hands focus back to the bell; opening it moves focus into it (role=dialog), so
+  // VoiceOver and a keyboard start there.
+  const notifFocusBell = () => { try { const b = document.querySelector("[data-notif-bell]"); if (b) b.focus(); } catch (e) { /* focus only */ } };
+  useEffect(() => { setShowNotifs(false); }, [view]);
+  useEffect(() => {
+    if (!showNotifs) return;
+    try { const p = document.querySelector("[data-notif-panel]"); if (p) p.focus({ preventScroll: true }); } catch (e) { /* focus only */ }
+    const outside = (e) => { const t = e.target; if (!(t && t.closest && t.closest("[data-notif-panel],[data-notif-bell]"))) setShowNotifs(false); };
+    const onKey = (e) => { if (e.key === "Escape") { setShowNotifs(false); notifFocusBell(); } };
+    document.addEventListener("pointerdown", outside);
+    document.addEventListener("keydown", onKey);
+    return () => { document.removeEventListener("pointerdown", outside); document.removeEventListener("keydown", onKey); };
+  }, [showNotifs]);
 
   // ─── Browser Push & Email Notification Preferences ───
   const [pushPermission, setPushPermission] = useState(() => {
@@ -9540,7 +9555,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           })()}
           {/* Notification Bell */}
           <button onClick={()=>{ if (!showNotifs) { setNotifSeenAtOpen(notifLastSeen); markNotifsSeen(); } setShowNotifs(p=>!p); }}
-            aria-label={myUnreadCount ? `Notifications, ${myUnreadCount} unread` : "Notifications"} aria-expanded={showNotifs}
+            aria-label={myUnreadCount ? `Notifications, ${myUnreadCount} unread` : "Notifications"} aria-expanded={showNotifs} aria-haspopup="dialog" data-notif-bell="1"
             style={{...css.tab(showNotifs),position:"relative",fontSize:15,padding:"4px 10px"}}>
             🔔
             {myUnreadCount > 0 && (
@@ -9565,34 +9580,45 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       <div style={{maxWidth:1020,margin:"0 auto",padding:"18px 14px 60px",position:"relative"}}>
 
         {/* ─── Notification Panel ─── */}
+        {/* UX audit 2026-11-01 (QW8): a dialog (the bell's effects close it on a tap outside, Escape or a tab change);
+            the title reads in dark mode (the panel turns dark there — the dark sheet matches its #fff — and its
+            #1a2a3a title read 1.09:1); the ✕ is finger-sized; the times are #5a6a78 (they read 2.24:1); and a notice
+            that opens something is a real button — VoiceOver and a keyboard reach it — named by its title, text and
+            time. The notice cards keep their pale fills in both modes, so their dark text is unchanged. */}
         {!isPublicMode && showNotifs && (
-          <div style={{position:"absolute",top:0,right:14,width:340,maxWidth:"calc(100vw - 28px)",maxHeight:400,overflowY:"auto",background:"#fff",border:"1px solid #dce2e8",borderRadius:10,boxShadow:"0 4px 20px rgba(0,0,0,0.12)",zIndex:100,padding:12}}>
+          <div data-notif-panel="1" role="dialog" aria-label="Notifications" tabIndex={-1} style={{position:"absolute",top:0,right:14,width:340,maxWidth:"calc(100vw - 28px)",maxHeight:400,overflowY:"auto",background:"#fff",border:"1px solid #dce2e8",borderRadius:10,boxShadow:"0 4px 20px rgba(0,0,0,0.12)",zIndex:100,padding:12,outline:"none"}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
-              <span style={{fontSize:14,fontWeight:700,color:"#1a2a3a"}}>Notifications</span>
+              <span style={{fontSize:14,fontWeight:700,color:dk?dkText:"#1a2a3a"}}>Notifications</span>
               <div style={{display:"flex",gap:6,alignItems:"center"}}>
                 {myNotifications.length > 0 && (
                   <button onClick={clearAllNotifications} style={{background:"none",border:"1px solid #e8c0c0",color:"#904040",borderRadius:5,padding:"2px 8px",fontSize:10,cursor:"pointer",fontFamily:font}}>Clear All</button>
                 )}
-                <button aria-label="Close notifications" onClick={()=>setShowNotifs(false)} style={{background:"none",border:"none",fontSize:16,cursor:"pointer",color:"#8a94a0"}}>✕</button>
+                <button aria-label="Close notifications" onClick={()=>{ setShowNotifs(false); notifFocusBell(); }} style={{background:"none",border:"none",fontSize:18,cursor:"pointer",color:"#5a6a78",minWidth:44,minHeight:44,padding:0,margin:"-10px -8px -10px 0",display:"inline-flex",alignItems:"center",justifyContent:"center"}}>✕</button>
               </div>
             </div>
             {myNotifications.length === 0 ? (
-              <p style={{color:"#8a94a0",fontSize:13,textAlign:"center",padding:20}}>No notifications yet</p>
+              <p style={{color:dk?"#8a94a0":"#5a6a78",fontSize:13,textAlign:"center",padding:20}}>No notifications yet</p>
             ) : myNotifications.map(n => {
               const tabMap = {vacation_submitted:"requests",vacation_approved:"requests",vacation_denied:"requests",schedule_published:"calendar",schedule_changed:"calendar",trade_submitted:"requests",trade_accepted:"requests",trade_declined:"requests",vacation_revoked:"requests",shift_reminder:"calendar"};
               const targetTab = tabMap[n.type] || null;
               const jumpWeek = targetTab === "calendar" && /^\d{4}-\d{2}-\d{2}$/.test(n.data?.week || "") ? n.data.week : null;
               const isNew = n.created_at > (notifSeenAtOpen || notifLastSeen);
-              return (
-              <div key={n.id} onClick={()=>{if(targetTab){ if (jumpWeek) { const [y, m] = jumpWeek.split("-").map(Number); setCalMonth(m - 1); setCalYear(y); } setView(targetTab); setShowNotifs(false); markNotifsSeen(); }}}
-                style={{padding:"8px 10px",marginBottom:6,borderRadius:6,cursor:targetTab?"pointer":"default",background:isNew ? "#f0f8ff" : "#f8f9fb",border:`1px solid ${isNew ? "#c0d8f0" : "#e8ecf0"}`,transition:"background 0.15s"}}>
-                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              const when = new Date(n.created_at).toLocaleString(undefined, {month:"short", day:"numeric", hour:"numeric", minute:"2-digit"});
+              const notifLabel = (isNew ? "New: " : "") + n.title + ". " + n.message + " (" + when + ")";
+              const rowStyle = {display:"block",width:"100%",textAlign:"left",font:"inherit",color:"inherit",padding:"8px 10px",marginBottom:6,borderRadius:6,cursor:targetTab?"pointer":"default",background:isNew ? "#f0f8ff" : "#f8f9fb",border:`1px solid ${isNew ? "#c0d8f0" : "#e8ecf0"}`,transition:"background 0.15s"};
+              const body = <>
+                <span style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8}}>
                   <span style={{fontSize:12,fontWeight:600,color:"#1a2a3a"}}>{n.title}</span>
-                  <span style={{fontSize:10,color:"#a0a8b0"}}>{new Date(n.created_at).toLocaleString(undefined, {month:"short", day:"numeric", hour:"numeric", minute:"2-digit"})}</span>
-                </div>
-                <p style={{fontSize:12,color:"#5a6a78",margin:"3px 0 0",lineHeight:1.4}}>{n.message}</p>
-                {targetTab && <span style={{fontSize:10,color:"#1a6fa8",marginTop:3,display:"inline-block"}}>Tap to view →</span>}
-              </div>
+                  <span style={{fontSize:11,color:"#5a6a78",whiteSpace:"nowrap"}}>{when}</span>
+                </span>
+                <span style={{display:"block",fontSize:12,color:"#5a6a78",margin:"3px 0 0",lineHeight:1.4}}>{n.message}</span>
+                {targetTab && <span aria-hidden="true" style={{fontSize:11,color:"#1a6fa8",marginTop:3,display:"inline-block"}}>Tap to view →</span>}
+              </>;
+              return targetTab ? (
+              <button key={n.id} type="button" aria-label={notifLabel} onClick={()=>{if(targetTab){ if (jumpWeek) { const [y, m] = jumpWeek.split("-").map(Number); setCalMonth(m - 1); setCalYear(y); } setView(targetTab); setShowNotifs(false); markNotifsSeen(); }}}
+                style={rowStyle}>{body}</button>
+              ) : (
+              <div key={n.id} style={rowStyle}>{body}</div>
               );
             })}
           </div>
@@ -13687,16 +13713,18 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   // (pendingFloorBreach: the same breach flag, computed once per data change, not here on every render).
                   const belowFloor = reqs.some(r => pendingFloorBreach.has(r.id));
                   return <div key={pid} style={{marginBottom:6,border:"1px solid #e8d8c0",borderRadius:8,overflow:"hidden",background:"#fef8f0"}}>
+                    {/* A real button (UX audit 2026-11-01, QW8): it was a div with a tap handler, so VoiceOver and a keyboard
+                        passed it by; it says whether its group is open. Transparent, so the group's own fill shows. */}
                     {/* Collapsed header row */}
-                    <div onClick={()=>toggleVacGroup("p_"+pid)} style={{display:"flex",alignItems:"center",gap:10,padding:"9px 12px",cursor:"pointer",flexWrap:"wrap"}}>
-                      <span style={{fontSize:10,color:"#b0a080",transition:"transform 0.15s",transform:expanded?"rotate(90deg)":"rotate(0deg)"}}>▶</span>
+                    <button type="button" aria-expanded={!!expanded} onClick={()=>toggleVacGroup("p_"+pid)} style={{display:"flex",alignItems:"center",gap:10,padding:"9px 12px",cursor:"pointer",flexWrap:"wrap",width:"100%",background:"none",border:"none",textAlign:"left",font:"inherit",color:"inherit"}}>
+                      <span aria-hidden="true" style={{fontSize:10,color:"#b0a080",transition:"transform 0.15s",transform:expanded?"rotate(90deg)":"rotate(0deg)"}}>▶</span>
                       {sMap[pid] ? <Badge id={pid}/> : <AppBadge id={pid}/>}
                       <span style={{fontSize:11,color:"#c09030",fontWeight:600,background:"#fef3e0",padding:"1px 8px",borderRadius:10,border:"1px solid #e8d090"}}>{reqs.length} pending</span>
                       {belowFloor && <span title="Approving would leave fewer surgeons available than the minimum — open to see the day" style={{fontSize:11,color:"#8a4a00",fontWeight:700,background:"#fde8c4",padding:"1px 8px",borderRadius:10,border:"1px solid #e0a850",whiteSpace:"nowrap"}}>⚠ below floor</span>}
-                      <div style={{display:"flex",gap:4,flexWrap:"wrap",marginLeft:"auto"}}>
+                      <span style={{display:"flex",gap:4,flexWrap:"wrap",marginLeft:"auto"}}>
                         {reqs.map(r => <span key={r.id} style={{fontFamily:mono,fontSize:11,color:"#8a7a60",background:"#f8f0e0",padding:"1px 7px",borderRadius:4,border:"1px solid #e8dcc0"}}>{shortRange(r.start_date,r.end_date)}</span>)}
-                      </div>
-                    </div>
+                      </span>
+                    </button>
                     {/* Expanded detail rows */}
                     {expanded && <div style={{borderTop:"1px solid #e8d8c0",padding:"4px 12px 8px"}}>
                       {reqs.map(r => <div key={r.id} style={{padding:"8px 0",borderBottom:"1px solid #f0e8d8"}}>
@@ -13793,17 +13821,18 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                     const deniedCt = reqs.filter(r=>r.status==="denied").length;
                     const revokedCt = reqs.filter(r=>r.status==="revoked").length;
                     return <div key={pid} style={{marginBottom:5,border:"1px solid #d8e0d8",borderRadius:7,overflow:"hidden",background:"#f8faf8"}}>
-                      <div onClick={()=>toggleVacGroup("r_"+pid)} style={{display:"flex",alignItems:"center",gap:10,padding:"7px 12px",cursor:"pointer",flexWrap:"wrap"}}>
-                        <span style={{fontSize:10,color:"#a0b0a0",transition:"transform 0.15s",transform:expanded?"rotate(90deg)":"rotate(0deg)"}}>▶</span>
+                      {/* A real button, as the pending group's header (QW8) */}
+                      <button type="button" aria-expanded={!!expanded} onClick={()=>toggleVacGroup("r_"+pid)} style={{display:"flex",alignItems:"center",gap:10,padding:"7px 12px",cursor:"pointer",flexWrap:"wrap",width:"100%",background:"none",border:"none",textAlign:"left",font:"inherit",color:"inherit"}}>
+                        <span aria-hidden="true" style={{fontSize:10,color:"#a0b0a0",transition:"transform 0.15s",transform:expanded?"rotate(90deg)":"rotate(0deg)"}}>▶</span>
                         {sMap[pid] ? <Badge id={pid}/> : <AppBadge id={pid}/>}
                         {approvedCt > 0 && <span style={{fontSize:10,fontWeight:600,color:"#1a8040"}}>✓ {approvedCt}</span>}
                         {deniedCt > 0 && <span style={{fontSize:10,fontWeight:600,color:"#c04040"}}>✕ {deniedCt}</span>}
                         {revokedCt > 0 && <span style={{fontSize:10,fontWeight:600,color:"#8a8a40"}}>↩ {revokedCt}</span>}
-                        <div style={{display:"flex",gap:4,flexWrap:"wrap",marginLeft:"auto"}}>
+                        <span style={{display:"flex",gap:4,flexWrap:"wrap",marginLeft:"auto"}}>
                           {reqs.slice(0,6).map(r => <span key={r.id} style={{fontFamily:mono,fontSize:10,color:r.status==="approved"?"#4a8a4a":r.status==="revoked"?"#8a8a40":"#a06060",background:r.status==="approved"?"#e8f4e8":r.status==="revoked"?"#f4f4e8":"#f8e8e8",padding:"1px 6px",borderRadius:4,border:`1px solid ${r.status==="approved"?"#c0e0c0":r.status==="revoked"?"#d8d8c0":"#e0c0c0"}`}}>{shortRange(r.start_date,r.end_date)}</span>)}
                           {reqs.length > 6 && <span style={{fontSize:10,color:"#a0a8b0"}}>+{reqs.length-6}</span>}
-                        </div>
-                      </div>
+                        </span>
+                      </button>
                       {expanded && <div style={{borderTop:"1px solid #d8e0d8",padding:"4px 12px 6px"}}>
                         {reqs.map(r => <div key={r.id} style={{padding:"6px 0",borderBottom:"1px solid #e8f0e8"}}>
                           {/* Its ✎ Edit / ↩ Revoke / ✕ are a scheduler's; the editor follows canChangeVacRequest too (owner decision 2026-10-20) */}
