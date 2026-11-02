@@ -5908,7 +5908,8 @@ await (async () => {
   check("BH2 (review fix) the line's colour, its own expression run: in dark mode ≥ 4.5:1 on the Email Notifications box it sits in (#1a8040 there, as before, ~2.9:1); light mode unchanged",
     !!crs && crs.dark >= 4.5 && crs.light >= 4.5 && crs.was < 4.5 && cols.light === "#1a8040", JSON.stringify({ cols, crs }));
   // its block: the personal one ("shown to everyone" with a roster id), not the scheduler-only list after it
-  const stAt = stM ? stM.index : -1, PG = '{/* Personal notification settings (shown to everyone) */}\n              {mySurgeon && mySurgeon !== "admin" && (() => {\n';
+  // (DE, 2026-11-02, on purpose: the block's gate is plain mySurgeon now — the Clinic Manager ("admin") gets it too, owner decision Q5)
+  const stAt = stM ? stM.index : -1, PG = '\n              {mySurgeon && (() => {\n                const myPref = notifPrefs[mySurgeon] || {};\n';
   const iGate = stAt < 0 ? -1 : nsrcBH.lastIndexOf(PG, stAt), iMine = stAt < 0 ? -1 : nsrcBH.lastIndexOf("My Email for Notifications</div>", stAt);
   const iEnd = iGate < 0 ? -1 : nsrcBH.indexOf("\n              })()}\n", iGate), iSchedOnly = iGate < 0 ? -1 : nsrcBH.indexOf("{/* Scheduler-only: all surgeon emails */}", iGate);
   check("BH2 the line sits in the personal block (every account with a roster id — a member's own settings), not the scheduler-only list after it",
@@ -17690,6 +17691,12 @@ await (async () => {
 //       surgeons, the APPs and the Clinic Manager), the deadline reminder test, and "📨 Send this week's office digest
 //       now" (asks first, naming each active office contact; the request main's "Test Saturday Digest" sent). Notification
 //       Settings and Office Notifications lose those, and read as main's otherwise — byte for byte for everyone else
+//   DE2 (QW12) the Clinic Manager ("admin") gets the personal block everyone has (value for value a member's), this
+//       device's push is signed in as "admin" (the identity effect and Enable — main's calls for everyone else), and
+//       the e-mail is prefilled once: after that account's own preferences load, with none out, a same-identity read
+//       of the "admin" row and — only when there is no row — one save of the sign-in e-mail. A render loop runs the
+//       REAL load, list sync, prefill and saveNotifPref on a Face ID unlock; the control without the wait saves an
+//       empty e-mail
 console.log("\nDE. Settings' developer tools, the Clinic Manager's notifications, MS's Setup and Requests, the reset link, the Welcome screen");
 await (async () => {
   const nsrcD = src.replace(/\r\n/g, "\n"), J = JSON.stringify;
@@ -17786,6 +17793,8 @@ await (async () => {
   const viewD = (names, code, filename) => { let f = null; try { f = code ? vm.runInContext(`(function (env) { const { h, ${names} } = env; return (${jsxD(exprD(code))}); })`, sandbox, { filename }) : null; } catch (ex) { f = null; viewErrD[filename] = String(ex).slice(0, 160); } return f ? (env) => tryD(() => f(Object.assign({ h: hD }, env))) : null; };
   const findD = (tree, pred) => allD(tree).filter(pred);
   const byTextD = (tree, t) => findD(tree, (n) => textD(n).replace(/\s+/g, " ").trim() === t);
+  // Notification Settings' personal block: the box whose first line is "My Email for Notifications"
+  const blockOf = (t) => (t && !t.threw ? findD(t, (n) => n.kids.length > 2 && n.kids[0] && n.kids[0].tag === "div" && textD(n.kids[0]) === "My Email for Notifications")[0] || null : null);
   const SURGD = ["DJA", "MCC", "RPC", "KJH", "REH", "FAK", "ARW"].map((name, i) => ({ id: "s" + (i + 1), name }));
   const APPSD = ["MA", "SJ", "MS", "SS", "JH"].map((name, i) => ({ id: "a" + (i + 1), name }));
   const nameOfD = (id) => (SURGD.find((s) => s.id === id) || APPSD.find((a) => a.id === id) || {}).name || id || "?";
@@ -17847,7 +17856,9 @@ await (async () => {
     for (const who of ["sched", "admin"]) for (const dk of [false, true]) {
       const o = { open: OPEN_ALL, dk }, nw = V.notifNew(setEnvD(who, o)), od = V.notifOld(setEnvD(who, o));
       let want = textD(od); for (const m of MOVED) want = want.split(m).join("");
-      const ok = !nw.threw && !od.threw && textD(nw) === want && inputsD(nw) === inputsD(od) - 1 && !MOVED.some((m) => textD(nw).includes(m))
+      // (the Clinic Manager's personal block is new — DE2 — so it is taken out of today's card before the two compare)
+      const cmB = who === "admin" && !nw.threw ? blockOf(nw) : null, got = cmB ? textD(nw).replace(textD(cmB), "") : textD(nw);
+      const ok = !nw.threw && !od.threw && got === want && inputsD(nw) - (cmB ? inputsD(cmB) : 0) === inputsD(od) - 1 && !MOVED.some((m) => textD(nw).includes(m))
         && !findD(nw, (n) => Object.values(n.props).some((v) => STUBS.get(v) === "setEdgeFunctionUrl" || (typeof v === "function" && /setEdgeFunctionUrl|send-push|vacation-deadline-reminder/.test(String(v))))).length;
       if (!ok) nb.push({ who, dk, nw: nw.threw || textD(nw).slice(0, 300), want: want.slice(0, 300) });
     }
@@ -17949,6 +17960,135 @@ await (async () => {
       count("onChange={e=>setEdgeFunctionUrl(") === 0 && count("setEdgeFunctionUrl(") === 4 && count("if (v !== edgeFunctionUrl) setEdgeFunctionUrl(v);") === 1 && oldLabels === 0
         && count("triggerDigestTest") === 0 && count(".upsert({ id: \"config\", edge_function_url: edgeFunctionUrl.trim(), updated_at: new Date().toISOString() });") === 1,
       J({ onChange: count("onChange={e=>setEdgeFunctionUrl("), sets: count("setEdgeFunctionUrl("), oldLabels, digest: count("triggerDigestTest"), upsert: count(".upsert({ id: \"config\", edge_function_url: edgeFunctionUrl.trim(), updated_at: new Date().toISOString() });") }));
+  }
+
+  // ── DE2 (QW12) — the Clinic Manager's own notifications ──
+  if (vOk) {
+    const OPEN_N = { notifSettings: true };
+    const PREF = { email: "x@dsg.test", schedule_changes_email: false, vacation_updates_push: false, daily_reminder_hour: 9 };
+    const SAME_SIGNIN = { authUser: { id: "u-x", email: "signin@dsg.test" } }; // (the block names the sign-in e-mail: one for both, so the two compare)
+    const cmNew = V.notifNew(Object.assign(setEnvD("admin", { open: OPEN_N, prefs: { admin: PREF } }), SAME_SIGNIN)), cmOld = V.notifOld(Object.assign(setEnvD("admin", { open: OPEN_N, prefs: { admin: PREF } }), SAME_SIGNIN));
+    const rpcNew = V.notifNew(Object.assign(setEnvD("member", { open: OPEN_N, prefs: { s3: PREF } }), SAME_SIGNIN));
+    const cmB = blockOf(cmNew), rpcB = blockOf(rpcNew);
+    const cmIn = cmB ? findD(cmB, (n) => n.tag === "input") : [];
+    callsD.length = 0;
+    if (cmIn[0]) tryD(() => cmIn[0].props.onChange({ target: { value: "new@dsg.test" } }));
+    if (cmIn[1]) tryD(() => cmIn[1].props.onChange({ target: { checked: false } }));
+    const cmCalls = callsD.slice(); callsD.length = 0;
+    check("DE2a Notification Settings for the Clinic Manager (\"admin\"): the personal block everyone has — \"My Email for Notifications\" (their own row's e-mail), the Email / Push choices, the reminder hours — value for value what a member's block shows for the same row, and its changes save the \"admin\" row (main showed them none of it)",
+      !!cmB && !!rpcB && sigD(cmB) === sigD(rpcB) && cmIn.length === 8 && cmIn[0].props.value === "x@dsg.test" && cmIn[0].props.placeholder === "signin@dsg.test"
+        && J(cmCalls) === J([["saveNotifPref", "admin", { email: "new@dsg.test" }], ["saveNotifPref", "admin", { schedule_changes_email: false }]])
+        && !cmOld.threw && !textD(cmOld).includes("My Email for Notifications") && textD(cmNew).includes("Reminder Times (Central time)"),
+      J({ cm: !!cmB, rpc: !!rpcB, same: cmB && rpcB && sigD(cmB) === sigD(rpcB), inputs: cmIn.length, cmCalls, old: cmOld.threw || textD(cmOld).includes("My Email for Notifications") }));
+
+    // DE2b — this device's push is signed in as "admin" too (the effect and the Enable button), everyone else's as before
+    const osNew = (() => { const A = "window.OneSignal.login(mySurgeon).catch(", i = nsrcD.indexOf(A); if (i < 0 || nsrcD.indexOf(A, i + 1) !== -1) return null; return nsrcD.slice(nsrcD.lastIndexOf("useEffect(", i), nsrcD.indexOf("]);", i) + 3); })();
+    const mkOS = (code) => mkD("useEffect, oneSignalReady, mySurgeon, window, console", code && code.replace(/;\s*$/, ""), "de-oslogin.js");
+    const runOS = (mk, ready, me) => { const log = []; const r = tryD(() => mk({ useEffect: (fn) => fn(), oneSignalReady: ready, mySurgeon: me, window: { OneSignal: { login: (id) => { log.push("login:" + id); return Promise.resolve(); } } }, console: { error: (...a) => log.push("error") } })); return r && r.threw ? ["threw " + r.threw] : log; };
+    const osN = mkOS(osNew), osO = mkOS(OLD.osLogin);
+    const OS_CASES = [[true, "s6"], [true, "s3"], [true, "a1"], [true, ""], [false, "s3"], [false, "admin"]];
+    const osSame = osN && osO ? OS_CASES.every(([r, me]) => J(runOS(osN, r, me)) === J(runOS(osO, r, me))) : false;
+    const rpSrc = (() => { const s = cutD("  const requestPushPermission = useCallback(", "\n  }, [mySurgeon]);"); return s === null ? null : s + "\n  }"; })();
+    const RP_NAMES = "sessionEpochRef, setPushDiag, navigator, window, setPushPermission, setOneSignalSubscribed, mySurgeon, setTimeout, setPushSubscriptionId, setPushExternalId, console";
+    const mkRP = (code) => mkD(RP_NAMES, code, "de-pushperm.js");
+    const runRP = async (mk, me) => {
+      const log = [];
+      const nav = { userAgent: "Mozilla/5.0 (Windows NT 10.0)", standalone: false };
+      const env = { sessionEpochRef: { current: 0 }, setPushDiag: (v) => log.push("diag:" + v.msg), navigator: nav,
+        window: { navigator: nav, matchMedia: () => ({ matches: false }), OneSignal: { Notifications: { requestPermission: async () => log.push("ask"), permission: true }, login: async (id) => log.push("login:" + id), User: { PushSubscription: { id: "sub-1" }, externalId: me } } },
+        setPushPermission: (v) => log.push("perm:" + v), setOneSignalSubscribed: (v) => log.push("sub:" + v), mySurgeon: me, setTimeout: (fn) => fn(), setPushSubscriptionId: () => {}, setPushExternalId: () => {}, console: { error: () => log.push("error"), warn() {}, log() {} } };
+      const r = await tryAD(() => mk(env)());
+      return r && r.threw ? ["threw " + r.threw] : log;
+    };
+    const rpN = mkRP(rpSrc), rpO = mkRP(OLD.requestPushPermission);
+    const rpCm = rpN ? await runRP(rpN, "admin") : null, rpCmOld = rpO ? await runRP(rpO, "admin") : null;
+    const rpSame = rpN && rpO ? J(await runRP(rpN, "s3")) === J(await runRP(rpO, "s3")) && J(await runRP(rpN, "")) === J(await runRP(rpO, "")) : false;
+    check("DE2b this device's push is signed in to OneSignal as \"admin\" for the Clinic Manager — the identity effect and 🔔 Enable Push Notifications both (requests and approvals are pushed to \"admin\"; main skipped it, so none arrived); for anyone else, and with OneSignal not ready, exactly main's calls",
+      !!osN && J(runOS(osN, true, "admin")) === J(["login:admin"]) && J(runOS(osO, true, "admin")) === "[]" && osSame
+        && !!rpCm && rpCm.includes("login:admin") && !!rpCmOld && !rpCmOld.includes("login:admin") && rpSame
+        && count('mySurgeon && mySurgeon !== "admin" && window.OneSignal?.login') === 0 && count('mySurgeon === "admin") return;') === 0 && count('{mySurgeon && mySurgeon !== "admin" && (() => {') === 1,
+      J({ cm: osN && runOS(osN, true, "admin"), rpCm, rpCmOld, osSame, rpSame, blocks: count('{mySurgeon && mySurgeon !== "admin" && (() => {') }));
+
+    // DE2c — the e-mail, prefilled once: the REAL effect, run with stubs
+    const pfSrc = cutD("  const adminPrefillRef = useRef(false);\n  useEffect(", "\n  }, [loaded, notifPrefsLoadedAs, mySurgeon, userProfile, authUser]);");
+    const PF_NAMES = "loaded, isPublicMode, adminPrefillRef, mySurgeon, userProfile, authUser, prefsLoadsRef, notifPrefsLoadedAs, notifPrefsRef, sessionEpochRef, fetch, SUPABASE_URL, dbAuthHeaders, saveNotifPref, console";
+    const mkPF = mkD(PF_NAMES, pfSrc && pfSrc + "\n  }", "de-prefill.js");
+    const CM = { authUser: { id: "u-cm", email: "cm@dsg.test" }, userProfile: { person_id: "admin", role: "admin" }, mySurgeon: "admin" };
+    const runPF = async (o = {}) => {
+      const log = [], ep = { current: 0 }, done = o.done || { current: false };
+      const env = Object.assign({ loaded: true, isPublicMode: false, adminPrefillRef: done, prefsLoadsRef: { current: { out: o.out || 0, n: 1 } }, notifPrefsLoadedAs: "u-cm#1", notifPrefsRef: { current: o.list || { s3: { email: "rpc@dsg.test" } } },
+        sessionEpochRef: ep, SUPABASE_URL: "https://xq.supabase.co", dbAuthHeaders: () => ({ Authorization: "Bearer CM" }), console: { warn: () => log.push("warn"), error: () => log.push("error"), log() {} },
+        saveNotifPref: (...a) => log.push(["save", ...a]),
+        fetch: async (u, opt) => { log.push(["GET", u, opt.headers.Authorization]); if (o.cross) ep.current++; if (o.offline) throw new TypeError("Load failed"); return { ok: !o.status, status: o.status || 200, json: async () => (o.rows || []) }; } }, CM, o.env || {});
+      const r = await tryAD(async () => { mkPF(env)(); for (let i = 0; i < 20; i++) await null; });
+      return r && r.threw ? ["threw " + r.threw] : log;
+    };
+    const GET = ["GET", "https://xq.supabase.co/rest/v1/notification_preferences?select=surgeon_id&surgeon_id=eq.admin", "Bearer CM"];
+    const SAVE = ["save", "admin", { email: "cm@dsg.test", email_notifs: true }, "prefill"];
+    const once = { current: false };
+    const pf = mkPF ? {
+      none: await runPF(), row: await runPF({ rows: [{ surgeon_id: "admin" }] }), listed: await runPF({ list: { admin: { email: "" } } }),
+      s500: await runPF({ status: 500 }), offline: await runPF({ offline: true }), cross: await runPF({ cross: true }),
+      out: await runPF({ out: 1 }), otherLoad: await runPF({ env: { notifPrefsLoadedAs: "u-other#2" } }), noLoad: await runPF({ env: { notifPrefsLoadedAs: "" } }),
+      member: await runPF({ env: { mySurgeon: "s3", userProfile: { person_id: "s3", role: "member" } } }), sched: await runPF({ env: { mySurgeon: "s6", userProfile: { person_id: "s6", role: "scheduler" } } }),
+      storedOnly: await runPF({ env: { userProfile: null } }), noEmail: await runPF({ env: { authUser: { id: "u-cm" } } }), pub: await runPF({ env: { isPublicMode: true } }),
+      first: await runPF({ done: once }), second: await runPF({ done: once }),
+    } : null;
+    check("DE2c the REAL prefill effect, run: signed in as \"admin\", that account's preferences loaded and none out — ONE read of the \"admin\" row with the account's own token, and no row at all → ONE save of { e-mail: the sign-in e-mail, email_notifs: true } (\"prefill\" in the audit); then never again this app open",
+      !!pf && J(pf.none) === J([GET, SAVE]) && J(pf.first) === J([GET, SAVE]) && J(pf.second) === "[]", J(pf && { none: pf.none, first: pf.first, second: pf.second }));
+    check("DE2c …nothing written when a row exists (read, or already in the list — even one whose e-mail was cleared), the read fails (500, no signal: a warning, the next app open tries again) or the session changes while it is out; nothing at all while a load is out, after another account's load or none, for a member, the scheduler, a stored \"admin\" pick with no profile, no sign-in e-mail, or the public view",
+      !!pf && J(pf.row) === J([GET]) && J(pf.listed) === "[]" && J(pf.s500) === J([GET, "warn"]) && J(pf.offline) === J([GET, "warn"]) && J(pf.cross) === J([GET])
+        && ["out", "otherLoad", "noLoad", "member", "sched", "storedOnly", "noEmail", "pub"].every((k) => J(pf[k]) === "[]"),
+      J(pf));
+
+    // DE2d — the race it waits out: the REAL load effect, the REAL list → ref sync, the REAL prefill and the REAL
+    // saveNotifPref, in a tiny render loop (effects in source order), on a Face ID unlock: the profile and the reload
+    // land in one render, so the reload's load and the prefill start together. Control: the prefill without its wait.
+    const ldSrc = cutD("  // ─── Load Notification Preferences ───\n  useEffect(", "\n  }, [loaded, reloadTrigger]);");
+    // the list → ref sync is one line; the loop runs that statement, and it must come BEFORE the load and the prefill
+    // in the source (React runs a render's effects in source order — the prefill reads the ref it keeps)
+    const RS = "  useEffect(() => { notifPrefsRef.current = notifPrefs; }, [notifPrefs]);\n";
+    const iRS = nsrcD.indexOf(RS), iLD = nsrcD.indexOf("  // ─── Load Notification Preferences ───\n  useEffect("), iPF = nsrcD.indexOf("  const adminPrefillRef = useRef(false);\n  useEffect(");
+    const snSrc = cutD("  const saveNotifPref = useCallback(", "\n  }, []);\n");
+    const LD_NAMES = "loaded, authUser, prefsLoadsRef, db, setNotifPrefs, supabase, setEdgeFunctionUrl, setNotifPrefsLoaded, setNotifPrefsLoadedAs, console";
+    const SN_NAMES = "setNotifPrefs, notifPrefsRef, notifSaveTimerRef, setTimeout, clearTimeout, setNotifPrefsSaving, setNotifPrefsSaved, db, auditRef, showToast, console, sessionEpochRef, dbAuthHeaders";
+    const mkLD = mkD(LD_NAMES, ldSrc && ldSrc + "\n  }", "de-prefsload.js"), mkSN = mkD(SN_NAMES, snSrc && snSrc + "\n  }", "de-savepref.js");
+    const rsOk = count(RS.trim()) === 1 && iRS >= 0 && iRS < iLD && iLD < iPF;
+    const unlock = async (noWait) => {
+      const pfCode = noWait ? (pfSrc || "").replace("\n    if (prefsLoadsRef.current.out > 0 || !notifPrefsLoadedAs.startsWith(authUser.id + \"#\")) return;", "") : pfSrc;
+      const mkP = mkD(PF_NAMES, pfCode && pfCode + "\n  }", "de-prefill-loop.js");
+      if (!mkLD || !mkSN || !mkP || !rsOk || (noWait && pfCode === pfSrc)) return { threw: "not extracted" };
+      const st = { loaded: true, reloadTrigger: 1, notifPrefs: {}, notifPrefsLoadedAs: "", authUser: CM.authUser, userProfile: CM.userProfile, mySurgeon: "admin" };
+      const refs = { notifPrefsRef: { current: {} }, prefsLoadsRef: { current: { out: 0, n: 0 } }, adminPrefillRef: { current: false }, sessionEpochRef: { current: 0 }, notifSaveTimerRef: { current: {} } };
+      const timers = [], upserts = [], gets = [], loads = [];
+      let dirty = false; const set = (k) => (v) => { const nv = typeof v === "function" ? v(st[k]) : v; if (nv !== st[k]) { st[k] = nv; dirty = true; } };
+      const saveNotifPref = mkSN({ setNotifPrefs: set("notifPrefs"), notifPrefsRef: refs.notifPrefsRef, notifSaveTimerRef: refs.notifSaveTimerRef, setTimeout: (fn) => { timers.push(fn); return timers.length; }, clearTimeout: () => {},
+        setNotifPrefsSaving: () => {}, setNotifPrefsSaved: () => {}, db: { upsert: async (t, row) => { upserts.push(row); return { error: null }; } }, auditRef: { current: { logAudit: () => {}, nameOf: (x) => x } },
+        showToast: () => {}, console: { error() {}, warn() {}, log() {} }, sessionEpochRef: refs.sessionEpochRef, dbAuthHeaders: () => ({}) });
+      const prev = {};
+      const EFFECTS = [
+        ["sync", () => [st.notifPrefs], () => { refs.notifPrefsRef.current = st.notifPrefs; }],
+        ["load", () => [st.loaded, st.reloadTrigger], () => mkLD({ loaded: st.loaded, authUser: st.authUser, prefsLoadsRef: refs.prefsLoadsRef, setNotifPrefs: set("notifPrefs"), setEdgeFunctionUrl: () => {}, setNotifPrefsLoaded: () => {}, setNotifPrefsLoadedAs: set("notifPrefsLoadedAs"), console: { error() {} },
+          db: { query: () => new Promise((res) => loads.push(res)) }, supabase: { from: () => ({ select: () => ({ eq: () => ({ single: async () => ({ data: { edge_function_url: EDGE } }) }) }) }) } })()],
+        ["prefill", () => [st.loaded, st.notifPrefsLoadedAs, st.mySurgeon, st.userProfile, st.authUser], () => mkP(Object.assign({}, refs, { loaded: st.loaded, isPublicMode: false, mySurgeon: st.mySurgeon, userProfile: st.userProfile, authUser: st.authUser, notifPrefsLoadedAs: st.notifPrefsLoadedAs,
+          SUPABASE_URL: "https://xq.supabase.co", dbAuthHeaders: () => ({}), saveNotifPref, console: { warn() {}, error() {} }, fetch: () => new Promise((res) => gets.push(res)) }))()],
+      ];
+      const render = () => { for (let pass = 0; pass < 8; pass++) { dirty = false; for (const [k, deps, run] of EFFECTS) { const d = deps(); if (!prev[k] || d.some((x, i) => x !== prev[k][i])) { prev[k] = d; run(); } } if (!dirty) return; } };
+      const settle = async () => { for (let i = 0; i < 30; i++) await null; render(); };
+      const ROWS = [{ surgeon_id: "s3", email: "rpc@dsg.test" }];
+      const resp = (rows) => ({ ok: true, status: 200, json: async () => rows });
+      render(); // the unlock's render: the reload's load starts — and the prefill (control: it reads now)
+      const startedTogether = loads.length === 1 && gets.length === (noWait ? 1 : 0);
+      if (noWait) { gets[0](resp([])); await settle(); loads[0](ROWS); await settle(); }   // the prefill's read answers first, the load's after
+      else { loads[0](ROWS); await settle(); if (gets[0]) gets[0](resp([])); await settle(); }
+      for (const t of timers.splice(0)) await t();
+      return { startedTogether, upserts: upserts.map((r) => ({ id: r.surgeon_id, email: r.email })), list: Object.keys(st.notifPrefs).sort(), loadedAs: st.notifPrefsLoadedAs };
+    };
+    const real = await tryAD(() => unlock(false)), ctrl = await tryAD(() => unlock(true));
+    check("DE2d the race it waits out, run: a Face ID unlock (the profile and the reload in one render) with the REAL load, list sync, prefill and saveNotifPref — the prefill waits for the reload's load, then saves \"admin\" with the sign-in e-mail and the list keeps it; control (the same prefill without its wait) reads alongside the load, the load lands after it, and the save writes an EMPTY e-mail",
+      !!real && !real.threw && real.startedTogether && J(real.upserts) === J([{ id: "admin", email: "cm@dsg.test" }]) && J(real.list) === J(["admin", "s3"]) && real.loadedAs === "u-cm#1"
+        && !!ctrl && !ctrl.threw && ctrl.startedTogether && J(ctrl.upserts) === J([{ id: "admin", email: "" }]),
+      J({ real, ctrl }));
   }
 })().catch(ex => check("DE harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
 

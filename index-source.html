@@ -1107,6 +1107,12 @@ function CallSchedule() {
   const notifPrefsRef = useRef(notifPrefs);
   useEffect(() => { notifPrefsRef.current = notifPrefs; }, [notifPrefs]);
   const [notifPrefsLoaded, setNotifPrefsLoaded] = useState(false);
+  // The last preferences load to end: "<auth id>#<n>" (the signed-in account's id, "" signed out; n counts loads),
+  // and how many loads are still out. The Clinic Manager's e-mail prefill waits until this account's load has ended
+  // and none is out (2026-11-02): a load landing after the prefill's save was queued would put the list back without
+  // that row, and the save (which writes the list's row) would write an empty e-mail.
+  const [notifPrefsLoadedAs, setNotifPrefsLoadedAs] = useState("");
+  const prefsLoadsRef = useRef({ out: 0, n: 0 });
   const [notifPrefsSaving, setNotifPrefsSaving] = useState(false);
   // The preference save that last landed (this session's own): { id: whose prefs, at }. Settings says "Saved ✓" for
   // 3 s after it, so a member sees their change was kept (UX audit 2026-10-19 — only the scheduler's list showed even
@@ -4470,8 +4476,12 @@ function CallSchedule() {
   // This runs whenever the user signs in or the person_id changes.
   // Existing subscribed users will get tagged next time they open the app
   // after this deploy — no re-subscription required.
+  // The Clinic Manager ("admin") too, since 2026-11-02 (owner decision Q5):
+  // new requests and approvals are pushed to schedulerAdminIds, which holds
+  // "admin", but that device was never signed in, so none of them arrived.
+  // person_id is unique (the DB's unique index), so "admin" is one person.
   useEffect(() => {
-    if (!oneSignalReady || !mySurgeon || mySurgeon === "admin") return;
+    if (!oneSignalReady || !mySurgeon) return;
     try {
       if (window.OneSignal?.login) {
         window.OneSignal.login(mySurgeon).catch(e => console.error("OneSignal.login error:", e));
@@ -4527,8 +4537,9 @@ function CallSchedule() {
 
       // Associate this subscription with the logged-in person_id so targeted
       // pushes (manual edits, vacation updates, etc.) can reach this device.
-      // Without this, only broadcast pushes arrive.
-      if (mySurgeon && mySurgeon !== "admin" && window.OneSignal?.login) {
+      // Without this, only broadcast pushes arrive. (The Clinic Manager's too,
+      // since 2026-11-02 — as the effect above.)
+      if (mySurgeon && window.OneSignal?.login) {
         try { await window.OneSignal.login(mySurgeon); } catch(e) { console.error("OneSignal login after permission:", e); }
         if (sessionEpochRef.current !== ep) return; // (review r5 fix-1) another session now: nothing said on its screen
       }
@@ -4635,6 +4646,8 @@ function CallSchedule() {
   // ─── Load Notification Preferences ───
   useEffect(() => {
     if (!loaded) return;
+    const as = authUser?.id || ""; // whose preferences this load reads (notifPrefsLoadedAs, 2026-11-02)
+    prefsLoadsRef.current.out++;
     (async () => {
       try {
         const rows = await db.query("notification_preferences");
@@ -4647,6 +4660,7 @@ function CallSchedule() {
         if (cfgRow?.edge_function_url) setEdgeFunctionUrl(cfgRow.edge_function_url);
       } catch(e) { console.error("Load notif prefs error:", e); }
       setNotifPrefsLoaded(true);
+      prefsLoadsRef.current.out--; setNotifPrefsLoadedAs(`${as}#${++prefsLoadsRef.current.n}`);
     })();
   }, [loaded, reloadTrigger]);
 
@@ -4799,6 +4813,35 @@ function CallSchedule() {
       setNotifPrefsSaving(false);
     }, 500);
   }, []);
+
+  // ─── The Clinic Manager's own e-mail, prefilled (owner decision 2026-11-02, Q5) ───
+  // New requests and approvals are addressed to "admin" (schedulerAdminIds), but no screen ever gave the Clinic
+  // Manager a notification_preferences row, and send-notification e-mails only a row that has an e-mail — so those
+  // e-mails never went out to them. Once per app open, signed in as "admin", once that account's own preferences
+  // have loaded and no load is out (notifPrefsLoadedAs; the load effect above runs first in a render that starts one):
+  // unless the list already holds the row, read it with the identity the write will use (as the signup auto-fill
+  // does — an anon read of this table is 200 + [], "empty" by mistake) and, when there is NO row at all, save one
+  // with the sign-in e-mail, every category on — switched off in Settings like anyone's. A row that exists is left
+  // alone, even one with no e-mail (cleared on purpose); a read that fails writes nothing (the next app open tries
+  // again); a session change while it is out drops it.
+  const adminPrefillRef = useRef(false);
+  useEffect(() => {
+    if (!loaded || isPublicMode || adminPrefillRef.current) return;
+    if (mySurgeon !== "admin" || userProfile?.person_id !== "admin" || !authUser?.email) return;
+    if (prefsLoadsRef.current.out > 0 || !notifPrefsLoadedAs.startsWith(authUser.id + "#")) return;
+    adminPrefillRef.current = true;
+    if (notifPrefsRef.current && notifPrefsRef.current.admin) return; // loaded: the row is there
+    const ep = sessionEpochRef.current, email = authUser.email;
+    (async () => {
+      try {
+        const res = await fetch(`${SUPABASE_URL}/rest/v1/notification_preferences?select=surgeon_id&surgeon_id=eq.admin`, { headers: dbAuthHeaders() });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const rows = await res.json();
+        if (sessionEpochRef.current !== ep || !Array.isArray(rows) || rows.length) return;
+        saveNotifPref("admin", { email, email_notifs: true }, "prefill");
+      } catch (e) { console.warn("Clinic Manager e-mail prefill skipped:", e); }
+    })();
+  }, [loaded, notifPrefsLoadedAs, mySurgeon, userProfile, authUser]);
 
   // ─── Fire browser notifications when polling detects new in-app notifications ───
   useEffect(() => {
@@ -14321,8 +14364,9 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             <div style={{background:dk?"#1a2a3e":"#f8f9fb",border:`1px solid ${dkCardBorder}`,borderRadius:8,padding:"12px 14px",marginBottom:12}}>
               <div style={{fontSize:12,fontWeight:600,color:dkText,marginBottom:6}}>📧 Email Notifications</div>
 
-              {/* Personal notification settings (shown to everyone) */}
-              {mySurgeon && mySurgeon !== "admin" && (() => {
+              {/* Personal notification settings (shown to everyone — the Clinic Manager too since 2026-11-02, owner decision Q5:
+                  requests and approvals are addressed to "admin", and this block was the only way to choose them) */}
+              {mySurgeon && (() => {
                 const myPref = notifPrefs[mySurgeon] || {};
                 // A plain function called inline, not a component: a component defined here is a new
                 // type every render, so React remounted the <select> on each re-render (a poll, a save)
