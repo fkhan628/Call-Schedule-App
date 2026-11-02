@@ -1047,6 +1047,37 @@ function periodLabel(firstMonday, lastMonday) {
   return `${monthDayLabel(first, first.slice(0, 4) !== end.slice(0, 4))} – ${monthDayLabel(end, true)}`;
 }
 
+// A span of dates said as periodLabel says a period (UX audit 2026-11-01), its
+// two ends as they are — Stats → This year ("Jan 5, 2026 – Jan 3, 2027") and
+// the APP table ("Jun 2, 2025 – Feb 20, 2027"):
+//   dateSpanLabel("2026-11-02", "2027-01-03") → "Nov 2, 2026 – Jan 3, 2027"
+//   dateSpanLabel("2026-05-04", "2026-08-09") → "May 4 – Aug 9, 2026"
+//   dateSpanLabel("2026-11-02", "2026-11-02") → "Nov 2, 2026"
+// "YYYY-MM-DD" ends; "" when either is missing. Pure: no clock, no state.
+function dateSpanLabel(start, end) {
+  if (!start || !end) return "";
+  if (start === end) return monthDayLabel(start, true);
+  return `${monthDayLabel(start, start.slice(0, 4) !== end.slice(0, 4))} – ${monthDayLabel(end, true)}`;
+}
+
+// What Stats says where its numbers would be (UX audit 2026-11-01): it told
+// everyone "Generate a schedule first." — while the schedule was still
+// loading, after its read failed, and to members, who can't generate. Now as
+// Mine's empty state says it: still loading; the read failed; and only the
+// scheduler is told to generate — everyone else that nothing is published
+// (in This year, when other years' weeks are: nothing for this year yet).
+//   o: { loaded (the blob), seeded / loadFailed (the schedule's own load, as
+//        schedSync reports it), isScheduler, hasWeeks (any week at all),
+//        scope ("ytd" = This year) }
+// Pure: no clock, no state.
+function statsEmptyText(o) {
+  const x = o || {};
+  if (!x.loaded || (!x.seeded && !x.loadFailed)) return "Loading the schedule…";
+  if (x.loadFailed) return "The schedule didn't load — these numbers will show once it does.";
+  if (x.isScheduler) return "Generate a schedule first.";
+  return x.scope === "ytd" && x.hasWeeks ? "No schedule published for this year yet." : "No schedule published yet.";
+}
+
 // Where the Generate tab's period sits against the published schedule (UX
 // audit 2026-10-19), for the line under its settings:
 //   overlap — how many of the period's Mondays the schedule already holds

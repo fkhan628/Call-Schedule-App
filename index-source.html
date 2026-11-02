@@ -378,7 +378,7 @@ function CallSchedule() {
   });
   const [showBackupStats, setShowBackupStats] = useState(false); // Toggle 2nd call columns in Stats
   const [statsScope, setStatsScope] = useState("period"); // "period" | "ytd" — shared by the Counts and Vacation Days cards
-  const [statsTab, setStatsTab] = useState("fairness"); // Stats view: which table is shown (fairness|monthly|billing|app)
+  const [statsTab, setStatsTab] = useState(null); // Stats view: the table picked (counts|fairness|monthly|billing|app); null until one is — statsTabShown
   const [auditEntries, setAuditEntries] = useState([]); // Activity log rows (scheduler/admin viewer)
   const [auditLoading, setAuditLoading] = useState(false);
   const [seedDebug, setSeedDebug] = useState(null); // boundary-seed diagnostic shown in preview
@@ -8190,6 +8190,22 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     Object.values(appShifts).forEach(aid=>{ if(s[aid]!==undefined) s[aid]++; });
     return s;
   }, [appShifts, apps]);
+  // The APP table's title says what it counts (UX audit 2026-11-01, QW11): every assigned APP shift, first to last
+  // ("Jun 2, 2025 – Feb 20, 2027"); "" with none (or an old cached helpers.js — no dateSpanLabel).
+  const appStatsSpan = useMemo(() => {
+    const ds = Object.keys(appShifts).filter(d => /^\d{4}-\d\d-\d\d$/.test(d) && appStats[appShifts[d]] !== undefined).sort();
+    return ds.length && typeof dateSpanLabel === "function" ? dateSpanLabel(ds[0], ds[ds.length - 1]) : "";
+  }, [appShifts, appStats]);
+  // Stats for an APP (UX audit 2026-11-01, QW11): Counts, Monthly and Billing hold surgeons' rows only, so an APP's
+  // were always empty — an APP is offered APP (their own row marked) and Fairness (their vacation days), and Stats opens
+  // on APP until they pick; everyone else still opens on Fairness. A pick an APP can't have (a surgeon-only table) shows APP.
+  const statsForApp = !isScheduler && !!aMap[mySurgeon];
+  const statsTabShown = statsForApp ? (statsTab === "fairness" ? "fairness" : "app") : (statsTab || "fairness");
+  // What Stats says where its numbers would be (QW11 — helpers.js statsEmptyText): still loading, the read failed, or
+  // nothing is published; only the scheduler is told to generate. An old cached helpers.js: the line it always had.
+  const statsEmptyFor = (scope) => (typeof statsEmptyText === "function"
+    ? statsEmptyText({ loaded, seeded: schedSync.seeded, loadFailed: schedSync.loadFailed, isScheduler, hasWeeks: Object.keys(schedule).length > 0, scope })
+    : "Generate a schedule first.");
 
   // Vacation days per surgeon
   const vacDays = useMemo(() => {
@@ -12485,13 +12501,13 @@ ${"</"}script>${"</"}body>${"</"}html>`;
 
         {/* ════════════════ STATS ════════════════ */}
         {view==="stats" && !isPublicMode && <>
-          {/* Segmented switcher — show one table at a time instead of stacking all */}
+          {/* Segmented switcher — show one table at a time instead of stacking all. An APP's: APP and Fairness (QW11). */}
           <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:12}}>
-            {[["counts","Counts"],["fairness","Fairness"],["monthly","Monthly"],["billing","Billing"],["app","APP"]].map(([k,lbl])=>(
-              <button key={k} onClick={()=>setStatsTab(k)} style={{background: statsTab===k ? "linear-gradient(135deg,#1a6fa8,#2488c8)" : (dk?"#1e2a36":"#f4f6f8"), color: statsTab===k ? "#fff" : "#5a6a78", border: `1px solid ${statsTab===k ? "#1a6fa8" : (dk?"#2a3a48":"#d0d8e0")}`, borderRadius: 7, padding: "6px 14px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: font}}>{lbl}</button>
+            {(statsForApp ? [["app","APP"],["fairness","Fairness"]] : [["counts","Counts"],["fairness","Fairness"],["monthly","Monthly"],["billing","Billing"],["app","APP"]]).map(([k,lbl])=>(
+              <button key={k} onClick={()=>setStatsTab(k)} aria-pressed={statsTabShown===k} style={{background: statsTabShown===k ? "linear-gradient(135deg,#1a6fa8,#2488c8)" : (dk?"#1e2a36":"#f4f6f8"), color: statsTabShown===k ? "#fff" : "#5a6a78", border: `1px solid ${statsTabShown===k ? "#1a6fa8" : (dk?"#2a3a48":"#d0d8e0")}`, borderRadius: 7, padding: "6px 14px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: font}}>{lbl}</button>
             ))}
           </div>
-          {statsTab==="counts" && (<>
+          {statsTabShown==="counts" && (<>
           {/* Export — scheduler only */}
           {isScheduler && (
             <div style={{display:"flex",justifyContent:"flex-end",marginBottom:10}}>
@@ -12519,7 +12535,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           <div style={css.card}>
             <div style={css.cardT}>{statsScope==="ytd" ? <>Current Period — {ytdRange.start} → {ytdRange.end}</> : <>This Period{madePeriodText ? <> — {madePeriodText}</> : null}</>}</div>
             {!Object.values(statsScope==="ytd"?statsYTD:statsMade).some(s=>s.dc>0||s.nights>0) ? (
-              <p style={{color:"#7a8a98",fontSize:13}}>Generate a schedule first.</p>
+              <p style={{color:"#7a8a98",fontSize:13}}>{statsEmptyFor(statsScope)}</p>
             ) : (
               <div style={{overflowX:"auto"}}>
                 <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
@@ -12565,7 +12581,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           </>)}
 
           {/* Monthly Call Summary */}
-          {statsTab==="monthly" && Object.keys(schedule).length > 0 && (()=>{
+          {statsTabShown==="monthly" && Object.keys(schedule).length > 0 && (()=>{
             // Compute monthly breakdown
             // Formula: Service Week = 6, Week Night = 1, Weekend = 2
             // Whole-shift shifts (Svc Wk, Weekend) are attributed to the month the shift STARTS in
@@ -12696,7 +12712,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
 
           {/* Billing Summary — month-by-month. Scheduler/admin see all surgeons;
               each surgeon sees only their own row (tied to authenticated identity). */}
-          {statsTab==="billing" && Object.keys(schedule).length > 0 && (()=>{
+          {statsTabShown==="billing" && Object.keys(schedule).length > 0 && (()=>{
             const canSeeAllBilling = isScheduler || userProfile?.role === "admin";
             const ownBillId = userProfile?.person_id;
             // Non-privileged users are restricted to their own row by authenticated
@@ -12842,10 +12858,17 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             );
           })()}
 
-          {/* APP stats */}
-          {statsTab==="app" && (
+          {/* Monthly and Billing with no weeks to count (UX audit 2026-11-01, QW11): they drew nothing under the buttons —
+              they say why, as Counts does */}
+          {(statsTabShown==="monthly" || statsTabShown==="billing") && Object.keys(schedule).length === 0 && (
+            <div role="status" style={css.card}><p style={{color:"#7a8a98",fontSize:13,margin:0}}>{statsEmptyFor("all")}</p></div>
+          )}
+
+          {/* APP stats — the shifts counted, first to last, in the title; the viewer's own row marked (QW11): a tint and
+              "(you)", not colour alone (the dark sheet forces every td's text colour, so the mark is its own span) */}
+          {statsTabShown==="app" && (
           <div style={css.card}>
-            <div style={css.cardT}>APP Distribution</div>
+            <div style={css.cardT}>APP Distribution{appStatsSpan ? <span style={{fontWeight:400,fontSize:11,color:"#7a8a98",textTransform:"none",letterSpacing:0}}>{" — every assigned shift, "}{appStatsSpan}</span> : null}</div>
             {!Object.values(appStats).some(v=>v>0) ? (
               <p style={{color:"#7a8a98",fontSize:13}}>No APP shifts assigned yet.</p>
             ) : (
@@ -12858,12 +12881,15 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                     </tr>
                   </thead>
                   <tbody>
-                    {apps.map(a=>(
-                      <tr key={a.id} style={{borderBottom:"1px solid #e8ecf0"}}>
-                        <td style={{padding:"7px 8px"}}><AppBadge id={a.id}/></td>
-                        <td style={tdS}>{appStats[a.id]||0}</td>
+                    {apps.map(a=>{
+                      const mine = a.id === mySurgeon;
+                      return (
+                      <tr key={a.id} style={{borderBottom:"1px solid #e8ecf0",...(mine ? {background:dk?"#1e2a48":"#eaf4fb"} : {})}}>
+                        <td style={{padding:"7px 8px"}}><AppBadge id={a.id}/>{mine && <span style={{marginLeft:6,fontSize:11,fontWeight:700,color:dk?"#9ac8f0":"#1a5f8f"}}>(you)</span>}</td>
+                        <td style={{...tdS,...(mine ? {fontWeight:700} : {})}}>{appStats[a.id]||0}</td>
                       </tr>
-                    ))}
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -12871,7 +12897,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           </div>
           )}
 
-          {statsTab==="fairness" && (<>
+          {statsTabShown==="fairness" && (<>
           {/* Vacation Days — scoped to the made period (vacDaysPeriod: madeMondays, owner decision 2026-10-24) or the year */}
           <div style={css.card}>
             <div style={css.cardT}>
@@ -12927,7 +12953,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                       const days = vSrcA[a.id]?.days || 0;
                       const ranges = vSrcA[a.id]?.ranges || [];
                       const workedDA = vSrcA[a.id]?.worked || 0;
-                      if (!days && !ranges.length) return null;
+                      // an APP with no days is left out of the list, but never out of their own (QW11: it read as a blank table)
+                      if (!days && !ranges.length && a.id !== mySurgeon) return null;
                       return (
                         <tr key={a.id} style={{borderBottom:"1px solid #e8ecf0"}}>
                           <td style={{padding:"7px 8px"}}><AppBadge id={a.id}/></td>
@@ -12998,7 +13025,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           )}
 
           {/* Running Totals — 1-Year and Multi-Year, the counts as stored (2026-10-26: see buildCum); not before the blob
-              has loaded (the seeds, as above) */}
+              has loaded (the seeds, as above). Not for an APP (QW11): surgeons' totals only — it drew its headers over no rows. */}
+          {!statsForApp && <>
           {loaded && Object.values(cumStats).some(s=>s.dc>0) && (
             <div style={css.card}>
               <div style={css.cardT}>Running Totals <span style={{fontWeight:400,fontSize:11,color:"#7a8a98"}}>— counted at each publish</span></div>
@@ -13047,6 +13075,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               </div>
             </div>
           )}
+          </>}
           </>)}
         </>}
 

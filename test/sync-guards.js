@@ -2021,7 +2021,10 @@ ${chainSrc}
   const vacSrc = cardFrom('<div style={css.card}>\n            <div style={css.cardT}>\n              Vacation Days Used\n');
   const compile = (cardSrc, names, filename) => { try { return cardSrc ? { fn: vm.runInContext(`(function (env) { const { ${names} } = env; return (${jsxCJ(cardSrc)}); })`, sandbox, { filename }) } : { err: "card not found" }; } catch (ex) { return { err: String(ex).slice(0, 200) }; } };
   const CSS = { card: { k: "card" }, cardT: { k: "cardT" } };
-  const counts = compile(countsSrc, "h, css, statsScope, ytdRange, periodText, madePeriodText, stats, statsMade, statsYTD, thS, thS2, tdS, showBackupStats, surgeons, isScheduler, mySurgeon, calcRawCount", "cj-counts-card.js");
+  // (changed on purpose 2026-11-02, section DB: the card's empty line is statsEmptyFor(scope) — helpers.js statsEmptyText,
+  // run below for a loaded session; DB runs the loading / failed / member lines)
+  const counts = compile(countsSrc, "h, css, statsScope, ytdRange, periodText, madePeriodText, stats, statsMade, statsYTD, thS, thS2, tdS, showBackupStats, surgeons, isScheduler, mySurgeon, calcRawCount, statsEmptyFor", "cj-counts-card.js");
+  const emptyTextCJ = vm.runInContext('typeof statsEmptyText === "function" ? statsEmptyText : null', sandbox);
   const MEMOS = ["  const madeMondays = useMemo(", "  const madePeriodText = useMemo(", "  const statsMade = useMemo("];
   check("CJ2 the REAL Stats memos — the made ones (madeMondays, madePeriodText, statsMade, on madePeriodMondays), statsYTD, ytdRange — with tallySchedule, calcRawCount and the Generate tab's mondays memo slice and compile; the REAL Counts card (its JSX) found once and compiles",
     !!runMemo && !!chain && !!counts.fn && !!mpmSrc && MEMOS.every((m) => chainSrc.includes(m)), J({ runMemo: !!runMemo, chain: !!chain, card: counts.err || "ok", made: !!mpmSrc && MEMOS.filter((m) => chainSrc && chainSrc.includes(m)).length }));
@@ -2038,7 +2041,8 @@ ${chainSrc}
     if (r.err || !counts.fn) return { err: r.err || counts.err };
     const { m, mondays } = r;
     const tree = tryRun(() => counts.fn({ h: hh, css: CSS, statsScope: o.scope || "period", ytdRange: m.ytdRange, periodText: ptReal ? ptReal(mondays) : null, madePeriodText: m.madePeriodText, stats: m.stats, statsMade: m.statsMade, statsYTD: m.statsYTD,
-      thS: {}, thS2: {}, tdS: {}, showBackupStats: !!o.second, surgeons: SURG, isScheduler: !o.member, mySurgeon: o.member || "s6", calcRawCount: m.calcRawCount }));
+      thS: {}, thS2: {}, tdS: {}, showBackupStats: !!o.second, surgeons: SURG, isScheduler: !o.member, mySurgeon: o.member || "s6", calcRawCount: m.calcRawCount,
+      statsEmptyFor: (scope) => (emptyTextCJ ? emptyTextCJ({ loaded: true, seeded: true, loadFailed: false, isScheduler: !o.member, hasWeeks: Object.keys(o.schedule || fixture).length > 0, scope }) : "no statsEmptyText") }));
     if (typeof tree === "string") return { err: tree };
     const nodes = all(tree);
     const title = textOf(nodes.find((x) => x.props.style === CSS.cardT));
@@ -19241,6 +19245,12 @@ console.log("\nAJ. owner decisions 2026-10-13");
 //       a tap outside it (not on it, not on the bell — the bell's tap is its own toggle) or Escape closes it (Escape
 //       hands focus back to the bell); opening it focuses it; its listeners go when it closes. The Requests person-group
 //       headers (pending and reviewed) are <button aria-expanded>, with the same toggle
+//   DB2 (QW11) Stats for an APP and honest empty lines: helpers.js statsEmptyText and the component's statsForApp /
+//       statsTabShown / statsEmptyFor, executed — an APP opens on APP and is offered APP and Fairness, everyone else as
+//       before; "Loading the schedule…" / "The schedule didn't load — …" / "Generate a schedule first." for the
+//       scheduler only / "No schedule published yet." for everyone else. Rendered: the sub-tab bar (aria-pressed), the
+//       APP table (its span in the title, the viewer's row tinted with "(you)" at ≥ 4.5:1 in both modes), Monthly and
+//       Billing's status card with no weeks, no Running Totals for an APP, and an APP's own 0-day vacation row
 console.log("\nDB. Quick wins: the bell, Stats for APPs and members, \"This year\", Mine's dates everywhere, a member's Monthly CSV");
 {
   const nsrcDB = src.replace(/\r\n/g, "\n"), JDB = JSON.stringify;
@@ -19319,6 +19329,7 @@ console.log("\nDB. Quick wins: the bell, Stats for APPs and members, \"This year
   const ratioDB = (a, b) => { const x = lumDB(a), y = lumDB(b); return Math.round((Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05) * 100) / 100; };
   // a JSX slice (one element, comments dropped) compiled as a function of env that returns its h() tree
   const viewDB = (names, jsx, filename) => { if (!jsx) return null; let body; try { body = "return " + jsxDB(stripDB(jsx)) + ";"; } catch (ex) { console.log("  (DB jsx) " + filename + ": " + String(ex).slice(0, 160)); return null; } return mkDB(names, body, filename); };
+  const okTree = (t) => !!t && typeof t === "object";
 
   // ── DB1 (QW8) — the bell's panel and the Requests group headers ──
   {
@@ -19338,7 +19349,6 @@ console.log("\nDB. Quick wins: the bell, Stats for APPs and members, \"This year
       return { tree, calls };
     };
     const lightP = drawPanel({ notes: NOTES }), darkP = drawPanel({ notes: NOTES, dk: true }), emptyL = drawPanel({ notes: [] }), emptyD = drawPanel({ notes: [], dk: true });
-    const okTree = (t) => !!t && typeof t === "object";
     const nodesL = okTree(lightP.tree) ? allDB(lightP.tree) : [], nodesD = okTree(darkP.tree) ? allDB(darkP.tree) : [];
     const titleOf = (nodes) => nodes.find((x) => x.tag === "span" && x.kids.length === 1 && x.kids[0] === "Notifications");
     const closeOf = (nodes) => nodes.find((x) => x.tag === "button" && x.props["aria-label"] === "Close notifications");
@@ -19460,6 +19470,114 @@ console.log("\nDB. Quick wins: the bell, Stats for APPs and members, \"This year
         && JDB(db1c.pClosed.chips) === JDB(["Nov 9–13", "Dec 21"]) && countDB('<div onClick={()=>toggleVacGroup("p_"') === 0 && countDB('<div onClick={()=>toggleVacGroup("r_"') === 0
         && countDB('onClick={()=>toggleVacGroup("p_"+pid)}') === 1 && countDB('onClick={()=>toggleVacGroup("r_"+pid)}') === 1,
       JDB(db1c).slice(0, 900));
+  }
+  // ── DB2 (QW11) — Stats for APPs; honest loading / failed / empty lines ──
+  {
+    const SET = vm.runInContext('typeof statsEmptyText === "function" ? statsEmptyText : null', sandbox);
+    const seLines = SET ? {
+      noBlob: SET({ loaded: false }), noArg: SET(), loading: SET({ loaded: true, seeded: false, loadFailed: false }), failed: SET({ loaded: true, seeded: false, loadFailed: true }),
+      sched: SET({ loaded: true, seeded: true, isScheduler: true, hasWeeks: false }), schedYtd: SET({ loaded: true, seeded: true, isScheduler: true, hasWeeks: true, scope: "ytd" }),
+      member: SET({ loaded: true, seeded: true, isScheduler: false, hasWeeks: false }), memberYtd: SET({ loaded: true, seeded: true, isScheduler: false, hasWeeks: true, scope: "ytd" }),
+      memberYtdNone: SET({ loaded: true, seeded: true, isScheduler: false, hasWeeks: false, scope: "ytd" }), memberAll: SET({ loaded: true, seeded: true, isScheduler: false, hasWeeks: true, scope: "all" }),
+    } : null;
+    const LOADING = "Loading the schedule…", FAILED = "The schedule didn't load — these numbers will show once it does.", GEN = "Generate a schedule first.", NONE = "No schedule published yet.";
+    check("DB2 helpers.js statsEmptyText (executed): \"Loading the schedule…\" until the blob and the schedule's own read are in; \"The schedule didn't load — these numbers will show once it does.\" after a failed read; \"Generate a schedule first.\" for the scheduler only; a member \"No schedule published yet.\" (This year with other years' weeks: \"…for this year yet.\") — no member line says generate",
+      !!seLines && seLines.noBlob === LOADING && seLines.noArg === LOADING && seLines.loading === LOADING && seLines.failed === FAILED && seLines.sched === GEN && seLines.schedYtd === GEN
+        && seLines.member === NONE && seLines.memberYtd === "No schedule published for this year yet." && seLines.memberYtdNone === NONE && seLines.memberAll === NONE
+        && ["member", "memberYtd", "memberYtdNone", "memberAll", "loading", "failed"].every((k) => !/generate/i.test(seLines[k])), JDB(seLines));
+
+    // the component's own wiring: statsForApp / statsTabShown / statsEmptyFor, sliced and run
+    const WIRE = cutDB("  const statsForApp = ", '\n    : "Generate a schedule first.");', true);
+    const wireOf = mkDB("isScheduler, aMap, mySurgeon, statsTab, loaded, schedSync, schedule", WIRE && WIRE + '\n    : "Generate a schedule first.");\n  return { statsForApp, statsTabShown, statsEmptyFor };', "db2-wire.js");
+    const AMAP = { a1: { id: "a1", name: "MA" }, a2: { id: "a2", name: "SJ" }, a3: { id: "a3", name: "MS" } };
+    const W2 = (who, statsTab, o = {}) => wireOf ? tryDB(() => wireOf(Object.assign({ isScheduler: who === "s6", aMap: AMAP, mySurgeon: who, statsTab, loaded: true, schedSync: { seeded: true, loadFailed: false }, schedule: { "2026-11-02": {} } }, o))) : null;
+    const shown = (who, tab) => { const w = W2(who, tab); return w && typeof w === "object" ? (w.statsForApp ? "APP:" : "") + w.statsTabShown : w; };
+    const db2a = wireOf ? {
+      app: [null, "fairness", "app", "counts", "monthly", "billing"].map((t) => shown("a1", t)), lead: shown("a3", null),
+      member: [null, "counts", "monthly", "billing", "app", "fairness"].map((t) => shown("s3", t)), sched: [shown("s6", null), shown("s6", "billing")], admin: shown("admin", null), none: shown("", null),
+    } : null;
+    check("DB2 the REAL statsForApp / statsTabShown (executed): an APP (MA; MS, the APP lead, too) opens on APP and is offered APP and Fairness — a surgeon-only pick shows APP; a member, the scheduler, the admin and no one signed in open on Fairness as before and see the table they pick",
+      !!db2a && JDB(db2a.app) === JDB(["APP:app", "APP:fairness", "APP:app", "APP:app", "APP:app", "APP:app"]) && db2a.lead === "APP:app"
+        && JDB(db2a.member) === JDB(["fairness", "counts", "monthly", "billing", "app", "fairness"]) && JDB(db2a.sched) === JDB(["fairness", "billing"]) && db2a.admin === "fairness" && db2a.none === "fairness",
+      JDB(db2a));
+    const ef = (who, o, scope) => { const w = W2(who, null, o); return w && typeof w === "object" ? w.statsEmptyFor(scope) : w; };
+    const db2b = wireOf ? {
+      blob: ef("s3", { loaded: false }, "period"), loading: ef("s3", { schedSync: { seeded: false, loadFailed: false }, schedule: {} }, "period"), failed: ef("s3", { schedSync: { seeded: false, loadFailed: true }, schedule: {} }, "period"),
+      memberNone: ef("s3", { schedule: {} }, "period"), memberYtd: ef("s3", {}, "ytd"), schedNone: ef("s6", { schedule: {} }, "period"), appNone: ef("a1", { schedule: {} }, "all"),
+    } : null;
+    check("DB2 the REAL statsEmptyFor (executed, on the app's loaded / schedSync / schedule): loading → \"Loading the schedule…\", a failed read → the didn't-load line, a member or an APP with nothing published → \"No schedule published yet.\" (This year with weeks: \"…for this year yet.\"), the scheduler → \"Generate a schedule first.\"",
+      !!db2b && db2b.blob === LOADING && db2b.loading === LOADING && db2b.failed === FAILED && db2b.memberNone === NONE && db2b.memberYtd === "No schedule published for this year yet." && db2b.schedNone === GEN && db2b.appNone === NONE,
+      JDB(db2b));
+
+    // the sub-tab bar, rendered
+    const BAR = cutDB('<div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:12}}>\n            {(statsForApp ?', "\n          </div>", true);
+    const barOf = viewDB("h, statsForApp, statsTabShown, setStatsTab, dk, font", BAR && BAR + "\n          </div>", "db2-bar.js");
+    const bar = (statsForApp, statsTabShown) => {
+      const picked = [];
+      const t = barOf ? tryDB(() => barOf({ h: hDB, statsForApp, statsTabShown, setStatsTab: (k) => picked.push(k), dk: false, font: "F" })) : "not found";
+      if (!okTree(t)) return { err: t };
+      const bs = allDB(t).filter((x) => x.tag === "button");
+      bs.forEach((b) => b.props.onClick());
+      return { labels: bs.map((b) => textDB(b) + (b.props["aria-pressed"] ? "*" : "")), picked };
+    };
+    const db2c = { app: bar(true, "app"), appFair: bar(true, "fairness"), member: bar(false, "fairness"), sched: bar(false, "counts") };
+    check("DB2 the sub-tab bar (the real JSX, rendered): an APP's is APP, Fairness — the shown one aria-pressed; everyone else's is Counts, Fairness, Monthly, Billing, APP as before; each button picks its own table",
+      JDB(db2c.app) === JDB({ labels: ["APP*", "Fairness"], picked: ["app", "fairness"] }) && JDB(db2c.appFair) === JDB({ labels: ["APP", "Fairness*"], picked: ["app", "fairness"] })
+        && JDB(db2c.member) === JDB({ labels: ["Counts", "Fairness*", "Monthly", "Billing", "APP"], picked: ["counts", "fairness", "monthly", "billing", "app"] }) && JDB(db2c.sched.labels) === JDB(["Counts*", "Fairness", "Monthly", "Billing", "APP"]),
+      JDB(db2c));
+
+    // the APP card, rendered, and the span memo it shows
+    const SPAN = cutDB("  const appStatsSpan = useMemo(() => {", "\n  }, [appShifts, appStats]);", true);
+    const spanOf = mkDB("appShifts, appStats, useMemo", SPAN && SPAN + "\n  }, [appShifts, appStats]);\n  return appStatsSpan;", "db2-span.js");
+    const APPS = [{ id: "a1", name: "MA" }, { id: "a2", name: "SJ" }, { id: "a3", name: "MS" }];
+    const SHIFTS = { "2026-11-05": "a1", "2025-06-02": "a2", "2027-02-20": "a3", "2026-11-06": "a1", "2024-01-01": "zz9", "note": "a1" };
+    const STATS = { a1: 2, a2: 1, a3: 1 };
+    const span1 = spanOf ? tryDB(() => spanOf({ appShifts: SHIFTS, appStats: STATS, useMemo: (f) => f() })) : null, span0 = spanOf ? tryDB(() => spanOf({ appShifts: {}, appStats: { a1: 0 }, useMemo: (f) => f() })) : null;
+    const CARD = cutDB('<div style={css.card}>\n            <div style={css.cardT}>APP Distribution', "\n          </div>", true);
+    const cardOf = viewDB("h, css, appStatsSpan, appStats, thS, tdS, apps, mySurgeon, dk", CARD && CARD + "\n          </div>", "db2-app-card.js");
+    const CSSDB = { card: { k: "card" }, cardT: { k: "cardT" } };
+    const appCard = (mySurgeon, dk) => {
+      const t = cardOf ? tryDB(() => cardOf({ h: hDB, css: CSSDB, appStatsSpan: typeof span1 === "string" ? span1 : "", appStats: STATS, thS: {}, tdS: {}, apps: APPS, mySurgeon, dk })) : "not found";
+      if (!okTree(t)) return { err: t };
+      const n = allDB(t), rowsA = n.filter((x) => x.tag === "tr" && x.props.key);
+      return { title: textDB(n.find((x) => x.props.style === CSSDB.cardT)), rows: rowsA.map((r) => { const you = allDB(r).find((x) => x.tag === "span" && textDB(x) === "(you)");
+        return [r.props.key, textDB(r.kids[1]), r.props.style.background || null, you ? [you.props.style.color, ratioDB(you.props.style.color, r.props.style.background)] : null]; }) };
+    };
+    const db2d = { sj: appCard("a2", false), sjDark: appCard("a2", true), sched: appCard("s6", false) };
+    const sjRow = (c) => (c.rows || []).find((r) => r[0] === "a2");
+    check("DB2 the APP table (the real JSX and appStatsSpan, rendered): its title names what it counts — \"APP Distribution — every assigned shift, Jun 2, 2025 – Feb 20, 2027\" (first to last; a date not an APP's, a key not a date: left out; none → no span); the viewer's own row is tinted and says \"(you)\" at ≥ 4.5:1 in both modes; nobody else's is, and the scheduler's view marks none; the counts are unchanged",
+      span1 === "Jun 2, 2025 – Feb 20, 2027" && span0 === "" && db2d.sj.title === "APP Distribution — every assigned shift, Jun 2, 2025 – Feb 20, 2027"
+        && JDB((db2d.sj.rows || []).map((r) => r[0] + " " + r[1])) === JDB(["a1 2", "a2 1", "a3 1"]) && !!sjRow(db2d.sj) && sjRow(db2d.sj)[2] === "#eaf4fb" && sjRow(db2d.sj)[3][1] >= 4.5
+        && !!sjRow(db2d.sjDark) && sjRow(db2d.sjDark)[2] === "#1e2a48" && sjRow(db2d.sjDark)[3][1] >= 4.5
+        && (db2d.sj.rows || []).filter((r) => r[0] !== "a2").every((r) => r[2] === null && r[3] === null) && (db2d.sched.rows || []).length === 3 && db2d.sched.rows.every((r) => r[2] === null && r[3] === null),
+      JDB({ span1, span0, db2d }));
+
+    // Monthly and Billing with no weeks: the status card
+    const EMPTY = cutDB('{(statsTabShown==="monthly" || statsTabShown==="billing") && Object.keys(schedule).length === 0 && (', "\n          )}", true);
+    const emptyOf = EMPTY ? viewDB("h, statsTabShown, schedule, css, statsEmptyFor", EMPTY.slice(1) + "\n          )", "db2-empty.js") : null;
+    const emptyCard = (tab, schedule) => { const t = emptyOf ? tryDB(() => emptyOf({ h: hDB, statsTabShown: tab, schedule, css: CSSDB, statsEmptyFor: (scope) => "LINE:" + scope })) : "not found"; return okTree(t) ? [t.props.role, textDB(t)] : t; };
+    const db2e = { monthly: emptyCard("monthly", {}), billing: emptyCard("billing", {}), counts: emptyCard("counts", {}), app: emptyCard("app", {}), withWeeks: emptyCard("monthly", { "2026-11-02": {} }) };
+    check("DB2 Monthly and Billing with no weeks (the real JSX, rendered) show a status card with statsEmptyFor(\"all\") where they drew nothing; with weeks, and on the other tables, it isn't there",
+      JDB(db2e.monthly) === JDB(["status", "LINE:all"]) && JDB(db2e.billing) === JDB(["status", "LINE:all"]) && db2e.counts === false && db2e.app === false && db2e.withWeeks === false, JDB(db2e));
+
+    // Fairness for an APP: no Running Totals; their own vacation row even at 0 days
+    const RT = cutDB("{!statsForApp && <>\n          {loaded && Object.values(cumStats).some(s=>s.dc>0) && (", "\n          </>}", true);
+    const rtOf = RT ? viewDB("h, statsForApp, loaded, cumStats, cum1yr, css, thS2, tdS, showBackupStats, surgeons, isScheduler, mySurgeon, calcTotal", RT.slice(1) + "\n          </>", "db2-running.js") : null;
+    const SURG2 = [{ id: "s1", name: "DJA" }, { id: "s3", name: "RPC" }];
+    const CUM = { s1: { dc: 3, nights: 9, wknd: 2, off: 1 }, s3: { dc: 2, nights: 8, wknd: 3, off: 0 } };
+    const running = (statsForApp, who) => { const t = rtOf ? tryDB(() => rtOf({ h: hDB, statsForApp, loaded: true, cumStats: CUM, cum1yr: CUM, css: CSSDB, thS2: {}, tdS: {}, showBackupStats: false, surgeons: SURG2, isScheduler: who === "s6", mySurgeon: who, calcTotal: (c) => (c.dc || 0) * 6 + (c.nights || 0) + (c.wknd || 0) * 2 })) : "not found";
+      if (t === false) return "none"; if (!okTree(t)) return t; return allDB(t).filter((x) => x.tag === "tr" && x.props.key).map((r) => r.props.key).join(","); };
+    const db2f = { app: running(true, "a1"), member: running(false, "s3"), sched: running(false, "s6") };
+    const VAC = cutDB('<div style={css.card}>\n            <div style={css.cardT}>\n              Vacation Days Used\n', "\n          </div>", true);
+    const vacOf = viewDB("h, css, statsScope, vacDaysYTD, vacDaysPeriod, setStatsScope, font, mono, thS, tdS, surgeons, apps, isScheduler, mySurgeon, todayStr", VAC && VAC + "\n          </div>", "db2-vac.js");
+    const VOUT = { s1: { days: 3, ranges: [["2026-11-17", "2026-11-19"]] }, s3: { days: 0, ranges: [] }, a1: { days: 0, ranges: [] }, a2: { days: 2, ranges: [["2026-12-01", "2026-12-02"]] } };
+    const vacRows = (who, sched) => { const t = vacOf ? tryDB(() => vacOf({ h: hDB, css: CSSDB, statsScope: "period", vacDaysYTD: { out: {}, start: "", end: "" }, vacDaysPeriod: { out: VOUT, pStart: "2026-11-16", pEnd: "2027-02-21", hasPeriod: true },
+      setStatsScope() {}, font: "F", mono: "M", thS: {}, tdS: {}, surgeons: SURG2, apps: APPS.slice(0, 2), isScheduler: sched, mySurgeon: who, todayStr: "2026-11-02" })) : "not found";
+      if (!okTree(t)) return t; const tb = allDB(t).find((x) => x.tag === "tbody"); return tb ? tb.kids.map((r) => r.props.key + " " + textDB(r.kids[1])).join(" · ") : "no table"; };
+    const db2g = { appMA: vacRows("a1", false), sched: vacRows("s6", true), member: vacRows("s3", false) };
+    check("DB2 Fairness for an APP (the real JSX, rendered): no Running Totals card (surgeons' totals only — it drew two tables' headers over no rows), a member and the scheduler still see it as before; Vacation Days Used lists the APP's own row even at 0 days, while the scheduler's list still leaves an APP with none out",
+      db2f.app === "none" && db2f.member === "s3,s3" && db2f.sched === "s1,s3,s1,s3" && db2g.appMA === "a1 0" && db2g.sched === "s1 3 · s3 0 · a2 2" && db2g.member === "s3 0",
+      JDB({ db2f, db2g }));
   }
 }
 
