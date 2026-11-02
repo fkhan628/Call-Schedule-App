@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.11.01c";
+    var APP_VERSION = "2026.11.02a";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -8063,7 +8063,22 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           note: "5p–7a"
         }];
         const sun = fmt(addD(mon, 6));
-        if (!holCov[sun]) d[sun] = [...(d[sun] || []), {
+        const ho = wk.handoffs && typeof weekHolders === "function" ? weekHolders(mStr, wk).days[6].handoff : null;
+        if (ho) d[sun] = [...(d[sun] || []), {
+          type: pfx + "Wknd",
+          surgeon: ho.from,
+          cls,
+          note: "7a–7a",
+          hoPart: "from",
+          hoAt: ho.at
+        }, {
+          type: pfx + "Wknd",
+          surgeon: ho.to,
+          cls,
+          note: "7a–7a",
+          hoPart: "to",
+          hoAt: ho.at
+        }];else if (!holCov[sun]) d[sun] = [...(d[sun] || []), {
           type: pfx + "Wknd",
           surgeon: wkndS,
           cls,
@@ -8179,7 +8194,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       holiday: null
     };
     todayEntries.forEach(e => {
-      var _sMap$e$surgeon, _sMap$e$surgeon2, _sMap$e$surgeon3, _sMap$e$surgeon4, _aMap$e$appId;
+      var _sMap$e$surgeon, _sMap$e$surgeon2, _sMap$e$surgeon3, _sMap$e$surgeon4, _sMap$e$surgeon5, _aMap$e$appId;
       if (e.type === "Holiday") info.holiday = {
         who: ((_sMap$e$surgeon = sMap[e.surgeon]) === null || _sMap$e$surgeon === void 0 ? void 0 : _sMap$e$surgeon.name) || null,
         label: e.holType === "swap" ? e.holName || "Coverage" : holidayTitleName({
@@ -8190,7 +8205,11 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       };
       if (e.type === "Svc" || e.type === "B-Svc") info.dayCall = ((_sMap$e$surgeon2 = sMap[e.surgeon]) === null || _sMap$e$surgeon2 === void 0 ? void 0 : _sMap$e$surgeon2.name) || null;
       if (e.type === "Ngt" || e.type === "B-Ngt") info.night = ((_sMap$e$surgeon3 = sMap[e.surgeon]) === null || _sMap$e$surgeon3 === void 0 ? void 0 : _sMap$e$surgeon3.name) || null;
-      if (e.type === "Wknd" || e.type === "B-Wknd") info.weekend = ((_sMap$e$surgeon4 = sMap[e.surgeon]) === null || _sMap$e$surgeon4 === void 0 ? void 0 : _sMap$e$surgeon4.name) || null;
+      if ((e.type === "Wknd" || e.type === "B-Wknd") && e.hoPart !== "to") info.weekend = ((_sMap$e$surgeon4 = sMap[e.surgeon]) === null || _sMap$e$surgeon4 === void 0 ? void 0 : _sMap$e$surgeon4.name) || null;
+      if ((e.type === "Wknd" || e.type === "B-Wknd") && e.hoPart === "to") info.weekendHandoff = {
+        to: ((_sMap$e$surgeon5 = sMap[e.surgeon]) === null || _sMap$e$surgeon5 === void 0 ? void 0 : _sMap$e$surgeon5.name) || null,
+        at: typeof hourLabel === "function" ? hourLabel(parseInt(e.hoAt, 10)) : e.hoAt
+      };
       if (e.type === "APP") info.app = ((_aMap$e$appId = aMap[e.appId]) === null || _aMap$e$appId === void 0 ? void 0 : _aMap$e$appId.name) || null;
       if (e.type === "Fierce") info.fierce = true;
       if (e.type === "FierceBkp") info.fierceBkp = true;
@@ -8201,7 +8220,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   const callNow = typeof onCallNow === "function" ? onCallNow(schedule, new Date()) : null;
   const callNowName = callNow ? ((_sMap$callNow$sid = sMap[callNow.sid]) === null || _sMap$callNow$sid === void 0 ? void 0 : _sMap$callNow$sid.name) || null : null;
   const callNowLine = callNowName && typeof onCallNowText === "function" ? onCallNowText(callNow, callNowName) : null;
-  const nowWindowKey = () => typeof onCallWindowKey === "function" ? onCallWindowKey(new Date()) : "";
+  const nowWindowKey = () => typeof onCallWindowKey === "function" ? onCallWindowKey(new Date(), scheduleRef.current) : "";
   const [, setNowWindow] = useState(nowWindowKey);
   useEffect(() => {
     const t = setInterval(() => setNowWindow(nowWindowKey()), 60000);
@@ -8218,7 +8237,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     if (todayCall.holiday) msg += `${todayCall.holiday.emoji} ${todayCall.holiday.label} 24h (7a–7a): ${todayCall.holiday.who || "Unassigned"}\n`;
     if (todayCall.dayCall) msg += `🏥 Service Week: ${todayCall.dayCall}\n`;
     if (todayCall.night) msg += `🌙 Night (5p–7a): ${todayCall.night}\n`;
-    if (todayCall.weekend) msg += `🌗 Weekend: ${todayCall.weekend}\n`;
+    if (todayCall.weekend && todayCall.weekendHandoff) msg += `🌗 Weekend (7a–${todayCall.weekendHandoff.at}): ${todayCall.weekend}\n🌗 Weekend (${todayCall.weekendHandoff.at}–Mon 7a): ${todayCall.weekendHandoff.to || "?"}\n`;else if (todayCall.weekend) msg += `🌗 Weekend: ${todayCall.weekend}\n`;
     if (todayCall.app) msg += `👩‍⚕️ APP (${appTimeLabel}): ${todayCall.app}\n`;
     if (todayCall.fierce) msg += `⚡ Fierce Primary Week\n`;
     if (todayCall.fierceBkp) msg += `🛡 Fierce Backup Week\n`;
@@ -12594,7 +12613,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           marginBottom: 1
         }
       }, day), entries.filter(e => e.type !== "APP").map((e, j) => {
-        var _sMap$e$surgeon5, _sMap$e$surgeon6, _sMap$e$surgeon7;
+        var _sMap$e$surgeon6, _sMap$e$surgeon7, _sMap$e$surgeon8;
         const isB = e.cls === "backup";
         const isD = e.type.includes("Svc");
         const isW = e.type.includes("Wknd");
@@ -12625,10 +12644,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           }
         }, label), " ", React.createElement("span", {
           style: {
-            color: surgeonColors((_sMap$e$surgeon5 = sMap[e.surgeon]) === null || _sMap$e$surgeon5 === void 0 ? void 0 : _sMap$e$surgeon5.name, (_sMap$e$surgeon6 = sMap[e.surgeon]) === null || _sMap$e$surgeon6 === void 0 ? void 0 : _sMap$e$surgeon6.idx).tx || "#4a5868",
+            color: surgeonColors((_sMap$e$surgeon6 = sMap[e.surgeon]) === null || _sMap$e$surgeon6 === void 0 ? void 0 : _sMap$e$surgeon6.name, (_sMap$e$surgeon7 = sMap[e.surgeon]) === null || _sMap$e$surgeon7 === void 0 ? void 0 : _sMap$e$surgeon7.idx).tx || "#4a5868",
             fontWeight: 500
           }
-        }, ((_sMap$e$surgeon7 = sMap[e.surgeon]) === null || _sMap$e$surgeon7 === void 0 ? void 0 : _sMap$e$surgeon7.name) || "?"));
+        }, ((_sMap$e$surgeon8 = sMap[e.surgeon]) === null || _sMap$e$surgeon8 === void 0 ? void 0 : _sMap$e$surgeon8.name) || "?"));
       }), entries.filter(e => e.type === "APP").map((e, j) => {
         var _aMap$e$appId2;
         return React.createElement("div", {
@@ -13391,7 +13410,39 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       fontWeight: 700,
       color: "#1a2a3a"
     }
-  }, todayCall.night))), todayCall.weekend && React.createElement("div", {
+  }, todayCall.night))), todayCall.weekend && (todayCall.weekendHandoff ? (() => {
+    const ho = todayCall.weekendHandoff;
+    return [[`Weekend · 7a–${ho.at}`, todayCall.weekend], [`Weekend · ${ho.at}–Mon 7a`, ho.to || "?"]].map(([lab, who]) => React.createElement("div", {
+      key: lab,
+      style: {
+        display: "flex",
+        alignItems: "center",
+        gap: 6,
+        padding: "6px 12px",
+        background: "#faf8f0",
+        borderRadius: 8,
+        border: "1px solid #e0d8c0"
+      }
+    }, React.createElement("span", {
+      style: {
+        fontSize: 16
+      }
+    }, "🌗"), React.createElement("div", null, React.createElement("div", {
+      style: {
+        fontSize: 10,
+        color: "#7a6030",
+        fontWeight: 600,
+        textTransform: "uppercase",
+        letterSpacing: 0.5
+      }
+    }, lab), React.createElement("div", {
+      style: {
+        fontSize: 15,
+        fontWeight: 700,
+        color: "#1a2a3a"
+      }
+    }, who))));
+  })() : React.createElement("div", {
     style: {
       display: "flex",
       alignItems: "center",
@@ -13419,7 +13470,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       fontWeight: 700,
       color: "#1a2a3a"
     }
-  }, todayCall.weekend))), todayCall.app && (() => {
+  }, todayCall.weekend)))), todayCall.app && (() => {
     const dow = new Date().getDay();
     const appTimeLabel = dow === 0 || dow === 6 ? "APP 7a–7a" : "APP 5p–7a";
     return React.createElement("div", {
@@ -14299,7 +14350,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           letterSpacing: 0.5
         }
       }, "F·BKP")), entries.filter(e => {
-        var _sMap$e$surgeon8;
+        var _sMap$e$surgeon9;
         if (e.type === "Fierce" || e.type === "FierceBkp" || e.type === "APP" || e.type === "Holiday" || e.type === "Silvis") return false;
         const isD = e.type.includes("Svc");
         const isW = e.type.includes("Wknd");
@@ -14307,16 +14358,18 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         if (isW && !calFilters.wknd) return false;
         if (!isD && !isW && !calFilters.night) return false;
         if (sf && e.surgeon !== sf) return false;
-        if (calDeptFilter && !(SURGEON_DEPTS[(_sMap$e$surgeon8 = sMap[e.surgeon]) === null || _sMap$e$surgeon8 === void 0 ? void 0 : _sMap$e$surgeon8.name] || []).includes(calDeptFilter)) return false;
+        if (calDeptFilter && !(SURGEON_DEPTS[(_sMap$e$surgeon9 = sMap[e.surgeon]) === null || _sMap$e$surgeon9 === void 0 ? void 0 : _sMap$e$surgeon9.name] || []).includes(calDeptFilter)) return false;
         return true;
       }).map((e, j) => {
-        var _sMap$e$surgeon9, _sMap$e$surgeon0, _sMap$e$surgeon1;
+        var _sMap$e$surgeon0, _sMap$e$surgeon1, _sMap$e$surgeon10;
         const isB = e.cls === "backup";
         const isD = e.type.includes("Svc");
         const isW = e.type.includes("Wknd");
         const label = isD ? "S" : isW ? "W" : "N";
         const color = isD ? "#3080a8" : isW ? "#908050" : "#6850a0";
         const highlighted = sf && e.surgeon === sf;
+        const hoHour = e.hoPart ? typeof hourLabel === "function" ? hourLabel(parseInt(e.hoAt, 10)) : e.hoAt : "";
+        const hoHrs = e.hoPart === "from" ? `7a–${hoHour}` : e.hoPart === "to" ? `${hoHour}–7a` : null;
         return React.createElement("div", {
           key: j,
           style: {
@@ -14342,15 +14395,21 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           }
         }, label), " ", React.createElement("span", {
           style: {
-            color: surgeonColors((_sMap$e$surgeon9 = sMap[e.surgeon]) === null || _sMap$e$surgeon9 === void 0 ? void 0 : _sMap$e$surgeon9.name, (_sMap$e$surgeon0 = sMap[e.surgeon]) === null || _sMap$e$surgeon0 === void 0 ? void 0 : _sMap$e$surgeon0.idx).tx || "#4a5868",
+            color: surgeonColors((_sMap$e$surgeon0 = sMap[e.surgeon]) === null || _sMap$e$surgeon0 === void 0 ? void 0 : _sMap$e$surgeon0.name, (_sMap$e$surgeon1 = sMap[e.surgeon]) === null || _sMap$e$surgeon1 === void 0 ? void 0 : _sMap$e$surgeon1.idx).tx || "#4a5868",
             fontWeight: highlighted ? 700 : 400
           }
-        }, ((_sMap$e$surgeon1 = sMap[e.surgeon]) === null || _sMap$e$surgeon1 === void 0 ? void 0 : _sMap$e$surgeon1.name) || "?"));
+        }, ((_sMap$e$surgeon10 = sMap[e.surgeon]) === null || _sMap$e$surgeon10 === void 0 ? void 0 : _sMap$e$surgeon10.name) || "?"), hoHrs && React.createElement(React.Fragment, null, " ", React.createElement("span", {
+          style: {
+            color: "#7a6030",
+            fontSize: 8,
+            whiteSpace: "nowrap"
+          }
+        }, hoHrs)));
       }), entries.filter(e => e.type === "Holiday").filter(e => !sf || e.surgeon === sf).filter(e => {
-        var _sMap$e$surgeon10;
-        return !calDeptFilter || (SURGEON_DEPTS[(_sMap$e$surgeon10 = sMap[e.surgeon]) === null || _sMap$e$surgeon10 === void 0 ? void 0 : _sMap$e$surgeon10.name] || []).includes(calDeptFilter);
+        var _sMap$e$surgeon11;
+        return !calDeptFilter || (SURGEON_DEPTS[(_sMap$e$surgeon11 = sMap[e.surgeon]) === null || _sMap$e$surgeon11 === void 0 ? void 0 : _sMap$e$surgeon11.name] || []).includes(calDeptFilter);
       }).map((e, j) => {
-        var _sMap$e$surgeon11, _sMap$e$surgeon12, _sMap$e$surgeon13;
+        var _sMap$e$surgeon12, _sMap$e$surgeon13, _sMap$e$surgeon14;
         return React.createElement("div", {
           key: "hol" + j,
           style: {
@@ -14370,9 +14429,9 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           title: e.holName || ""
         }, holidayEmoji(e.holName)), " ", React.createElement("span", {
           style: {
-            color: surgeonColors((_sMap$e$surgeon11 = sMap[e.surgeon]) === null || _sMap$e$surgeon11 === void 0 ? void 0 : _sMap$e$surgeon11.name, (_sMap$e$surgeon12 = sMap[e.surgeon]) === null || _sMap$e$surgeon12 === void 0 ? void 0 : _sMap$e$surgeon12.idx).tx || "#4a5868"
+            color: surgeonColors((_sMap$e$surgeon12 = sMap[e.surgeon]) === null || _sMap$e$surgeon12 === void 0 ? void 0 : _sMap$e$surgeon12.name, (_sMap$e$surgeon13 = sMap[e.surgeon]) === null || _sMap$e$surgeon13 === void 0 ? void 0 : _sMap$e$surgeon13.idx).tx || "#4a5868"
           }
-        }, ((_sMap$e$surgeon13 = sMap[e.surgeon]) === null || _sMap$e$surgeon13 === void 0 ? void 0 : _sMap$e$surgeon13.name) || "?"), " ", React.createElement("span", {
+        }, ((_sMap$e$surgeon14 = sMap[e.surgeon]) === null || _sMap$e$surgeon14 === void 0 ? void 0 : _sMap$e$surgeon14.name) || "?"), " ", React.createElement("span", {
           style: {
             color: "#a07030",
             fontSize: 8
@@ -17034,14 +17093,17 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           shiftKey: sk
         });
       });
+      const ho = hw.days[6].handoff,
+        hoAt = ho ? hourLabel(ho.hour) : "";
       if (((_wk$nights18 = wk.nights) === null || _wk$nights18 === void 0 ? void 0 : _wk$nights18.wknd) === myId) {
         const legs = [hw.days[4], hw.days[6]];
         const mine = d => (d.i === 4 ? d.wkndFri : d.wkndSun) === myId;
         const notes = legs.filter(d => !mine(d) && !(d.cover && d.cover.sid === myId)).map(d => coverNote(d, d.cover ? d.cover.sid : null, nameOf));
+        if (ho) notes.push(`${dayMonthLabel(hw.days[6].ds)} ${hoAt}–Mon 7a: ${nameOf(ho.to)}`);
         roles.push({
           type: "Weekend",
           icon: "🌗",
-          detail: [SHIFT_TIMES.wknd, ...notes].join(" · "),
+          detail: [ho ? SHIFT_TIMES.wknd.replace(/–Mon 7a$/, `–${hoAt}`) : SHIFT_TIMES.wknd, ...notes].join(" · "),
           color: "#7a6030",
           shiftKey: "wknd",
           held: legs.filter(mine).map(d => d.ds)
@@ -17068,6 +17130,15 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           shiftKey: null,
           date: c.ds
         });
+      });
+      if (ho && ho.to === myId) roles.push({
+        type: `Weekend — from ${hoAt}`,
+        icon: "🌗",
+        detail: `${dayMonthLabel(hw.days[6].ds)} · ${hoAt}–Mon 7a · from ${nameOf(ho.from)}`,
+        color: "#7a6030",
+        shiftKey: null,
+        date: hw.days[6].ds,
+        handoff: true
       });
       if (wk.off === myId && !roles.some(r => r.date)) roles.push({
         type: "OFF",
@@ -17438,7 +17509,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         display: "flex",
         alignItems: "center",
         gap: 10
-      }, e.runs && e.runs.length > 1 ? {
+      }, e.runs && e.runs.length > 1 || e.handoff ? {
         flexWrap: "wrap",
         rowGap: 2
       } : null)
@@ -17469,7 +17540,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         fontSize: 12,
         color: dk ? "#9aa8b6" : "#5a6a78",
         whiteSpace: "nowrap"
-      }, e.runs && e.runs.length > 1 ? {
+      }, e.runs && e.runs.length > 1 || e.handoff ? {
         order: 3,
         flexBasis: "100%",
         paddingLeft: 26,
