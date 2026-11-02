@@ -572,15 +572,16 @@ function CallSchedule() {
   const undoTellNotice = (tell) => {
     const back = (tell.parts || []).map(p => ({ week: p.week, changes: p.changes.map(c => ({ ...c, oldId: c.newId, newId: c.oldId, oldName: c.newName, newName: c.oldName })) }));
     const said = back.map(p => typeof weekChangeNotice === "function" ? weekChangeNotice(p.week, p.changes, "") : null);
-    const lines = back.flatMap((p, i) => said[i] ? said[i].message.split("; ") : p.changes.map(c => `${SHIFT_LABELS[c.key] || c.key} (wk of ${p.week}): ${c.oldName} → ${c.newName}`));
+    const lines = back.flatMap((p, i) => said[i] ? said[i].message.split("; ") : p.changes.map(c => `${c.slotLabel || SHIFT_LABELS[c.key] || c.key} (wk of ${p.week}): ${c.oldName} → ${c.newName}`));
     const esc = t => String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
     const one = said.length === 1 && said[0] && back[0].changes.length === 1;
+    // "Undone:" leads, so every change listed reads as undone — and the e-mail's subject (its `shift`) says it too
     return {
       lines,
       title: "Change Undone",
-      message: lines.join("; ") + " (undone)",
-      email: one ? { ...said[0].email, detail: said[0].email.detail + esc(" (undone)") }
-        : { shift: `${lines.length} shift${lines.length === 1 ? "" : "s"}`, week: back[0] ? back[0].week : "", old_surgeon: "multiple", new_surgeon: "open app for details", detail: lines.map(esc).join("<br>") + esc(" (undone)") },
+      message: "Undone: " + lines.join("; "),
+      email: one ? { ...said[0].email, shift: "Undone: " + said[0].email.shift, detail: "Undone: " + said[0].email.detail }
+        : { shift: `Undone: ${lines.length} shift${lines.length === 1 ? "" : "s"}`, week: back[0] ? back[0].week : "", old_surgeon: "multiple", new_surgeon: "open app for details", detail: "Undone:<br>" + lines.map(esc).join("<br>") },
     };
   };
   const undoTap = () => {
@@ -1021,22 +1022,31 @@ function CallSchedule() {
     return [...ids];
   }, [allProfiles, staffProfiles]);
   // Any signed-in user may read user_profiles; only person_id and role are
-  // asked for. A failed read leaves the list as it was (logged): the next
-  // sign-in pass (reloadTrigger) reads it again.
+  // asked for. A read that fails — or answers with no scheduler in it (an
+  // RLS-silent [] when the token lapsed or another tab's account is bound) —
+  // keeps the list as it was, says so in the console, and is read again a
+  // minute later (staffRetry), until one names the scheduler; a sign-in pass
+  // (reloadTrigger) reads it again too.
+  const [staffRetry, setStaffRetry] = useState(0);
   useEffect(() => {
-    if (!authUser || !userProfile) { setStaffProfiles([]); return; }
+    if (!authUser || !userProfile) { setStaffProfiles(p => (p.length ? [] : p)); return; }
     const ep = sessionEpochRef.current;
-    let live = true;
+    let live = true, again = null;
     (async () => {
       try {
         const res = await fetch(`${SUPABASE_URL}/rest/v1/user_profiles?select=person_id,role`, { headers: dbAuthHeaders() });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const rows = await res.json();
-        if (live && sessionEpochRef.current === ep && Array.isArray(rows)) setStaffProfiles(rows.filter(p => p?.role === "scheduler" || p?.role === "admin"));
-      } catch (e) { console.warn("Couldn't read who gets the scheduler's notices:", e); }
+        const staff = Array.isArray(rows) ? rows.filter(p => p?.role === "scheduler" || p?.role === "admin") : [];
+        if (!staff.length) throw new Error("the answer named no scheduler");
+        if (live && sessionEpochRef.current === ep) setStaffProfiles(staff);
+      } catch (e) {
+        console.warn("Couldn't read who gets the scheduler's notices — trying again in a minute:", e);
+        if (live && sessionEpochRef.current === ep) again = setTimeout(() => setStaffRetry(t => t + 1), 60000);
+      }
     })();
-    return () => { live = false; };
-  }, [authUser?.id, userProfile?.person_id, reloadTrigger]);
+    return () => { live = false; if (again) clearTimeout(again); };
+  }, [authUser?.id, userProfile?.person_id, reloadTrigger, staffRetry]);
 
   // ─── Scheduler Mode (role-based via user_profiles.role) ───
   const [isScheduler, setIsScheduler] = useState(false);
@@ -1734,9 +1744,15 @@ function CallSchedule() {
     biometric.unenroll();
     // This browser stops getting this person's pushes, and no longer signs itself back in as them on its next open
     // (review of the quick wins, 2026-11-02 — a shared front-desk PC kept the Clinic Manager's): OneSignal's identity
-    // is dropped, and the remembered name with it (its persist effect writes a name, never the empty one).
-    try { if (window.OneSignal?.logout) Promise.resolve(window.OneSignal.logout()).catch(e => console.warn("OneSignal.logout:", e)); } catch (e) { console.warn("OneSignal.logout:", e); }
-    try { localStorage.removeItem("dsg-my-surgeon"); } catch (e) { /* storage blocked: nothing was kept */ }
+    // is dropped, and the remembered name with it (its persist effect writes a name, never the empty one) — each only
+    // when it is still this tab's person: another tab of this browser, signed in as someone else (sign-out ends this
+    // tab's account only), keeps its own. An identity OneSignal doesn't report is taken to be ours.
+    const me = userProfile?.person_id || mySurgeon;
+    try {
+      const os = window.OneSignal, ext = os?.User?.externalId;
+      if (os?.logout && (!ext || ext === me)) Promise.resolve(os.logout()).catch(e => console.warn("OneSignal.logout:", e));
+    } catch (e) { console.warn("OneSignal.logout:", e); }
+    try { if (!me || localStorage.getItem("dsg-my-surgeon") === me) localStorage.removeItem("dsg-my-surgeon"); } catch (e) { /* storage blocked: nothing was kept */ }
     setAuthUser(null); setUserProfile(null); setNeedsProfile(false); setMySurgeon("");
     setBiometricEnrolled(false); setBiometricPending(false);
   };
@@ -4604,7 +4620,10 @@ function CallSchedule() {
   // 2026-11-02): the name remembered from an earlier sign-in signed a
   // signed-out browser — a shared front-desk PC, the public view — back in
   // as that person on every open, so it kept getting their pushes.
-  // handleSignOut drops the identity.
+  // handleSignOut drops the identity (Sign out). A browser that is ALREADY
+  // signed in to push keeps it until someone signs out there — a session that
+  // lapsed or was refused at app open does not detach it (detaching then would
+  // also stop a member's pushes whenever their session lapsed: an owner call).
   useEffect(() => {
     if (!oneSignalReady || !mySurgeon || !authUser || isPublicMode || userProfile?.person_id !== mySurgeon) return;
     try {
@@ -11724,7 +11743,9 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               to that week's month. Right after this scheduler's ✕ Clear (the newest
               Undo step is the clear's) it says ↩ Undo brings it back — it said "reload
               the app" (UX audit 2026-11-01, QW4). With no clear step left (a reload, a sign-out), a scheduler's line
-              points to the clear's snapshot (review of the quick wins, 2026-11-02); everyone else's line is as before. */}
+              points to the clear's snapshot (review of the quick wins, 2026-11-02) — only once the schedule's read
+              succeeded (schedSync.seeded): a failed read says so, as Mine does, and never sends anyone to restore an
+              old snapshot over a schedule that merely didn't load; everyone else's line is as before. */}
           {(() => {
             const st = loaded && typeof calMonthStatus === "function" ? calMonthStatus(schedule, calYear, calMonth) : null;
             const ym = (ds) => Number(ds.slice(0, 4)) * 12 + Number(ds.slice(5, 7)) - 1, here = calYear * 12 + calMonth;
@@ -11736,7 +11757,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               : !st || st.kind === "ok" ? ""
               : st.kind === "empty" ? (scheduleHistory.length && scheduleHistory[scheduleHistory.length - 1].clear
                 ? "The schedule was cleared — ↩ Undo clear, at the top of the screen, brings it back."
-                : isScheduler ? "No call schedule to show — if it was cleared, restore its \"Before schedule clear\" snapshot in Settings → 📼 Restore from Snapshot; otherwise it isn't published yet."
+                : isScheduler && schedSync.loadFailed ? "The schedule didn't load — it retries every minute; reload the app if this stays."
+                : isScheduler && schedSync.seeded ? "No call schedule to show — if it was cleared or reset, its snapshot (\"Before schedule clear\" / \"Before factory reset\") is in Settings → 📼 Restore from Snapshot; otherwise it isn't published yet."
                 : "No call schedule to show — it may not be published yet; if you expected one, reload the app.")
               : `No surgeon call scheduled for ${MO[calMonth]} ${calYear}${(st.from && here < ym(st.from)) || inRange ? "" : " yet"}${st.from && !inRange ? ` — the published schedule runs ${dated(st.from)} → ${dated(st.to)}` : ""}.`;
             const goTo = st && st.kind === "unscheduled" && st.to && here > ym(st.to) ? { y: Number(st.to.slice(0, 4)), m: Number(st.to.slice(5, 7)) - 1 } : null;

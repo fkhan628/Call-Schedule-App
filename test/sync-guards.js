@@ -10889,16 +10889,20 @@ console.log("\nAQ. calendar says why a month is blank");
   const END = "if (!text) return null;";
   const iS = src.indexOf(START), iE = iS < 0 ? -1 : src.indexOf(END, iS);
   let lineFn = null;
-  // (changed ON PURPOSE 2026-11-02, review of the quick wins: + isScheduler — with no clear step left, a scheduler's empty
-  // schedule points to the clear's snapshot; everyone else's line, every case below, is as before)
-  try { lineFn = iS >= 0 && iE > iS && count(START) === 1 ? vm.runInContext(`(function (env) { const { loaded, schedule, calYear, calMonth, scheduleHistory, isScheduler } = env; ${src.slice(iS, iE)} return { text, goTo }; })`, sandbox) : null; } catch (ex) { lineFn = null; }
-  const L = (loaded, schedule, calYear, calMonth, isScheduler) => { try { const r = lineFn({ loaded, schedule, calYear, calMonth, scheduleHistory: [], isScheduler: !!isScheduler }); return JSON.stringify([r.text, r.goTo]); } catch (ex) { return "threw: " + String(ex).slice(0, 120); } };
+  // (changed ON PURPOSE 2026-11-02, review of the quick wins: + isScheduler and schedSync — with no clear step left and the
+  // schedule's read done (seeded), a scheduler's empty schedule points to the clear's (or a reset's) snapshot; a failed
+  // read says so, as Mine does; everyone else's line, every case below, is as before)
+  try { lineFn = iS >= 0 && iE > iS && count(START) === 1 ? vm.runInContext(`(function (env) { const { loaded, schedule, calYear, calMonth, scheduleHistory, isScheduler, schedSync } = env; ${src.slice(iS, iE)} return { text, goTo }; })`, sandbox) : null; } catch (ex) { lineFn = null; }
+  const L = (loaded, schedule, calYear, calMonth, isScheduler, sync) => { try { const r = lineFn({ loaded, schedule, calYear, calMonth, scheduleHistory: [], isScheduler: !!isScheduler, schedSync: sync || { seeded: true, loadFailed: false } }); return JSON.stringify([r.text, r.goTo]); } catch (ex) { return "threw: " + String(ex).slice(0, 120); } };
   const RUNS = "the published schedule runs Mon 4/6/2026 → Sun 1/3/2027.";
   const lineCases = lineFn ? [
     ["still loading, nothing drawn yet", L(false, {}, 2027, 1), ["Loading the schedule…", null]],
     ["still loading but weeks already drawn → nothing (batch review)", L(false, weeks, 2027, 1), ["", null]],
     ["loaded, nothing in it", L(true, {}, 2026, 11), ["No call schedule to show — it may not be published yet; if you expected one, reload the app.", null]],
-    ["loaded, nothing in it, a scheduler with no clear step → the clear's snapshot", L(true, {}, 2026, 11, true), ["No call schedule to show — if it was cleared, restore its \"Before schedule clear\" snapshot in Settings → 📼 Restore from Snapshot; otherwise it isn't published yet.", null]],
+    ["loaded, nothing in it, a scheduler with no clear step → the clear's or the reset's snapshot", L(true, {}, 2026, 11, true), ["No call schedule to show — if it was cleared or reset, its snapshot (\"Before schedule clear\" / \"Before factory reset\") is in Settings → 📼 Restore from Snapshot; otherwise it isn't published yet.", null]],
+    ["…the schedule's read FAILED → says so (as Mine), never the snapshot", L(true, {}, 2026, 11, true, { seeded: false, loadFailed: true }), ["The schedule didn't load — it retries every minute; reload the app if this stays.", null]],
+    ["…the read not seeded yet (and not failed) → the plain line", L(true, {}, 2026, 11, true, { seeded: false, loadFailed: false }), ["No call schedule to show — it may not be published yet; if you expected one, reload the app.", null]],
+    ["…a member whose read failed → the plain line, as before", L(true, {}, 2026, 11, false, { seeded: false, loadFailed: true }), ["No call schedule to show — it may not be published yet; if you expected one, reload the app.", null]],
     ["Dec 2026 has call → nothing", L(true, weeks, 2026, 11), ["", null]],
     ["Jan 2027 (Jan 1–3 only) → nothing", L(true, weeks, 2027, 0), ["", null]],
     ["Feb 2027, past the end → not yet + Go to January 2027", L(true, weeks, 2027, 1), [`No surgeon call scheduled for February 2027 yet — ${RUNS}`, { y: 2027, m: 0 }]],
@@ -10909,7 +10913,7 @@ console.log("\nAQ. calendar says why a month is blank");
   ] : [];
   const lineBad = lineCases.filter(([, g, w]) => g !== JSON.stringify(w)).map(([n, g]) => `${n}: ${g}`);
   check("AQ3 the Calendar's line, run as written: 'Loading the schedule…' only while nothing is drawn / 'No call schedule to show — … reload the app.' / 'No surgeon call scheduled for <Month Year> yet — the published schedule runs <from> → <to>.' with a Go-to button only past the end (no 'yet' before the start; a gap month inside the range quotes no range) / nothing for a month with call",
-    lineCases.length === 11 && lineBad.length === 0, lineFn ? lineBad.join(" | ") : "the line's code was not found exactly once in index-source.html");
+    lineCases.length === 14 && lineBad.length === 0, lineFn ? lineBad.join(" | ") : "the line's code was not found exactly once in index-source.html");
 
   // AQ4 — placement and render-only
   const HDR = '{DAY_HDR.map(d=><div key={d} style={{textAlign:"center",fontSize:10,fontWeight:700,color:"#8a94a0",padding:"5px 0",letterSpacing:1}}>{d}</div>)}';
@@ -10922,11 +10926,14 @@ console.log("\nAQ. calendar says why a month is blank");
     count("calMonthStatus(schedule, calYear, calMonth)") === 1 && count(HDR) === 1 && iCal >= 0 && iCal < iWarn && iWarn < iUse && iUse < iHdr && iHdr < iNext
       && /^\s*<div style=\{\{display:"grid",gridTemplateColumns:"repeat\(7,minmax\(0,1fr\)\)",gap:1,marginBottom:1\}\}>\s*$/.test(between),
     `${iCal} < ${iWarn} < ${iUse} < ${iHdr} < ${iNext}; between: ${JSON.stringify(between.slice(0, 120))}`);
-  check("AQ4 render-only: a role=\"status\" line whose only action is the Go-to button (setCalMonth + setCalYear); no write path, no preview, no other data",
+  // (changed ON PURPOSE 2026-11-02, review of the quick wins: the line may READ the sync status's two load flags —
+  // schedSync.seeded and schedSync.loadFailed, nothing else of it; schedSyncRef, the engine, stays out)
+  const AQ4_BAD = /fetch\(|setSchedule|commitSchedule|schedSyncRef|schedSync\.(?!seeded\b|loadFailed\b)|setSchedSync|localStorage|previewSchedule|calData|appShifts|dbAuthHeaders/;
+  check("AQ4 render-only: a role=\"status\" line whose only action is the Go-to button (setCalMonth + setCalYear); no write path, no preview, no other data (only the sync status's seeded / loadFailed flags read)",
     !!body && body.includes('<div role="status"') && body.includes("{goTo && <button onClick={()=>{setCalMonth(goTo.m);setCalYear(goTo.y);}}")
       && body.includes("Go to {MO[goTo.m]} {goTo.y}</button>}") && (body.match(/onClick=/g) || []).length === 1
-      && !/fetch\(|setSchedule|commitSchedule|schedSync|localStorage|previewSchedule|calData|appShifts|dbAuthHeaders/.test(body),
-    body ? (body.match(/fetch\(|setSchedule|commitSchedule|schedSync|localStorage|previewSchedule|calData|appShifts|dbAuthHeaders/) || ["button or status wrapper missing"])[0] : "line not found");
+      && !AQ4_BAD.test(body) && (body.match(/\bschedSync\b/g) || []).length === (body.match(/\bschedSync\.(?:seeded|loadFailed)\b/g) || []).length,
+    body ? (body.match(AQ4_BAD) || ["button or status wrapper missing"])[0] : "line not found");
 }
 
 // ─── Z. silvisBusy keeps reading v6's rows (spec item 1; decisions 2026-10-11) ───
@@ -17085,11 +17092,13 @@ ${nsrcDC.slice(iT, eT)}
   const ASK_EDIT = "Undo the week edit?\n\nThe shifts it changed go back to who had them before.\n\nNobody was notified of the change.";
   const ASK_EDIT_T = `Undo the week edit?\n\n${L7.join("\n")}\n\nThe APP days saved with it stay as they are.\n\nS3, S1 and S2 were notified of the change — they're told it was undone (push and e-mail, per their settings).`;
   const ASK_SWAP_T = `Undo the swap?\n\n${LS7.join("\n")}\n\nS1 and S3 were notified of the change — they're told it was undone (push and e-mail, per their settings).`;
-  const SENT_EDIT_T = [J(["notice", "schedule_changed", "Change Undone", L7.join("; ") + " (undone)", { week: "2026-11-30" }, TELL7.targets]),
-    J(["email", "schedule_changed", { shift: "2 shifts", week: "2026-11-30", old_surgeon: "multiple", new_surgeon: "open app for details", detail: L7.map(esc7).join("<br>") + " (undone)" }, TELL7.targets])];
+  // ("Undone:" leads the notice and the e-mail's subject and detail, so every change listed reads as undone — the second
+  // review of the quick wins, 2026-11-02: a trailing "(undone)" read as if only the last change was)
+  const SENT_EDIT_T = [J(["notice", "schedule_changed", "Change Undone", "Undone: " + L7.join("; "), { week: "2026-11-30" }, TELL7.targets]),
+    J(["email", "schedule_changed", { shift: "Undone: 2 shifts", week: "2026-11-30", old_surgeon: "multiple", new_surgeon: "open app for details", detail: "Undone:<br>" + L7.map(esc7).join("<br>") }, TELL7.targets])];
   const swEm7 = wcn7("2026-11-30", rev7(SWAPT7)[0].changes, "").email;
-  const SENT_SWAP_T = [J(["notice", "schedule_changed", "Change Undone", LS7.join("; ") + " (undone)", { week: "2026-11-30" }, SWAPT7.targets]),
-    J(["email", "schedule_changed", Object.assign({}, swEm7, { detail: swEm7.detail + " (undone)" }), SWAPT7.targets])];
+  const SENT_SWAP_T = [J(["notice", "schedule_changed", "Change Undone", "Undone: " + LS7.join("; "), { week: "2026-11-30" }, SWAPT7.targets]),
+    J(["email", "schedule_changed", Object.assign({}, swEm7, { shift: "Undone: " + swEm7.shift, detail: "Undone: " + swEm7.detail }), SWAPT7.targets])];
   // main's ↩ Undo on the same setup — undoLastChange alone — and ours: undoTap
   const ref7 = async (setup, o) => { const w = await setup(o); w.render().undoLastChange(); return w.state(); };
   const tap7 = async (setup, o = {}) => {
@@ -17127,12 +17136,12 @@ ${nsrcDC.slice(iT, eT)}
       && !dc7.twiceEdit.threw && JSON.parse(dc7.twiceEdit.after).steps === JSON.parse(dc7.twiceEdit.before).steps - 1 && dc7.twiceEdit.toasts.length === 1 && dc7.twiceEdit.after === dc7.editRef
       && !dc7.twicePub.threw && dc7.twicePub.asked.length === 1 && dc7.twicePub.after === dc7.toldRef && dc7.twicePub.offers.length === 1,
     J(dc7 && { edit: dc7.edit.toasts, blocked: dc7.blocked, twiceEdit: dc7.twiceEdit.toasts, twicePub: dc7.twicePub.asked.length }).slice(0, 900));
-  check("DC7 (review of the quick wins) ↩ Undo of an edit its people were told of asks first — each shift as it goes back (weekChangeNotice's words), that the APP days saved with it stay, who was told and that they are told it was undone — then ends as main's Undo, sends ONE \"Change Undone\" notice and ONE e-mail (\"… (undone)\") to the same people, and says so: \"↩ Undone: the week edit — S3, S1 and S2 were told. The APP days stay as saved.\"; Cancel changes nothing and sends nothing",
+  check("DC7 (review of the quick wins) ↩ Undo of an edit its people were told of asks first — each shift as it goes back (weekChangeNotice's words), that the APP days saved with it stay, who was told and that they are told it was undone — then ends as main's Undo, sends ONE \"Change Undone\" notice and ONE e-mail (\"Undone: …\", its subject too) to the same people, and says so: \"↩ Undone: the week edit — S3, S1 and S2 were told. The APP days stay as saved.\"; Cancel changes nothing and sends nothing",
     !!dc7 && !dc7.editTold.threw && J(dc7.editTold.asked) === J([ASK_EDIT_T]) && dc7.editTold.after === dc7.editRef && J(dc7.editTold.sent) === J(SENT_EDIT_T) && L7.length === 2
       && J(dc7.editTold.toasts) === J(["info: ↩ Undone: the week edit — S3, S1 and S2 were told. The APP days stay as saved."])
       && !dc7.editToldCancel.threw && J(dc7.editToldCancel.asked) === J([ASK_EDIT_T]) && dc7.editToldCancel.after === dc7.editToldCancel.before && dc7.editToldCancel.sent.length === 0 && dc7.editToldCancel.toasts.length === 0,
     J(dc7 && { editTold: dc7.editTold, cancel: dc7.editToldCancel }).slice(0, 1400));
-  check("DC7 (review of the quick wins) …a swap the same way, one change: its question, then the notice and the e-mail the week editor would send for the change back (weekChangeNotice's own e-mail, \" (undone)\" on its detail), and the toast naming who was told",
+  check("DC7 (review of the quick wins) …a swap the same way, one change: its question, then the notice and the e-mail the week editor would send for the change back (weekChangeNotice's own e-mail, \"Undone: \" leading its subject and detail), and the toast naming who was told",
     !!dc7 && !dc7.swapTold.threw && J(dc7.swapTold.asked) === J([ASK_SWAP_T]) && J(dc7.swapTold.sent) === J(SENT_SWAP_T) && LS7.length === 1
       && J(dc7.swapTold.toasts) === J(["info: ↩ Undone: the swap — S1 and S3 were told."]) && dc7.swapTold.undone,
     J(dc7 && dc7.swapTold).slice(0, 1400));
@@ -17266,17 +17275,20 @@ ${nsrcDC.slice(iT, eT)}
       && countDC("📼 Restore from Snapshot</span>") === 1 && countDC("const pushUndo = useCallback((counts) => {") === 1 && countDC("setScheduleHistory(prev => [...prev.slice(-9), snap]);") === 1, J(clQ));
   const LS = 'const st = loaded && typeof calMonthStatus === "function" ? calMonthStatus(schedule, calYear, calMonth) : null;', LE = "if (!text) return null;";
   const lsI = nsrcDC.indexOf(LS), leI = lsI < 0 ? -1 : nsrcDC.indexOf(LE, lsI);
-  // (changed ON PURPOSE 2026-11-02, review of the quick wins: + isScheduler — a scheduler's empty schedule with no clear
-  // step on top, the history gone or a newer step on top, points to the clear's snapshot; a member's line is main's)
-  let lineDC = null; try { lineDC = lsI >= 0 && leI > lsI ? vm.runInContext(`(function (env) { const { loaded, schedule, calYear, calMonth, scheduleHistory, isScheduler } = env; ${nsrcDC.slice(lsI, leI)} return { text, goTo }; })`, sandbox) : null; } catch (ex) { lineDC = null; }
-  const LN = (loaded, schedule, y, m, hist, sched) => { try { const r = lineDC({ loaded, schedule, calYear: y, calMonth: m, scheduleHistory: hist, isScheduler: !!sched }); return J([r.text, r.goTo]); } catch (ex) { return "threw " + String(ex).slice(0, 100); } };
+  // (changed ON PURPOSE 2026-11-02, review of the quick wins: + isScheduler and schedSync — a scheduler's empty schedule
+  // with no clear step on top, the history gone or a newer step on top, points to the clear's (or a reset's) snapshot once
+  // the schedule's read is done — seeded; a failed read says so; a member's line is main's)
+  let lineDC = null; try { lineDC = lsI >= 0 && leI > lsI ? vm.runInContext(`(function (env) { const { loaded, schedule, calYear, calMonth, scheduleHistory, isScheduler, schedSync } = env; ${nsrcDC.slice(lsI, leI)} return { text, goTo }; })`, sandbox) : null; } catch (ex) { lineDC = null; }
+  const LN = (loaded, schedule, y, m, hist, sched, sync) => { try { const r = lineDC({ loaded, schedule, calYear: y, calMonth: m, scheduleHistory: hist, isScheduler: !!sched, schedSync: sync || { seeded: true, loadFailed: false } }); return J([r.text, r.goTo]); } catch (ex) { return "threw " + String(ex).slice(0, 100); } };
   const CLEARED = "The schedule was cleared — ↩ Undo clear, at the top of the screen, brings it back.", EMPTY = "No call schedule to show — it may not be published yet; if you expected one, reload the app.";
-  const SNAPLINE = "No call schedule to show — if it was cleared, restore its \"Before schedule clear\" snapshot in Settings → 📼 Restore from Snapshot; otherwise it isn't published yet.";
+  const SNAPLINE = "No call schedule to show — if it was cleared or reset, its snapshot (\"Before schedule clear\" / \"Before factory reset\") is in Settings → 📼 Restore from Snapshot; otherwise it isn't published yet.";
   const WKS = { "2026-11-30": { dayCall: "s1" }, "2026-12-07": { dayCall: "s2" } };
   const ln = lineDC ? { cleared: LN(true, {}, 2026, 11, [{ what: "edit" }, { clear: true }], true), member: LN(true, {}, 2026, 11, []), editTop: LN(true, {}, 2026, 11, [{ clear: true }, { what: "edit" }], true), pubTop: LN(true, {}, 2026, 11, [{ clear: true }, { counts: {}, what: "publish" }], true),
-    schedNone: LN(true, {}, 2026, 11, [], true), loading: LN(false, {}, 2026, 11, [{ clear: true }], true), withCall: LN(true, WKS, 2026, 11, [{ clear: true }], true), later: LN(true, WKS, 2027, 2, [{ clear: true }], true), laterMember: LN(true, WKS, 2027, 2, []) } : null;
-  check("DC10 (QW4) the Calendar's line, run as written: right after this scheduler's ✕ Clear (the newest Undo step is the clear's, the schedule empty) it says \"The schedule was cleared — ↩ Undo clear, at the top of the screen, brings it back.\" — not \"reload the app\"; a member's empty line is main's word for word; a scheduler's with no clear step on top (the history gone — a reload — or a newer step) points to the clear's snapshot; loading, a month with call and a month past the end read exactly as without the clear's step",
+    schedNone: LN(true, {}, 2026, 11, [], true), loading: LN(false, {}, 2026, 11, [{ clear: true }], true), withCall: LN(true, WKS, 2026, 11, [{ clear: true }], true), later: LN(true, WKS, 2027, 2, [{ clear: true }], true), laterMember: LN(true, WKS, 2027, 2, []),
+    schedFailed: LN(true, {}, 2026, 11, [], true, { seeded: false, loadFailed: true }), schedUnseeded: LN(true, {}, 2026, 11, [], true, { seeded: false, loadFailed: false }) } : null;
+  check("DC10 (QW4) the Calendar's line, run as written: right after this scheduler's ✕ Clear (the newest Undo step is the clear's, the schedule empty) it says \"The schedule was cleared — ↩ Undo clear, at the top of the screen, brings it back.\" — not \"reload the app\"; a member's empty line is main's word for word; a scheduler's with no clear step on top (the history gone — a reload — or a newer step) points to the clear's or reset's snapshot only once the read is done: a failed read says \"The schedule didn't load — …\", an unseeded one the plain line; loading, a month with call and a month past the end read exactly as without the clear's step",
     !!ln && ln.cleared === J([CLEARED, null]) && ln.member === J([EMPTY, null]) && ln.editTop === J([SNAPLINE, null]) && ln.pubTop === J([SNAPLINE, null]) && ln.schedNone === J([SNAPLINE, null]) && ln.loading === J(["Loading the schedule…", null])
+      && ln.schedFailed === J(["The schedule didn't load — it retries every minute; reload the app if this stays.", null]) && ln.schedUnseeded === J([EMPTY, null])
       && ln.withCall === J(["", null]) && ln.later === ln.laterMember && JSON.parse(ln.later)[0].startsWith("No surgeon call scheduled for March 2027 yet"), J(ln));
 
   // DC11 — the ↩ Undo button
@@ -21592,37 +21604,50 @@ await (async () => {
 
   // ── DG1 (#8) — who gets the scheduler's notices ──
   {
-    const stSrc = cutG("  const [staffProfiles, setStaffProfiles] = useState([]);", "  }, [authUser?.id, userProfile?.person_id, reloadTrigger]);");
+    // (changed ON PURPOSE 2026-11-02, the second review of the quick wins: a failed read, or one naming no scheduler, keeps
+    // the last list and is read again a minute later — staffRetry; the hooks stub keeps one cell per useState, in order)
+    const stSrc = cutG("  const [staffProfiles, setStaffProfiles] = useState([]);", "  }, [authUser?.id, userProfile?.person_id, reloadTrigger, staffRetry]);");
     let stFn = null;
-    try { stFn = stSrc ? vm.runInContext(`(function (env) { const { useState, useMemo, useEffect, allProfiles, authUser, userProfile, reloadTrigger, sessionEpochRef, SUPABASE_URL, dbAuthHeaders, fetch, console } = env;\n${stSrc}\n return schedulerAdminIds; })`, sandbox, { filename: "dg1-staff.js" }) : null; } catch (ex) { stFn = null; }
+    try { stFn = stSrc ? vm.runInContext(`(function (env) { const { useState, useMemo, useEffect, allProfiles, authUser, userProfile, reloadTrigger, sessionEpochRef, SUPABASE_URL, dbAuthHeaders, fetch, console, setTimeout, clearTimeout } = env;\n${stSrc}\n return schedulerAdminIds; })`, sandbox, { filename: "dg1-staff.js" }) : null; } catch (ex) { stFn = null; }
     const ROWS = [{ person_id: "a1", role: "member" }, { person_id: "admin", role: "admin" }, { person_id: "s3", role: "member" }, { person_id: "s6", role: "scheduler" }];
-    // one mount: its effect runs, the reads settle, then a render with no effect reads the memo
+    const NO_STAFF = [{ person_id: "a1", role: "member" }, { person_id: "s3", role: "member" }];
+    // one mount: its effect runs, the reads settle, then a render with no effect reads the memo; o.start: the list it had
     const staffRun = async (o) => {
-      const log = [], cell = { v: [] }, epoch = { current: 1 };
-      let fx = true;
+      const log = [], cells = [o.start || [], 0], epoch = { current: 1 }, timers = [];
+      let fx = true, at = 0;
       const env = () => ({
-        useState: () => [cell.v, (v) => { cell.v = typeof v === "function" ? v(cell.v) : v; log.push("set " + JG(cell.v)); }],
+        useState: () => { const i = at++; return [cells[i], (v) => { cells[i] = typeof v === "function" ? v(cells[i]) : v; log.push((i === 0 ? "set " : "retry ") + JG(cells[i])); }]; },
         useMemo: (f) => f(), useEffect: (f) => { if (fx) f(); },
         allProfiles: o.all || [], authUser: "user" in o ? o.user : { id: "u-1" }, userProfile: "profile" in o ? o.profile : { person_id: "s3" }, reloadTrigger: 0,
         sessionEpochRef: epoch, SUPABASE_URL: "https://db.test", dbAuthHeaders: () => ({ apikey: "K", Authorization: "Bearer T" }),
-        fetch: async (url, opt) => { log.push("fetch " + url + " " + JG(opt && opt.headers)); if (o.signOutMidway) epoch.current++; if (o.fail) return { ok: false, status: 503 }; return { ok: true, json: async () => ROWS }; },
+        fetch: async (url, opt) => { log.push("fetch " + url + " " + JG(opt && opt.headers)); if (o.signOutMidway) epoch.current++; if (o.fail) return { ok: false, status: 503 }; return { ok: true, json: async () => o.rows || ROWS }; },
         console: { warn: () => log.push("warn"), error: () => log.push("error"), log() {} },
+        setTimeout: (f, ms) => { log.push("again in " + ms); timers.push(f); return timers.length; }, clearTimeout: (t) => log.push("cleared " + t),
       });
-      try { stFn(env()); await ticksG(); fx = false; return { log, ids: stFn(env()) }; } catch (ex) { return { threw: String(ex).slice(0, 160) }; }
+      try {
+        at = 0; stFn(env()); await ticksG();
+        if (o.fire) timers.forEach((f) => f()); // the minute passes: the retry counter moves (the effect's dep)
+        fx = false; at = 0; return { log, ids: stFn(env()), retry: cells[1] };
+      } catch (ex) { return { threw: String(ex).slice(0, 160) }; }
     };
     const READ = 'fetch https://db.test/rest/v1/user_profiles?select=person_id,role {"apikey":"K","Authorization":"Bearer T"}';
     const KEPT = 'set [{"person_id":"admin","role":"admin"},{"person_id":"s6","role":"scheduler"}]';
     const g1 = stFn ? {
       member: await staffRun({}), app: await staffRun({ profile: { person_id: "a1" } }), withSettings: await staffRun({ all: [{ person_id: "s6", role: "scheduler" }, { person_id: "s7", role: "member" }] }),
-      signedOut: await staffRun({ user: null }), noProfile: await staffRun({ profile: null }), failed: await staffRun({ fail: true }), midway: await staffRun({ signOutMidway: true }),
+      signedOut: await staffRun({ user: null }), signedOutHad: await staffRun({ user: null, start: [{ person_id: "s6", role: "scheduler" }] }), noProfile: await staffRun({ profile: null }),
+      failed: await staffRun({ fail: true }), failedHad: await staffRun({ fail: true, start: [{ person_id: "s6", role: "scheduler" }], fire: true }),
+      noStaff: await staffRun({ rows: NO_STAFF, start: [{ person_id: "s6", role: "scheduler" }] }), midway: await staffRun({ signOutMidway: true }),
     } : null;
     check("DG1 (#8) every signed-in device — a member's, an APP's — reads who the scheduler and the Clinic Manager are at sign-in: ONE read of user_profiles (person_id and role only, with the session's headers), keeping the scheduler and the admin rows; schedulerAdminIds is then [\"admin\", \"s6\"] — the targets every request, vacation change and trade cascade names",
       !!g1 && !g1.member.threw && JG(g1.member.log) === JG([READ, KEPT]) && JG(g1.member.ids) === JG(["admin", "s6"]) && !g1.app.threw && JG(g1.app.ids) === JG(["admin", "s6"]),
       JG(g1 && { member: g1.member, app: g1.app }));
-    check("DG1 (#8) …Settings' user list, when loaded, adds to it without repeats (s6 once); signed out or with no profile: no read, and the list is emptied; a failed read keeps what it had and says so in the console (the next sign-in pass reads again); a sign-out while it reads keeps nothing",
-      !!g1 && JG(g1.withSettings.ids) === JG(["s6", "admin"]) && JG(g1.signedOut.log) === JG(["set []"]) && JG(g1.signedOut.ids) === "[]" && JG(g1.noProfile.log) === JG(["set []"])
-        && JG(g1.failed.log) === JG([READ, "warn"]) && JG(g1.failed.ids) === "[]" && JG(g1.midway.log) === JG([READ]) && JG(g1.midway.ids) === "[]",
-      JG(g1 && { withSettings: g1.withSettings.ids, signedOut: g1.signedOut, failed: g1.failed, midway: g1.midway }));
+    check("DG1 (#8) …Settings' user list, when loaded, adds to it without repeats (s6 once); signed out or with no profile: no read, and the list is emptied (a list already empty is kept as it is); a failed read keeps what it had, says so in the console and is read again a minute later (the timer moves the retry counter, the effect's dep); an answer naming no scheduler (RLS-silent) counts as failed — the last list kept, read again; a sign-out while it reads keeps nothing and sets no retry",
+      !!g1 && JG(g1.withSettings.ids) === JG(["s6", "admin"]) && JG(g1.signedOut.log) === JG(["set []"]) && JG(g1.signedOut.ids) === "[]" && JG(g1.signedOutHad.ids) === "[]" && JG(g1.noProfile.log) === JG(["set []"])
+        && JG(g1.failed.log) === JG([READ, "warn", "again in 60000"]) && JG(g1.failed.ids) === "[]"
+        && JG(g1.failedHad.log) === JG([READ, "warn", "again in 60000", "retry 1"]) && JG(g1.failedHad.ids) === JG(["s6"]) && g1.failedHad.retry === 1
+        && JG(g1.noStaff.log) === JG([READ, "warn", "again in 60000"]) && JG(g1.noStaff.ids) === JG(["s6"])
+        && JG(g1.midway.log) === JG([READ]) && JG(g1.midway.ids) === "[]",
+      JG(g1 && { withSettings: g1.withSettings.ids, signedOut: g1.signedOut, failed: g1.failed, failedHad: g1.failedHad, noStaff: g1.noStaff, midway: g1.midway }));
     // the senders name it: a member's request and the scheduler's approval, a revoke, a cascade, an edit, a swap
     check("DG1 (#8) the senders still address schedulerAdminIds (declared once, before them) and the memo reads both lists; the read is at the component's top level, after the state it lists",
       countG("  const schedulerAdminIds = useMemo(() => {") === 1 && countG("[...allProfiles, ...staffProfiles].forEach(p => {") === 1 && countG("}, [allProfiles, staffProfiles]);") === 1
@@ -21693,23 +21718,30 @@ await (async () => {
   {
     const so = cutG("  const handleSignOut = async () => {", "\n  };");
     let soFn = null;
-    try { soFn = so ? vm.runInContext(`(function (env) { const { schedSyncRef, confirm, sessionBoundary, auth, biometric, window, localStorage, setAuthUser, setUserProfile, setNeedsProfile, setMySurgeon, setBiometricEnrolled, setBiometricPending, console } = env;\n${so.replace(/^  const handleSignOut = /, "return ")}; })`, sandbox, { filename: "dg5-signout.js" }) : null; } catch (ex) { soFn = null; }
+    // (changed ON PURPOSE 2026-11-02, the second review of the quick wins: each only while it is still this tab's person —
+    // userProfile / mySurgeon against OneSignal's external id and the stored name: another tab's account keeps its own)
+    try { soFn = so ? vm.runInContext(`(function (env) { const { schedSyncRef, confirm, sessionBoundary, auth, biometric, window, localStorage, setAuthUser, setUserProfile, setNeedsProfile, setMySurgeon, setBiometricEnrolled, setBiometricPending, console, userProfile, mySurgeon } = env;\n${so.replace(/^  const handleSignOut = /, "return ")}; })`, sandbox, { filename: "dg5-signout.js" }) : null; } catch (ex) { soFn = null; }
     const signOut = async (o) => {
       const log = [], rec = (n) => (v) => log.push(n + ":" + JG(v));
+      const ext = "ext" in o ? o.ext : "s3", stored = "stored" in o ? o.stored : "s3";
       const env = { schedSyncRef: { current: { pending: () => [] } }, confirm: () => true, sessionBoundary: () => log.push("boundary"), auth: { signOut: async () => { log.push("signOut"); }, bindUser: (v) => log.push("bind:" + JG(v)) }, biometric: { unenroll: () => log.push("unenroll") },
-        window: o.noOS ? {} : { OneSignal: { logout: () => { log.push("OneSignal.logout"); return o.reject ? Promise.reject(new Error("nope")) : Promise.resolve(); } } },
-        localStorage: o.blocked ? { removeItem: () => { throw new Error("blocked"); } } : { removeItem: (k) => log.push("remove:" + k) },
+        window: o.noOS ? {} : { OneSignal: Object.assign({ logout: () => { log.push("OneSignal.logout"); return o.reject ? Promise.reject(new Error("nope")) : Promise.resolve(); } }, ext === undefined ? {} : { User: { externalId: ext } }) },
+        localStorage: o.blocked ? { getItem: () => { throw new Error("blocked"); }, removeItem: () => { throw new Error("blocked"); } } : { getItem: (k) => (k === "dsg-my-surgeon" ? stored : null), removeItem: (k) => log.push("remove:" + k) },
         setAuthUser: rec("authUser"), setUserProfile: rec("profile"), setNeedsProfile: rec("needsProfile"), setMySurgeon: rec("mySurgeon"), setBiometricEnrolled: rec("bioEnrolled"), setBiometricPending: rec("bioPending"),
-        console: { warn: () => log.push("warn"), error: () => log.push("error"), log() {} } };
+        console: { warn: () => log.push("warn"), error: () => log.push("error"), log() {} }, userProfile: { person_id: "s3" }, mySurgeon: "s3" };
       try { await soFn(env)(); await ticksG(); return log; } catch (ex) { return ["threw " + String(ex).slice(0, 120)]; }
     };
     const TAIL = ["authUser:null", "profile:null", "needsProfile:false", 'mySurgeon:""', "bioEnrolled:false", "bioPending:false"];
     const HEADS = ["boundary", "signOut", "bind:null", "unenroll"];
-    const g5 = soFn ? { plain: await signOut({}), noOS: await signOut({ noOS: true }), refused: await signOut({ reject: true }), blocked: await signOut({ blocked: true }) } : null;
+    const g5 = soFn ? { plain: await signOut({}), noOS: await signOut({ noOS: true }), refused: await signOut({ reject: true }), blocked: await signOut({ blocked: true }),
+      otherTab: await signOut({ ext: "s7", stored: "s7" }), unknownExt: await signOut({ ext: undefined }), storedOther: await signOut({ stored: "s7" }) } : null;
     check("DG5 (#21) the REAL handleSignOut drops this browser's push identity and the remembered name — OneSignal.logout(), then localStorage \"dsg-my-surgeon\" removed — after the session's sign-out and before the screen goes to the sign-in card; with no OneSignal, a refused logout (said in the console, never thrown), or blocked storage, it still signs out the same way",
       !!g5 && JG(g5.plain) === JG(HEADS.concat(["OneSignal.logout", "remove:dsg-my-surgeon"], TAIL)) && JG(g5.noOS) === JG(HEADS.concat(["remove:dsg-my-surgeon"], TAIL))
         && JG(g5.refused) === JG(HEADS.concat(["OneSignal.logout", "remove:dsg-my-surgeon"], TAIL, ["warn"])) && JG(g5.blocked) === JG(HEADS.concat(["OneSignal.logout"], TAIL)),
       JG(g5));
+    check("DG5 (#21) …only this tab's person: when this browser's push is signed in as another tab's account (OneSignal's external id s7) and the stored name is that account's, neither is touched; an identity OneSignal doesn't report is taken to be ours (logged out); another account's stored name stays while our push identity goes",
+      !!g5 && JG(g5.otherTab) === JG(HEADS.concat(TAIL)) && JG(g5.unknownExt) === JG(HEADS.concat(["OneSignal.logout", "remove:dsg-my-surgeon"], TAIL)) && JG(g5.storedOther) === JG(HEADS.concat(["OneSignal.logout"], TAIL)),
+      JG(g5 && { otherTab: g5.otherTab, unknownExt: g5.unknownExt, storedOther: g5.storedOther }));
   }
 
   // ── DG6 (#7) — Setup's mark rows on a 320 px phone ──
@@ -22247,7 +22279,9 @@ await (async () => {
   const sbSrc = after("  const sessionBoundary = ", "\n  };\n"), soSrc = after("  const handleSignOut = ", "\n  };\n"),
     rlSrc = after("  const reauthLanded = ", "\n  };\n"), raSrc = after("  const reauthForSync = ", "\n  };\n"), smSrc = after("  const submitReauth = ", "\n  };\n");
   const sbFn = sbSrc && fnR("searchRef, setSearching, setSearchStats, setPreviewSchedule, setShowPreview, schedSyncRef, setScheduleHistory, setEditWeekModal, setReauthNeeded, setStaleTokenWarn, setIsScheduler, setupReadRef, lastSyncRef, sessionEpochRef, forgetDayOffs, setJustPublished", sbSrc + "\n  }"); // (23/n: + the day-off forget — review r6 fix-3; 2026-10-20: + the Calendar's "Published" banner, cleared — sync-guards CD)
-  const soFn = soSrc && fnR("schedSyncRef, confirm, sessionBoundary, auth, biometric, setAuthUser, setUserProfile, setNeedsProfile, setMySurgeon, setBiometricEnrolled, setBiometricPending", soSrc + "\n  }");
+  // (+ userProfile, mySurgeon: changed ON PURPOSE 2026-11-02, review of the quick wins — sign-out drops this browser's
+  // push identity and remembered name only while they are this tab's person; here no profile: nothing of OneSignal's)
+  const soFn = soSrc && fnR("schedSyncRef, confirm, sessionBoundary, auth, biometric, setAuthUser, setUserProfile, setNeedsProfile, setMySurgeon, setBiometricEnrolled, setBiometricPending, userProfile, mySurgeon", soSrc + "\n  }");
   const rlFn = rlSrc && fnR("schedSyncRef, authUser, setReauthNeeded, setStaleTokenWarn, showToast, sessionBoundary, biometric, setBiometricEnrolled, setBiometricPending, setAuthUser, dbAuth, setUserProfile, setMySurgeon, setNeedsProfile, setIsScheduler, setReloadTrigger, handleSignOut, auth, pendingSaveRef, setSetupSaveNudge", rlSrc + "\n  }");
   const raFn = raSrc && fnR("reauthBusy, setReauthBusy, auth, authUser, reauthLanded, setReauthPassword, setReauthError, setReauthSheet", raSrc + "\n  }");
   const smFn = smSrc && fnR("reauthBusy, setReauthBusy, authUser, reauthPassword, setReauthError, auth, setReauthSheet, setReauthPassword, reauthLanded", smSrc + "\n  }");
@@ -22280,6 +22314,7 @@ await (async () => {
     env.pendingSaveRef = { current: o.pendingSave || null }; // (19/n P9) a setup change kept pending while signed out
     env.forgetDayOffs = () => {}; // (23/n, review r6 fix-3: the boundary forgets the APP day-off state — SE-X25 runs the real one)
     env.sessionEpochRef = { current: 0 }; w.epoch = env.sessionEpochRef; // (20/n, review r3) the session's identity, which the boundary moves
+    env.userProfile = o.userProfile || null; env.mySurgeon = o.mySurgeon || ""; // (handleSignOut's — see soFn)
     env.sessionBoundary = sbFn(env);
     env.reauthLanded = rlFn(env);
     w.env = env; w.signOut = soFn(env); w.reauth = raFn(env);
