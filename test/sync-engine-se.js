@@ -7495,8 +7495,10 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
       setBack: fnX("fetch, SUPABASE_URL, console, logAudit, dbAuthHeaders", decl("setBackRequest", "\n  };\n")),   // (22/n — none before it)
       approve: fnX("sessionEpochRef, dbAuthHeaders, parse, fmt, addD, surgeons, onVac, vacations, noCallDays, confirm, userProfile, mySurgeon, fetch, SUPABASE_URL, console, showToast, setBackRequest, setVacRequests, toAdd, logAudit, schedulerAdminIds, addNotification, sendEmailNotif",
         after("  const approveVacRequest = useCallback(", ", [addNotification, sendEmailNotif, schedulerAdminIds, userProfile, surgeons, mySurgeon, vacations, noCallDays]);")),
-      revoke: fnX("sessionEpochRef, dbAuthHeaders, confirm, fetch, SUPABASE_URL, console, showToast, setBackRequest, setVacRequests, toRemove, schedulerAdminIds, addNotification",
-        after("  const revokeApprovedVac = useCallback(", ", [addNotification, schedulerAdminIds]);")),
+      // (changed ON PURPOSE 2026-11-02 — sync-guards DF6: the revoke e-mails too and names who revoked it; its deps list
+      // sendEmailNotif / userProfile / surgeons / mySurgeon, handed in below as approve's are)
+      revoke: fnX("sessionEpochRef, dbAuthHeaders, confirm, fetch, SUPABASE_URL, console, showToast, setBackRequest, setVacRequests, toRemove, schedulerAdminIds, addNotification, sendEmailNotif, userProfile, surgeons, mySurgeon",
+        after("  const revokeApprovedVac = useCallback(", ", [addNotification, sendEmailNotif, schedulerAdminIds, userProfile, surgeons, mySurgeon]);")),
       // (owner decision 2026-10-20, changed ON PURPOSE — sync-guards CA: the edit first asks canChangeVacRequest, now in
       // its deps; this is the scheduler's edit, so the stand-in below allows it — CA runs the real predicate)
       edit: fnX("sessionEpochRef, dbAuthHeaders, editingVacReq, isScheduler, canChangeVacRequest, fmt, showToast, vacRequests, fetch, SUPABASE_URL, console, setBackRequest, logAudit, setVacRequests, toEdit, setEditingVacReq",
@@ -7576,7 +7578,7 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
       else if (o.direct === "toAdd") await toAdd("s3", "vacation", NEW.start_date, NEW.end_date);
       else if (which === "approve") await V.approve(Object.assign({}, common, { parse: HX.parse, fmt: HX.fmt, addD: HX.addD, surgeons: S7, onVac: () => false, vacations: vac, noCallDays: {},
         userProfile: { person_id: "s1", display_name: "AAA" }, mySurgeon: "s1", toAdd }))(Object.assign({}, REQ));
-      else if (which === "revoke") await V.revoke(Object.assign({}, common, { toRemove }))(Object.assign({}, REQ));
+      else if (which === "revoke") await V.revoke(Object.assign({}, common, { toRemove, userProfile: { person_id: "s1", display_name: "AAA" }, surgeons: S7, mySurgeon: "s1" }))(Object.assign({}, REQ));
       else await V.edit(Object.assign({}, common, { editingVacReq: Object.assign({ id: 7, reason: "trip, longer" }, NEW), isScheduler: true, canChangeVacRequest: (q) => !!q, fmt: HX.fmt, vacRequests: [Object.assign({}, REQ)], toEdit,
         setEditingVacReq: mark("editor closed") }))();
       await spin(40); await ticks(A);
@@ -7612,10 +7614,11 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
       D4.crossed && D4.to.join() === "INSERT Bearer TOK_A" && D4.notes.join() === "Bearer TOK_A" && D4.pushes.length === 0 && D4.emails.length === 0
         && D4.toasts.join("|") === "Approved — CCC's vacation, 2030-03-04 to 2030-03-08." && D4.late.length === 0, JSON.stringify(D4));
     const E4 = { approve: await vacRun("approve", {}), revoke: await vacRun("revoke", {}), edit: await vacRun("edit", {}), editNoId: await vacRun("edit", { noId: true }) };
-    check("SE-X23 I4 (e) control: in one session each lands — the approval's time_off row inserted, its notice, push and e-mail, all as A; the revoke's time_off row deleted and its notice, as A; the edit's time_off row updated as A (with no id yet: its old dates deleted and the new ones inserted, as A), the editor closed; no set-back, nothing logged",
+    // (changed ON PURPOSE 2026-11-02 — sync-guards DF6: the revoke now e-mails too, as A, like the approval)
+    check("SE-X23 I4 (e) control: in one session each lands — the approval's time_off row inserted, its notice, push and e-mail, all as A; the revoke's time_off row deleted and its notice, push and e-mail, as A; the edit's time_off row updated as A (with no id yet: its old dates deleted and the new ones inserted, as A), the editor closed; no set-back, nothing logged",
       E4.approve.reqs.length === 1 && E4.approve.to.join() === "INSERT Bearer TOK_A" && E4.approve.notes.join() === "Bearer TOK_A" && E4.approve.pushes.join() === "Bearer TOK_A" && E4.approve.emails.join() === "Bearer TOK_A"
         && E4.approve.early.includes("request list") && E4.approve.audits.includes("request.approve@now:TOK_A")
-        && E4.revoke.reqs.length === 1 && E4.revoke.to.join() === "DELETE Bearer TOK_A" && E4.revoke.notes.join() === "Bearer TOK_A" && E4.revoke.pushes.join() === "Bearer TOK_A"
+        && E4.revoke.reqs.length === 1 && E4.revoke.to.join() === "DELETE Bearer TOK_A" && E4.revoke.notes.join() === "Bearer TOK_A" && E4.revoke.pushes.join() === "Bearer TOK_A" && E4.revoke.emails.join() === "Bearer TOK_A"
         && E4.edit.reqs.length === 1 && E4.edit.to.join() === "UPDATE Bearer TOK_A" && E4.edit.early.includes("editor closed") && E4.editNoId.to.join() === "DELETE Bearer TOK_A,INSERT Bearer TOK_A"
         && Object.values(E4).every(x => x.errors === 0 && !x.crossed)
         // (UX 2026-10-19, sync-guards BE3/BE4: each that lands says so, once — it said nothing before; the revoke's claims

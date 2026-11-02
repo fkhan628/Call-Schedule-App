@@ -4544,11 +4544,21 @@ function CallSchedule() {
       // The notice carries surgeon_id like approve's and deny's: the bell shows
       // a member only notices whose data names them, so with {} the person
       // whose vacation was revoked never saw it (UX audit 2026-10-19).
+      // It is e-mailed too, like an approval or a denial (UX audit 2026-11-01 —
+      // it sent only the push and the bell notice), and all three say one
+      // sentence: the dates in words, who revoked it, and that those days are
+      // back on the call schedule (helpers.js requestNoticeText, guarded). The
+      // e-mail is send-notification v18's vacation_revoked, under each person's
+      // vacation e-mail setting; `message` is what a server before v18 prints.
+      const revokedBy = userProfile?.display_name || surgeons.find(s => s.id === mySurgeon)?.name || "";
+      const revokeMsg = typeof requestNoticeText === "function" ? requestNoticeText("revoked", req, { by: revokedBy }) : `${req.surgeon_name}'s ${kindLabel} ${req.start_date} → ${req.end_date} was revoked`;
       await addNotification("vacation_revoked", isNoCall ? "No-Call Revoked" : "Vacation Revoked",
-        `${req.surgeon_name}'s ${kindLabel} ${req.start_date} → ${req.end_date} was revoked`,
+        revokeMsg,
         { surgeon_id: req.surgeon_id }, revokeTargets, ep);
+      if (!live()) return; // another session now: no e-mail sent from it (as approve's and deny's)
+      sendEmailNotif("vacation_revoked", { surgeon_name: req.surgeon_name, surgeon_id: req.surgeon_id, start_date: req.start_date, end_date: req.end_date, request_type: req.request_type, dates: typeof requestDates === "function" ? requestDates(req.start_date, req.end_date) : undefined, revoked_by: revokedBy || undefined, detail: revokeMsg, message: revokeMsg }, revokeTargets, ep);
     } catch(e) { console.error("Revoke error:", e); if (live()) showToast("Couldn't revoke the vacation — check your connection and try again.", "error"); }
-  }, [addNotification, schedulerAdminIds]);
+  }, [addNotification, sendEmailNotif, schedulerAdminIds, userProfile, surgeons, mySurgeon]);
 
   // ─── Clear All Reviewed Vacation Requests ───
   const clearReviewedRequests = useCallback(async () => {
