@@ -18647,10 +18647,13 @@ await (async () => {
   const btnOf = (t) => allD(t).find((n) => n.tag === "button") || null;
   const bt = hdRun && cssD ? btnOf(hdAt()) : null, btC = hdRun && cssD ? btnOf(hdAt({ copied: true })) : null, btP = hdRun && cssD ? btnOf(hdAt({ isPublicMode: true })) : "x";
   const bs = bt && bt.props.style ? bt.props.style : {};
-  check("DA3 QW9 the button (its heading row, rendered): \"📤 Share today's call\" — it shares or copies the text, it notifies nobody, so no \"Send Notification\" anywhere in the app — tapping it runs shareTonightMsg; finger-sized (minHeight 44, was ~29) with 13px type (was 12), the primary button's colours; \"✓ Copied!\" after a copy; not on the public view",
-    !!bt && textD(bt) === "📤 Share today's call" && bt.props.onClick === shareStub && bs.minHeight >= 44 && bs.fontSize === 13 && bs.background === cssD.btn(true).background && bs.color === "#ffffff"
+  // its white label against both ends of its gradient (the light end of css.btn(true)'s, #2488c8, is 3.9:1)
+  const stopsD = String(bs.background || "").match(/#[0-9a-f]{6}/gi) || [];
+  check("DA3 QW9 the button (its heading row, rendered): \"📤 Share today's call\" — it shares or copies the text, it notifies nobody, so no \"Send Notification\" anywhere in the app — tapping it runs shareTonightMsg; finger-sized (minHeight 44, was ~29) with 13px type (was 12); white on the Notify button's darker gradient, ≥ 4.5:1 at both ends (css.btn(true)'s light end measured 4.04:1 under the label); \"✓ Copied!\" after a copy; not on the public view",
+    !!bt && textD(bt) === "📤 Share today's call" && bt.props.onClick === shareStub && bs.minHeight >= 44 && bs.fontSize === 13 && bs.color === "#ffffff"
+      && /^linear-gradient\(/.test(String(bs.background)) && stopsD.length === 2 && stopsD.every((hx) => crD("#ffffff", hx) >= 4.5) && crD("#ffffff", "#2488c8") < 4.5
       && !!btC && textD(btC) === "✓ Copied!" && btP === null && count("Send Notification") === 0 && count("📤 Share today's call") === 1 && textD(hdAt()).startsWith("📋 On Call Today — Sat 11/7"),
-    JD({ text: bt && textD(bt), style: bs, copied: btC && textD(btC), onPublic: btP && textD(btP) }));
+    JD({ text: bt && textD(bt), style: bs, stops: stopsD.map((hx) => [hx, +crD("#ffffff", hx).toFixed(2)]), copied: btC && textD(btC), onPublic: btP && textD(btP) }));
   const shBody = cutD("  const shareTonightMsg = async () => {", "\n  };");
   const shRun = shBody ? mkD(() => vm.runInContext(`(function (env) { const { buildTonightMsg, navigator, setCopied, showToast, setTimeout, console } = env;\n  return async () => {${shBody}\n  }; })`, sandbox, { filename: "da-share.js" })) : null;
   const shareRun = async (nav) => {

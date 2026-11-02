@@ -10815,9 +10815,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 </div>
                 {/* Share today's call (UX audit 2026-11-01, QW9): it opens the phone's share sheet, or copies the text — it
                     notifies nobody, so its label no longer says it does (the scheduler's 📣 Notify everyone notifies).
-                    A finger-sized 44px, a little larger type. */}
+                    A finger-sized 44px, a little larger type, and the Notify button's darker gradient: white on
+                    css.btn(true)'s light end measured 4.04:1 where the label sits; #155a8a→#1a6fa8 keeps it ≥ 5.4:1. */}
                 {!isPublicMode && <button onClick={shareTonightMsg}
-                  style={{...css.btn(true),minHeight:44,padding:"8px 14px",fontSize:13}}>
+                  style={{...css.btn(true),background:"linear-gradient(135deg,#155a8a,#1a6fa8)",minHeight:44,padding:"8px 14px",fontSize:13}}>
                   {copied ? "✓ Copied!" : "📤 Share today's call"}
                 </button>}
               </div>
