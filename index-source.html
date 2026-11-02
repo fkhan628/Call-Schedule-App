@@ -12736,11 +12736,17 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               NIGHT_KEYS.forEach((sk, i) => {
                 if (hw.days[i].night === myId) roles.push({type: SHIFT_LABELS[sk], icon: "🌙", detail: SHIFT_TIMES[sk], color: "#6030a0", shiftKey: sk});
               });
+              // A Sunday handed off at an hour (helpers.js handoffOn, owner 2026-11-02: KJH 7a–5p, DJA 5p–Mon 7a). The
+              // weekend keeps its role and its Sunday (the chip reads the days held); the detail ends that Sunday at the
+              // hour and names who has the rest. The taker gets a dated role for the Sunday, below. (A handoff exists
+              // only with a helpers.js that has hourLabel.)
+              const ho = hw.days[6].handoff, hoAt = ho ? hourLabel(ho.hour) : "";
               if (wk.nights?.wknd === myId) {
                 const legs = [hw.days[4], hw.days[6]];
                 const mine = (d) => (d.i === 4 ? d.wkndFri : d.wkndSun) === myId;
                 const notes = legs.filter(d => !mine(d) && !(d.cover && d.cover.sid === myId)).map(d => coverNote(d, d.cover ? d.cover.sid : null, nameOf));
-                roles.push({type: "Weekend", icon: "🌗", detail: [SHIFT_TIMES.wknd, ...notes].join(" · "), color: "#7a6030", shiftKey: "wknd",
+                if (ho) notes.push(`${dayMonthLabel(hw.days[6].ds)} ${hoAt}–Mon 7a: ${nameOf(ho.to)}`);
+                roles.push({type: "Weekend", icon: "🌗", detail: [ho ? SHIFT_TIMES.wknd.replace(/–Mon 7a$/, `–${hoAt}`) : SHIFT_TIMES.wknd, ...notes].join(" · "), color: "#7a6030", shiftKey: "wknd",
                   held: legs.filter(mine).map(d => d.ds)});
               }
               svcDays.forEach(d => {
@@ -12751,7 +12757,11 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 if (c.sid !== myId) return;
                 roles.push({type: `${c.type === "swap" ? (c.label || "Coverage") : holidayTitleName(c)} 24h`, icon: holidayEmoji(c.holiday || c.label), detail: `${dayMonthLabel(c.ds)} · 7a–7a`, color: "#c06020", shiftKey: null, date: c.ds});
               });
-              // "No call this week" would contradict a holiday 24h or a service day this surgeon holds
+              // The Sunday's taker: that day as a dated role, as a holiday 24h — no chip, no Find Swap (it is not a
+              // tradable unit), listed through its date. "from 5p" is in its name: the Next call card's later rows
+              // show no detail. Its detail leads with the date, as every dated role's (the row has no chip).
+              if (ho && ho.to === myId) roles.push({type: `Weekend — from ${hoAt}`, icon: "🌗", detail: `${dayMonthLabel(hw.days[6].ds)} · ${hoAt}–Mon 7a · from ${nameOf(ho.from)}`, color: "#7a6030", shiftKey: null, date: hw.days[6].ds});
+              // "No call this week" would contradict a holiday 24h, a service day or a handed-off Sunday this surgeon holds
               if (wk.off === myId && !roles.some(r => r.date)) roles.push({type: "OFF", icon: "✅", detail: "No call this week", color: "#2a7a40", shiftKey: null});
               if (roles.length > 0) {
                 myShifts.push({ mStr, endStr, roles, isBackup: wk.isBackup, isFierceBackup: wk.isFierceBackup });

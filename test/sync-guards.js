@@ -17581,6 +17581,297 @@ console.log("\nBB. Setup time-off deletes ask first; backup pickers snap to Mond
     JSON.stringify({ pickers: count(picker), blur: count("onBlur={snapBkMonday}") }));
 }
 
+// ─── CZ3. Sunday handoff: Mine (2026-11-02) ───
+// Owner, 2026-11-02: "Sunday's actually KJH 7 A to 5PM". On Sun 11/8 KJH (s4, the weekend surgeon: Fri night and the
+// Sunday 24h) covers 7a–5p and DJA (s1) 5p–Mon 7a; the week carries handoffs { "2026-11-08": { from: "s4", to: "s1",
+// at: "17:00" } }, which helpers.js reads (handoffOn; weekHolders' days[6].handoff — the core). Mine's role builder
+// shows both halves. KJH keeps his Weekend role and its Sunday (the chip reads the days held, and he holds part of
+// that one; Find Swap as before — a trade moves the whole slot); its detail ends the Sunday at 5p and names DJA. DJA
+// gets a dated role for the Sunday, "Weekend — from 5p", the weekend's icon and colour: no chip, no Find Swap (it is
+// not a tradable unit), listed through its date, and on the Next call card through the roles ("from 5p" is in its
+// name: the card's later rows show no detail). A week without handoffs builds exactly as before (X4 holds that against
+// main's frozen builder). mineUpcoming, the card's builder, roleDateLabel and the row markup are unchanged. The REAL
+// builder (sliced, as X3 / AU2 / CF do, and run with their five params: a new component-scope name would throw), the
+// REAL card builder and its lines (CF's slices), the REAL mineUpcoming and roleDateLabel, on the live week 2026-11-02
+// (dayCall s4, Sat 11/7 overridden to s1; nights s7 s2 s3 s5; the weekend s4) with and without its handoff:
+//   CZ3a KJH: his service week as before; the Weekend role keeps Fri 11/6 + Sun 11/8 (its chip), with the detail
+//        "Fri 5p–Sat 7a & Sun 7a–5p · Sun 11/8 5p–Mon 7a: DJA"
+//   CZ3b DJA: his Service Day Sat 11/7 as before, then "Weekend — from 5p" dated Sun 11/8, "Sun 11/8 · 5p–Mon 7a ·
+//        from KJH" (🌗, #7a6030): no shift key, no chip
+//   CZ3c without the handoff the week builds exactly as before (6670c5e's builder, frozen); with it only KJH's weekend
+//        detail and DJA's new role differ; a record that hands nothing builds exactly as none; an OFF surgeon who
+//        takes the Sunday is not also told "No call this week"; with an old cached helpers.js it builds as before
+//   CZ3d My Shifts (the REAL mineUpcoming; a row's state as in CL): DJA's Sunday is a dated row through 11/8 (no Find
+//        Swap, no in-progress tag; the page's own row-date code gives it no chip), gone 11/9; KJH's weekend offers Find
+//        Swap through Fri 11/6, is in progress Sat and Sun, gone Mon — at every time exactly as without the handoff
+//   CZ3e the Next call card: on 11/1 DJA reads his Service Day, then "Weekend — from 5p" on Sun 11/8 (the later rows
+//        print the type, not the detail); on 11/8 it is on top, "today", with its detail; KJH's card as without it
+//   CZ3f CL2 with handoff weeks: every role of every surgeon is listed in My Shifts exactly while it is on the card,
+//        every day 10/25–11/29 at 00:00, 06:59, 07:00, 12:00, 16:59, 17:00 and 23:59
+//   CZ3g AU2 with handoff weeks: every chip reads back to exactly the days its role holds, on its own weekdays; a
+//        dated role (a taker's too) gets none
+//   CZ3h every shape: the 46 live weeks and 300 seeded random weeks (overrides, holidays, backup and OFF weeks) with a
+//        record on each Sunday — where it hands the Sunday, only the weekend surgeon's detail and the taker's one dated
+//        role change, as the rule says; where it doesn't, nothing changes
+//   the section runs inside its own catch (a throw fails one named check, never the run)
+console.log("\nCZ3. Sunday handoff: Mine (2026-11-02)");
+await (async () => {
+  const J = JSON.stringify;
+  const FIXD = path.join(ROOT, "test", "fixtures");
+  const LIVE = JSON.parse(fs.readFileSync(path.join(FIXD, "schedule-weeks-live-2026-10-02.json"), "utf8"));
+  const SURG = ["DJA", "MCC", "RPC", "KJH", "REH", "FAK", "ARW"].map((name, i) => ({ id: "s" + (i + 1), name }));
+  const IDS = SURG.map((s) => s.id);
+  const nameOf = (id) => (SURG.find((s) => s.id === id) || {}).name || id || "?";
+  const fmtD = vm.runInContext("fmt", sandbox), P = vm.runInContext("parse", sandbox), addDs = vm.runInContext("addD", sandbox);
+  const nextDay = (ds) => fmtD(addDs(P(ds), 1));
+  // X3's slices (the Mine builder, const myShifts = [] through the myShiftsView line; holidayEmoji), CF's (the card's
+  // builder, _nextUp through its sort, and the lines it reads) and AU5's (the row's date code, mineDates … mineDateChip)
+  const MA = "            const myShifts = [];", MB = "            const myShiftsView = mineUpcoming(myShifts, myToday, new Date().toTimeString().slice(0, 5));";
+  const ma = src.indexOf(MA), mb = ma < 0 ? -1 : src.indexOf(MB, ma);
+  const ha = src.indexOf("const holidayEmoji = (label) => {"), hb = ha < 0 ? -1 : src.indexOf("\n  };", ha);
+  const NA = "            const _nextUp = [];", NB = "_nextUp.sort((a, b) => a.start - b.start);";
+  const na = src.indexOf(NA), nb = na < 0 ? -1 : src.indexOf(NB, na);
+  const lineOf = (head) => { const i = src.indexOf(head), j = i < 0 ? -1 : src.indexOf("\n", i); return i < 0 || j < 0 || count(head) !== 1 ? null : src.slice(i, j).trim(); };
+  const SO = lineOf("const _startOff = "), NI = lineOf("const _nice = "), WT = lineOf("const _whenTxt = "), RG = lineOf("const _range = ");
+  const dA = src.indexOf("const mineDates = "), dB = dA < 0 ? -1 : src.indexOf("const mineDateChip = ", dA);
+  let build = null, card = null, H = null, rowDateOf = null;
+  try {
+    const holidayEmoji = ha > 0 && hb > 0 ? vm.runInContext(`(function () { ${src.slice(ha, hb + 4)}\n return holidayEmoji; })()`, sandbox) : null;
+    const mineFn = ma > 0 && mb > 0 && holidayEmoji ? vm.runInContext(`(function (schedule, myId, nameOf, holidayEmoji, myToday) { ${src.slice(ma, mb + MB.length)}\n return myShifts; })`, sandbox) : null;
+    build = mineFn ? (sched, sid) => JSON.parse(J(mineFn(sched, sid, nameOf, holidayEmoji, "2016-01-01"))) : null;
+    card = na > 0 && nb > 0 ? vm.runInContext(`(function (myShifts, _today0, _DAY, _startOff, _now) { ${src.slice(na, nb + NB.length)}\n return _nextUp; })`, sandbox) : null;
+    H = SO && NI && WT && RG ? vm.runInContext(`(function () { ${SO} ${NI} ${RG} ${WT} return { _startOff, _nice, _range, _whenTxt }; })()`, sandbox) : null;
+    rowDateOf = dA > 0 && dB > dA ? vm.runInContext(`(function (env) { const { schedule, weekRangeLabel, roleDateLabel, publishedThrough, monthDayLabel } = env; ${src.slice(dA, dB)} return rowDate; })`, sandbox) : null;
+  } catch (ex) { build = card = H = rowDateOf = null; }
+  const upFn = vm.runInContext('typeof mineUpcoming === "function" ? mineUpcoming : null', sandbox);
+  const chipFn = vm.runInContext('typeof roleDateLabel === "function" ? roleDateLabel : null', sandbox);
+  if (!build || !card || !H || !rowDateOf || !upFn || !chipFn) {
+    check("CZ3 the Mine builder, the card's builder and lines, the row's date code, mineUpcoming and roleDateLabel are extractable", false,
+      J({ build: !!build, card: !!card, lines: !!H, rowDate: !!rowDateOf, mineUpcoming: !!upFn, roleDateLabel: !!chipFn }));
+    return;
+  }
+  // The live week 2026-11-02, without and with the handoff the owner asked for
+  const WK = { dayCall: "s4", dayCallOverrides: { "2026-11-07": "s1" }, nights: { mon: "s7", tue: "s2", wed: "s3", thu: "s5", wknd: "s4" }, isBackup: false, isFierceBackup: false };
+  const HO = { "2026-11-08": { from: "s4", to: "s1", at: "17:00" } };
+  const weekOf = (handoffs, extra) => ({ "2026-11-02": Object.assign({}, WK, extra, handoffs ? { handoffs } : {}) });
+  const PLAIN = weekOf(), SPLIT = weekOf(HO);
+  const rolesOf = (sched, sid) => (build(sched, sid).find((w) => w.mStr === "2026-11-02") || { roles: [] }).roles;
+  // a role on one line: icon | type | detail | colour | shift key | date | held
+  const line = (r) => [r.icon, r.type, r.detail, r.color, r.shiftKey || "-", r.date || "-", (r.held || []).join(",")].join(" | ");
+
+  // CZ3a — KJH, the weekend surgeon
+  const kjhR = rolesOf(SPLIT, "s4"), kjh = kjhR.map(line), kjhWknd = kjhR.find((r) => r.shiftKey === "wknd") || null;
+  const kjhChip = kjhWknd ? chipFn("2026-11-02", kjhWknd) : null;
+  check("CZ3a KJH (the weekend surgeon) with the handoff: his service week as before (Sat 11/7 is DJA's); his Weekend role keeps Fri 11/6 and Sun 11/8 — he holds part of that Sunday, so the chip still reads \"Fri 11/6 + Sun 11/8\" — and its detail reads \"Fri 5p–Sat 7a & Sun 7a–5p · Sun 11/8 5p–Mon 7a: DJA\"",
+    J(kjh) === J(["🏥 | Service Week (incl. Sat) | M–F 7a–5p + Sat 7a–Sun 7a · Sat 11/7 covered by DJA | #1a6fa8 | dayCall | - | 2026-11-02,2026-11-03,2026-11-04,2026-11-05,2026-11-06",
+      "🌗 | Weekend | Fri 5p–Sat 7a & Sun 7a–5p · Sun 11/8 5p–Mon 7a: DJA | #7a6030 | wknd | - | 2026-11-06,2026-11-08"]) && kjhChip === "Fri 11/6 + Sun 11/8",
+    J({ kjh, kjhChip }));
+
+  // CZ3b — DJA, who takes the Sunday at 5p
+  const djaR = rolesOf(SPLIT, "s1"), dja = djaR.map(line), djaTake = djaR.find((r) => r.date === "2026-11-08") || null;
+  check("CZ3b DJA (the taker): his Service Day Sat 11/7 as before, then ONE dated role for Sun 11/8 — \"Weekend — from 5p\", \"Sun 11/8 · 5p–Mon 7a · from KJH\", the weekend's 🌗 and colour; no shift key (no Find Swap, no in-progress tag), no held days and no chip (its detail leads with the date, as every dated role's)",
+    J(dja) === J(["🏥 | Service Day | Sat 11/7 · 7a–7a | #1a6fa8 | - | 2026-11-07 | ", "🌗 | Weekend — from 5p | Sun 11/8 · 5p–Mon 7a · from KJH | #7a6030 | - | 2026-11-08 | "])
+      && !!djaTake && djaTake.shiftKey === null && !("held" in djaTake) && chipFn("2026-11-02", djaTake) === null,
+    J(dja));
+
+  // CZ3c — no handoff: exactly as before; the handoff touches KJH's weekend detail and DJA's list only; records that hand nothing
+  const every = (sched) => Object.fromEntries(SURG.map((s) => [s.name, build(sched, s.id).map((w) => Object.assign({}, w, { roles: w.roles.map(line) }))]));
+  // the week through 6670c5e's builder (before Mine read a handoff), frozen: each surgeon's roles
+  const BEFORE = {
+    DJA: ["🏥 | Service Day | Sat 11/7 · 7a–7a | #1a6fa8 | - | 2026-11-07 | "],
+    MCC: ["🌙 | Tue Night | Tue 5p–7a | #6030a0 | tue | - | "],
+    RPC: ["🌙 | Wed Night | Wed 5p–7a | #6030a0 | wed | - | "],
+    KJH: ["🏥 | Service Week (incl. Sat) | M–F 7a–5p + Sat 7a–Sun 7a · Sat 11/7 covered by DJA | #1a6fa8 | dayCall | - | 2026-11-02,2026-11-03,2026-11-04,2026-11-05,2026-11-06",
+      "🌗 | Weekend | Fri 5p–Sat 7a & Sun 7a–Mon 7a | #7a6030 | wknd | - | 2026-11-06,2026-11-08"],
+    REH: ["🌙 | Thu Night | Thu 5p–7a | #6030a0 | thu | - | "],
+    FAK: [],
+    ARW: ["🌙 | Mon Night | Mon 5p–7a | #6030a0 | mon | - | "],
+  };
+  const plain = every(PLAIN), split = every(SPLIT);
+  const plainRoles = Object.fromEntries(Object.entries(plain).map(([k, ws]) => [k, ws.flatMap((w) => w.roles)]));
+  const KJH_NOW = " | Fri 5p–Sat 7a & Sun 7a–5p · Sun 11/8 5p–Mon 7a: DJA | ", KJH_BEFORE = " | Fri 5p–Sat 7a & Sun 7a–Mon 7a | ";
+  const restSame = ["MCC", "RPC", "REH", "FAK", "ARW"].every((n) => J(split[n]) === J(plain[n]));
+  const kjhSame = J(split.KJH) !== J(plain.KJH) && J(split.KJH.map((w) => Object.assign({}, w, { roles: w.roles.map((r) => r.replace(KJH_NOW, KJH_BEFORE)) }))) === J(plain.KJH);
+  const djaSame = J(split.DJA.map((w) => Object.assign({}, w, { roles: w.roles.slice(0, -1) }))) === J(plain.DJA);
+  check("CZ3c without its handoff the week builds exactly as before — each surgeon's roles as 6670c5e's builder gave them (frozen); with it, MCC, RPC, REH, FAK and ARW are identical (week fields too), KJH's differ only in his weekend's detail and DJA's only by the one role",
+    J(plainRoles) === J(BEFORE) && restSame && kjhSame && djaSame, J({ plainRoles, restSame, kjhSame, djaSame }).slice(0, 700));
+  const at17 = (o) => ({ "2026-11-08": Object.assign({ from: "s4", to: "s1", at: "17:00" }, o) });
+  const INERT = { fromTraded: at17({ from: "s2" }), at7a: at17({ at: "07:00" }), halfHour: at17({ at: "17:30" }), at24: at17({ at: "24:00" }), word: at17({ at: "5p" }),
+    toSelf: at17({ to: "s4" }), noTo: at17({ to: undefined }), saturday: { "2026-11-07": { from: "s4", to: "s1", at: "17:00" } }, none: {} };
+  const inertBad = Object.keys(INERT).filter((k) => J(every(weekOf(INERT[k]))) !== J(plain));
+  const noFrom = J(every(weekOf({ "2026-11-08": { to: "s1", at: "17:00" } }))) === J(split);
+  check(`CZ3c a record that hands nothing builds exactly as no record, for every surgeon (${Object.keys(INERT).length} kinds: its from traded away, 07:00, 17:30, 24:00, "5p", to the weekend surgeon himself, no to, dated the Saturday, an empty map); one with no from hands the weekend surgeon's Sunday, exactly as from s4`,
+    inertBad.length === 0 && noFrom, J({ inertBad, noFrom }));
+  const offNo = rolesOf(weekOf(null, { dayCallOverrides: {}, off: "s1" }), "s1").map((r) => r.type), offHo = rolesOf(weekOf(HO, { dayCallOverrides: {}, off: "s1" }), "s1").map((r) => r.type);
+  check("CZ3c an OFF surgeon who takes the Sunday is not also told \"No call this week\" (a dated role's rule, as a holiday 24h's): OFF without the handoff, only \"Weekend — from 5p\" with it",
+    J(offNo) === J(["OFF"]) && J(offHo) === J(["Weekend — from 5p"]), J({ offNo, offHo }));
+  // An OLD cached helpers.js (from before the core), as OLD_SB models one: no hourLabel, and a weekHolders that never names a
+  // handoff (handoffOn answers null). The page reaches hourLabel only through a handoff, so it needs no typeof.
+  let oldOut = null;
+  try {
+    const h = fs.readFileSync(path.join(ROOT, "helpers.js"), "utf8").split("function hourLabel(").join("function __preHandoff_hourLabel(")
+      .split("function handoffOn(wk, ds) {").join("function handoffOn() { return null; }\nfunction __preHandoff_handoffOn(wk, ds) {");
+    const sb = { console, window: {}, document: undefined, navigator: { userAgent: "node-test" }, localStorage: { getItem: () => null, setItem() {}, removeItem() {} }, fetch: () => { throw new Error("no fetch"); }, setTimeout, clearTimeout };
+    sb.globalThis = sb; vm.createContext(sb);
+    vm.runInContext(h, sb, { filename: "helpers-before-handoff.js" });
+    vm.runInContext(fs.readFileSync(path.join(ROOT, "config.js"), "utf8"), sb, { filename: "config.js" });
+    const heOld = vm.runInContext(`(function () { ${src.slice(ha, hb + 4)}\n return holidayEmoji; })()`, sb);
+    const mineOld = vm.runInContext(`(function (schedule, myId, nameOf, holidayEmoji, myToday) { ${src.slice(ma, mb + MB.length)}\n return myShifts; })`, sb);
+    const noLabel = vm.runInContext('typeof hourLabel === "undefined"', sb);
+    oldOut = noLabel ? Object.fromEntries(SURG.map((s) => [s.name, JSON.parse(J(mineOld(SPLIT, s.id, nameOf, heOld, "2016-01-01"))).map((w) => Object.assign({}, w, { roles: w.roles.map(line) }))])) : "hourLabel still defined";
+  } catch (ex) { oldOut = "threw: " + String((ex && ex.message) || ex).slice(0, 160); }
+  check("CZ3c with an OLD cached helpers.js (no hourLabel; its weekHolders names no handoff) the builder runs as before on a week that carries one: nothing thrown, every surgeon's roles exactly as with no record",
+    J(oldOut) === J(plain), J(oldOut).slice(0, 300));
+
+  // CZ3d — My Shifts: the REAL mineUpcoming on the REAL roles; a row's state as in CL ("swap" = Find Swap, "in progress",
+  // "dated" = no tag, or null: not listed)
+  const rowState = (sched, sid, pick, today, at) => {
+    const w = upFn(build(sched, sid), today, at).find((x) => x.mStr === "2026-11-02"), r = w ? w.roles.find(pick) : null;
+    return !r ? null : r.date ? (r.canSwap ? "dated + swap" : "dated") : !r.shiftKey ? "off" : r.canSwap ? "swap" : "in progress";
+  };
+  const isTake = (r) => r.date === "2026-11-08", isWknd = (r) => r.shiftKey === "wknd";
+  const WHEN = [["2026-11-01", "12:00"], ["2026-11-06", "23:59"], ["2026-11-07", "12:00"], ["2026-11-08", "00:00"], ["2026-11-08", "16:59"], ["2026-11-08", "17:00"], ["2026-11-08", "23:59"], ["2026-11-09", "00:00"], ["2026-11-09", "06:59"]];
+  const take = WHEN.map(([d, t]) => rowState(SPLIT, "s1", isTake, d, t));
+  const wkndS = WHEN.map(([d, t]) => rowState(SPLIT, "s4", isWknd, d, t)), wkndP = WHEN.map(([d, t]) => rowState(PLAIN, "s4", isWknd, d, t));
+  const rowDate = rowDateOf(Object.assign(vm.runInContext("({ weekRangeLabel, publishedThrough, monthDayLabel })", sandbox), { schedule: SPLIT, roleDateLabel: chipFn }));
+  const chips = { take: djaTake ? rowDate("2026-11-02", djaTake) : "no role", wknd: kjhWknd ? rowDate("2026-11-02", kjhWknd) : "no role" };
+  check("CZ3d My Shifts (the REAL mineUpcoming): DJA's Sunday is a dated row — no Find Swap, no in-progress tag — from 11/1 through Sun 11/8 at 23:59 (a dated role ends with its date, as a holiday 24h's), gone Mon 11/9; the page's own row-date code gives it no chip, and KJH's weekend \"Fri 11/6 + Sun 11/8\"",
+    J(take) === J(["dated", "dated", "dated", "dated", "dated", "dated", "dated", null, null]) && chips.take === null && chips.wknd === "Fri 11/6 + Sun 11/8",
+    J({ take, chips }));
+  check("CZ3d …KJH's weekend offers Find Swap through Fri 11/6, is in progress Sat 11/7 and all of Sun 11/8, gone Mon 11/9 — at every one of those times exactly as without the handoff",
+    J(wkndS) === J(["swap", "swap", "in progress", "in progress", "in progress", "in progress", "in progress", null, null]) && J(wkndS) === J(wkndP),
+    J({ wkndS, wkndP }));
+
+  // CZ3e — the Next call card: its REAL builder on the REAL roles; `at` is the clock on that day (its midnight by default)
+  const clock = (today, at) => { const d = P(today); if (at) { const [h, m] = at.split(":").map(Number); d.setHours(h, m, 0, 0); } return d; };
+  const cardOf = (sched, sid, today, at) => card(build(sched, sid), P(today), 86400000, H._startOff, clock(today, at));
+  const N = (ds) => H._nice(P(ds));
+  // an entry as a later row prints it: icon, type, the date line, when — no detail
+  const rowTxt = (e) => `${e.icon} ${e.type} · ${H._range(e)} · ${H._whenTxt(e.days)}`;
+  const dja1 = cardOf(SPLIT, "s1", "2026-11-01").map(rowTxt), dja8 = cardOf(SPLIT, "s1", "2026-11-08", "16:59"), top8 = dja8[0] || null;
+  const nsrcZ3 = src.replace(/\r\n/g, "\n");
+  const topAt = nsrcZ3.indexOf("const e = _upNext[0];"), restAt = topAt < 0 ? -1 : nsrcZ3.indexOf("{_upNext.slice(1).map((e, i) => (", topAt), restEnd = restAt < 0 ? -1 : nsrcZ3.indexOf("))}", restAt);
+  const topSrc = restAt > topAt ? nsrcZ3.slice(topAt, restAt) : "", restSrc = restEnd > restAt ? nsrcZ3.slice(restAt, restEnd) : "";
+  check(`CZ3e the Next call card (its REAL code and lines): on 11/1 DJA's reads "${dja1.join("\" then \"")}" — the Sunday a row of its own, one day, with "from 5p" in its name, since a later row prints the type and no detail; on Sun 11/8 it is on top, "today", its detail under it`,
+    J(dja1) === J([`🏥 Service Day · ${N("2026-11-07")} · in 6 days`, `🌗 Weekend — from 5p · ${N("2026-11-08")} · in 7 days`])
+      && !!top8 && dja8.length === 1 && top8.type === "Weekend — from 5p" && top8.detail === "Sun 11/8 · 5p–Mon 7a · from KJH" && top8.span === false && H._whenTxt(top8.days) === "today"
+      && restSrc.includes("{e.type}") && !restSrc.includes("{e.detail}") && topSrc.includes("{e.type}") && topSrc.includes("{e.detail}"),
+    J({ dja1, top8, topSrc: topSrc.length, restSrc: restSrc.length }));
+  const kjhCard = (sched) => cardOf(sched, "s4", "2026-11-01").map((e) => [e.shiftKey || e.date, fmtD(e.start), fmtD(e.end), e.span, e.days, rowTxt(e)].join(" "));
+  check("CZ3e KJH's card is as without the handoff: the service week Mon 11/2 → Fri 11/6 (DJA holds Sat 11/7), tomorrow, and the weekend Fri 11/6 → Sun 11/8, in 5 days — every entry and line the same",
+    J(kjhCard(SPLIT)) === J(kjhCard(PLAIN)) && kjhCard(SPLIT).length === 2 && kjhCard(SPLIT)[0].startsWith("dayCall 2026-11-02 2026-11-06 true 1 ")
+      && kjhCard(SPLIT)[1].startsWith("wknd 2026-11-06 2026-11-08 true 5 "), J({ split: kjhCard(SPLIT), plain: kjhCard(PLAIN) }));
+
+  // CZ3f's weeks: the live week; a Sunday handed at 8a in a backup week to a surgeon who is OFF; one handed at 11p (no from)
+  // behind a Friday holiday, to the week's service surgeon
+  const HOW = {
+    "2026-11-02": SPLIT["2026-11-02"],
+    "2026-11-09": { dayCall: "s2", off: "s6", isBackup: true, nights: { mon: "s3", tue: "s4", wknd: "s5" }, handoffs: { "2026-11-15": { from: "s5", to: "s6", at: "08:00" } } },
+    "2026-11-16": { dayCall: "s7", nights: { tue: "s1", thu: "s4", wknd: "s3" }, holidayCoverage: { "2026-11-20": { surgeonId: "s2", type: "major", name: "Fri 24h", holiday: "Test Friday" } }, handoffs: { "2026-11-22": { to: "s7", at: "23:00" } } },
+  };
+  // CZ3h's weeks: the 46 live weeks, each Sunday handed by its weekend surgeon to the next surgeon at 8a, 9a, … 11p in turn,
+  // and 300 seeded random weeks (2030 on) with a record of every kind on their Sundays. RULE[m] is what the record should do
+  // — { sun, from, to, hour } when it hands the Sunday (the week has a weekend surgeon, no holiday on that Sunday, a whole
+  // hour 8–23, to someone else, its from the weekend surgeon or none), else null
+  const WITH = {}, WITHOUT = {}, RULE = {}, kinds = {};
+  const hh = (h) => `${String(h).padStart(2, "0")}:00`;
+  Object.keys(LIVE).sort().forEach((m, k) => {
+    const wk = LIVE[m], W = (wk.nights || {}).wknd || null, sun = fmtD(addDs(P(m), 6)), to = IDS[(IDS.indexOf(W) + 1) % IDS.length], hour = 8 + (k % 16);
+    WITHOUT[m] = wk; WITH[m] = Object.assign({}, wk, { handoffs: { [sun]: { from: W, to, at: hh(hour) } } });
+    RULE[m] = W && !(wk.holidayCoverage || {})[sun] ? { sun, from: W, to, hour } : null;
+  });
+  let seed = 20261102;
+  const rnd = () => { seed = (seed + 0x6D2B79F5) | 0; let t = Math.imul(seed ^ (seed >>> 15), 1 | seed); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+  const pick = (a) => a[Math.floor(rnd() * a.length)];
+  const maybe = (p) => (rnd() < p ? pick(IDS) : null);
+  const KINDS = ["hands", "hands", "hands", "no from", "from traded", "to himself", "bad hour", "the Saturday"];
+  for (let k = 0; k < 300; k++) {
+    const m = fmtD(addDs(P("2030-01-07"), 7 * k)), days = [0, 1, 2, 3, 4, 5, 6].map((i) => fmtD(addDs(P(m), i)));
+    const wk = { dayCall: maybe(0.9), off: maybe(0.5), isBackup: rnd() < 0.15, isFierceBackup: rnd() < 0.1, nights: { mon: maybe(0.85), tue: maybe(0.85), wed: maybe(0.85), thu: maybe(0.85), wknd: maybe(0.92) } };
+    if (rnd() < 0.3) wk.dayCallOverrides = { [pick(days.slice(0, 6))]: pick(IDS) };
+    if (rnd() < 0.3) wk.holidayCoverage = { [pick([days[0], days[4], days[4], days[5], days[6]])]: { surgeonId: pick(IDS), type: pick(["major", "minor", "swap"]), name: "Test 24h", holiday: "Test Day" } };
+    const W = wk.nights.wknd, kind = pick(KINDS), to = pick(IDS.filter((x) => x !== W)), hour = 8 + Math.floor(rnd() * 16), at = hh(hour);
+    const rec = kind === "no from" ? { to, at } : kind === "from traded" ? { from: pick(IDS.filter((x) => x !== W)), to, at } : kind === "to himself" ? { from: W, to: W, at }
+      : kind === "bad hour" ? { from: W, to, at: pick(["07:00", "06:00", "00:00", "17:30", "24:00", "5p", ""]) } : { from: W, to, at };
+    WITHOUT[m] = wk; WITH[m] = Object.assign({}, wk, { handoffs: { [kind === "the Saturday" ? days[5] : days[6]]: rec } });
+    RULE[m] = (kind === "hands" || kind === "no from") && W && !(wk.holidayCoverage || {})[days[6]] ? { sun: days[6], from: W, to, hour } : null;
+    kinds[kind] = (kinds[kind] || 0) + 1;
+  }
+
+  // CZ3f — CL2 with handoff weeks: a role is in My Shifts exactly while it is on the card
+  const TIMES = ["00:00", "06:59", "07:00", "12:00", "16:59", "17:00", "23:59"];
+  const l2Bad = []; let l2On = 0, l2Off = 0, l2Take = 0;
+  for (const s of SURG) {
+    const shifts = build(HOW, s.id);
+    for (let today = "2026-10-25"; today <= "2026-11-29"; today = nextDay(today)) for (const w of shifts) for (const r of w.roles) {
+      if (!r.shiftKey && !r.date) continue; // OFF: never on the card
+      for (const at of TIMES) {
+        const one = [Object.assign({}, w, { roles: [r] })];
+        const onCard = card(JSON.parse(J(one)), P(today), 86400000, H._startOff, clock(today, at)).length === 1, onMine = upFn(JSON.parse(J(one)), today, at).length === 1;
+        if (onCard) l2On++; else l2Off++;
+        if (onCard && / — from /.test(r.type)) l2Take++;
+        if (onCard !== onMine) l2Bad.push(`${s.name} ${w.mStr} ${r.type} on ${today} ${at}: card ${onCard}, My Shifts ${onMine}`);
+      }
+    }
+  }
+  check(`CZ3f CL2 with handoff weeks (the live week; a Sunday handed at 8a in a backup week to a surgeon who is OFF; one handed at 11p behind a Friday holiday): every role of every surgeon is listed in My Shifts exactly while it is on the Next call card, every day 10/25–11/29 at ${TIMES.join(", ")} (${l2On} on, ${l2Off} off; ${l2Take} of those on a taker's Sunday)`,
+    l2Bad.length === 0 && l2On >= 600 && l2Off >= 600 && l2Take >= 400, l2Bad.slice(0, 3).join(" | ") || J({ l2On, l2Off, l2Take }));
+
+  // CZ3g — AU2 with handoff weeks: a chip read back into days is exactly the days its role holds (a night: its own date),
+  // on its own weekdays; a dated role — a taker's Sunday too — and an OFF week get none
+  const readBack = vm.runInContext(`(function (mStr, t) {
+    const dsOf = (m, d) => { for (let i = 0; i < 7; i++) { const x = addD(parse(mStr), i); if (x.getMonth() + 1 === m && x.getDate() === d) return fmt(x); } return null; };
+    const out = [];
+    for (const part of String(t).split(" + ")) {
+      const ends = part.split(" – ").map((p) => { const m = p.match(/^\\w{3} (\\d{1,2})\\/(\\d{1,2})$/); return m ? dsOf(+m[1], +m[2]) : null; });
+      if (!ends.length || ends.length > 2 || ends.some((e) => !e)) return null;
+      for (let x = parse(ends[0]); fmt(x) <= ends[ends.length - 1]; x = addD(x, 1)) out.push(fmt(x));
+    }
+    return out;
+  })`, sandbox);
+  const ALLOWED = { mon: ["Mon"], tue: ["Tue"], wed: ["Wed"], thu: ["Thu"], wknd: ["Fri", "Sun"], dayCall: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] };
+  const DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"], NIGHT_OFF = { mon: 0, tue: 1, wed: 2, thu: 3 };
+  const gBad = []; let gChip = 0, gHanded = 0, gNone = 0;
+  for (const [sched, tag] of [[HOW, "CZ3f"], [WITH, "CZ3h"]]) for (const s of SURG) for (const w of build(sched, s.id)) for (const r of w.roles) {
+    const t = chipFn(w.mStr, r);
+    if (r.date || !r.shiftKey || (Array.isArray(r.held) && r.held.length === 0)) { gNone++; if (t !== null) gBad.push(`${tag} ${s.name} ${w.mStr} ${r.type}: chip "${t}"`); continue; }
+    gChip++;
+    if (r.shiftKey === "wknd" && /–Mon 7a: /.test(r.detail)) gHanded++;
+    const back = typeof t === "string" ? readBack(w.mStr, t) : null;
+    const want = Array.isArray(r.held) ? [...new Set(r.held)].sort() : [fmtD(addDs(P(w.mStr), NIGHT_OFF[r.shiftKey]))];
+    if (J(back) !== J(want) || !(back || []).every((ds) => (ALLOWED[r.shiftKey] || []).includes(DOW[P(ds).getDay()]))) gBad.push(`${tag} ${s.name} ${w.mStr} ${r.type}: "${t}" reads ${J(back)}, holds ${J(want)}`);
+  }
+  check(`CZ3g AU2 with handoff weeks (CZ3f's and CZ3h's): every chip read back into days is exactly the days its role holds, on its own weekdays (${gChip} chips; ${gHanded} a weekend whose Sunday is handed on — still Fri + Sun); a dated role, a taker's Sunday too, and an OFF week get none (${gNone})`,
+    gBad.length === 0 && gChip >= 1000 && gHanded >= 150 && gNone >= 150, gBad.slice(0, 3).join(" | ") || J({ gChip, gHanded, gNone }));
+
+  // CZ3h — every shape: the weekend surgeon's detail and the taker's one dated role change, as the rule says; nothing else
+  const hourTxt = (h) => `${h % 12 === 0 ? 12 : h % 12}${h < 12 ? "a" : "p"}`; // written out here, not hourLabel's
+  const sunTxt = (ds) => `Sun ${Number(ds.slice(5, 7))}/${Number(ds.slice(8, 10))}`;
+  const byWeek = (sched, sid) => Object.fromEntries(build(sched, sid).map((w) => [w.mStr, w]));
+  const hBad = [], hN = { detail: 0, coverNote: 0, taker: 0, takerWasOff: 0, others: 0, inert: 0 };
+  for (const s of SURG) {
+    const A = byWeek(WITHOUT, s.id), B = byWeek(WITH, s.id);
+    for (const m of Object.keys(WITH)) {
+      const a = A[m] || null, b = B[m] || null, R = RULE[m];
+      let want = a;
+      if (R && s.id === R.from) {
+        want = Object.assign({}, a, { roles: a.roles.map((r) => (r.shiftKey !== "wknd" ? r
+          : Object.assign({}, r, { detail: r.detail.replace("Sun 7a–Mon 7a", `Sun 7a–${hourTxt(R.hour)}`) + ` · ${sunTxt(R.sun)} ${hourTxt(R.hour)}–Mon 7a: ${nameOf(R.to)}` }))) });
+        hN.detail++; if (/ covered by /.test(J(a.roles))) hN.coverNote++;
+      } else if (R && s.id === R.to) {
+        const taker = { type: `Weekend — from ${hourTxt(R.hour)}`, icon: "🌗", detail: `${sunTxt(R.sun)} · ${hourTxt(R.hour)}–Mon 7a · from ${nameOf(R.from)}`, color: "#7a6030", shiftKey: null, date: R.sun };
+        want = { mStr: m, endStr: R.sun, roles: (a ? a.roles : []).filter((r) => r.type !== "OFF").concat([taker]), isBackup: WITHOUT[m].isBackup, isFierceBackup: WITHOUT[m].isFierceBackup };
+        hN.taker++; if (a && a.roles.some((r) => r.type === "OFF")) hN.takerWasOff++;
+      } else if (R) hN.others++; else hN.inert++;
+      if (J(b) !== J(want)) hBad.push(`${s.name} ${m} (${R ? `${nameOf(R.from)} → ${nameOf(R.to)} at ${hourTxt(R.hour)}` : "hands nothing"}): ${J(b && b.roles.map(line))}, want ${J(want && want.roles.map(line))}`);
+    }
+  }
+  const handsN = Object.values(RULE).filter(Boolean).length, liveHands = Object.keys(LIVE).filter((m) => RULE[m]).length;
+  check(`CZ3h every shape — the ${Object.keys(LIVE).length} live weeks and 300 seeded random weeks (overrides, a holiday on a Monday, Friday, Saturday or Sunday, backup and OFF weeks), a record on each Sunday (${J(kinds)}): where it hands the Sunday (${handsN} weeks, ${liveHands} of them live) only the weekend surgeon's weekend detail changes (its Sunday to the hour, then who has the rest, after any covered-day note) and the taker gains one dated role (an OFF line gives way to it); everyone else, and every week whose record hands nothing, builds exactly as without it (${J(hN)})`,
+    hBad.length === 0 && Object.keys(LIVE).length === 46 && liveHands >= 35 && hN.detail >= 150 && hN.taker >= 150 && hN.coverNote >= 3 && hN.takerWasOff >= 3 && hN.inert >= 7 * 80,
+    hBad.slice(0, 2).join(" | ") || J(hN));
+})().catch(ex => check("CZ3 harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
+
 // ─── CK. A ?tab=mine link opens Mine, not a blank page (2026-10-25) ───
 // A push or a shared link lands on the app with ?tab=X (the deep-link effect). The Mine tab's view is
 // "myschedule", but the effect's list named it "mine" and set the view to that — which no {view==="…"} block
