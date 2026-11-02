@@ -12644,6 +12644,9 @@ ${"</"}script>${"</"}body>${"</"}html>`;
 
             const sortedMonths = [...allMonths].sort();
             const moLabels = sortedMonths.map(m => { const [y,mo] = m.split("-"); return MO[parseInt(mo)-1].slice(0,3) + " " + y.slice(2); });
+            // Whose rows: everyone's for the scheduler and the admin, a member's own — ONE list for both tables and the CSV
+            // (owner Q9 2026-11-02: a member's file held all seven surgeons' rows while their screen showed only theirs)
+            const monthlyShown = surgeons.filter(s => isScheduler || !mySurgeon || mySurgeon === "admin" || s.id === mySurgeon);
 
             return (
               <div style={css.card}>
@@ -12651,7 +12654,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   <div style={css.cardT}>📊 Monthly Call Summary</div>
                   <button onClick={()=>{
                     const header = ["Surgeon", ...moLabels.map(m=>m+" 1st"), "Total 1st", ...moLabels.map(m=>m+" 2nd"), "Total 2nd", "Grand Total"];
-                    const rows = surgeons.map(s => {
+                    const rows = monthlyShown.map(s => {
                       const m1 = sortedMonths.map(m => monthlyData[m]?.[s.id]?.total1st || 0);
                       const m2 = sortedMonths.map(m => monthlyData[m]?.[s.id]?.total2nd || 0);
                       const t1 = m1.reduce((a,b)=>a+b,0);
@@ -12680,7 +12683,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                       </tr>
                     </thead>
                     <tbody>
-                      {surgeons.filter(s => isScheduler || !mySurgeon || mySurgeon === "admin" || s.id === mySurgeon).map(s=>{
+                      {monthlyShown.map(s=>{
                         const vals = sortedMonths.map(m => monthlyData[m]?.[s.id]?.total1st || 0);
                         const total = vals.reduce((a,b)=>a+b,0);
                         return (
@@ -12707,7 +12710,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                       </tr>
                     </thead>
                     <tbody>
-                      {surgeons.filter(s => isScheduler || !mySurgeon || mySurgeon === "admin" || s.id === mySurgeon).map(s=>{
+                      {monthlyShown.map(s=>{
                         const vals = sortedMonths.map(m => monthlyData[m]?.[s.id]?.total2nd || 0);
                         const total = vals.reduce((a,b)=>a+b,0);
                         return (

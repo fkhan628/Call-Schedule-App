@@ -19284,6 +19284,9 @@ console.log("\nAJ. owner decisions 2026-10-13");
 //       2026 – Jan 3, 2027 (all scheduled weeks)"), Fairness' toggles and Vacation Days subtitles; no "Year to Date" /
 //       "YTD" / "Current Period" / "Yearly Summary" left on the tab. The REAL export against the one before these quick
 //       wins (test/fixtures/stats-base-3200f94.txt): the same CSV byte for byte, the file named for the day
+//   DB5 (Q9) Stats → Monthly, the REAL block against the one before (the same fixture), on the stats-made-period weeks:
+//       the scheduler's, the admin's and a no-identity CSV byte for byte the same; a member's holds the header and their
+//       own row only — the line the full file has for them — as their screen shows
 console.log("\nDB. Quick wins: the bell, Stats for APPs and members, \"This year\", Mine's dates everywhere, a member's Monthly CSV");
 {
   const nsrcDB = src.replace(/\r\n/g, "\n"), JDB = JSON.stringify;
@@ -19806,6 +19809,42 @@ ${code.replace(/\n  \}, \[surgeons, [^\n]*$/, "")}
     check("DB4 \"⬇ Export running totals\" (the REAL export, run on the same counts as the one before these quick wins, frozen in test/fixtures/stats-base-3200f94.txt): the CSV is byte for byte the same — the multi-year totals as stored; the file is now named for the day, call-schedule-running-totals-2026-11-02.csv (it was call-schedule-summary-2026.csv, after the Generate tab's year)",
       !!eNew.csv && eNew.csv === eOld.csv && eNew.csv.split("\n")[0] === "Surgeon,Svc Wk,Nights,Wknds,B-SW,B-Nights,B-Wknds,Total" && eNew.csv.split("\n").length === 4 && eNew.file === "call-schedule-running-totals-2026-11-02.csv"
         && eOld.file === "call-schedule-summary-2026.csv" && eNew.type === "text/csv" && eNew.clicks === 1, JDB({ eNew, eOld }).slice(0, 700));
+  }
+  // ── DB5 (Q9) — a member's Monthly CSV holds only their own counts, as their screen; everyone else's file byte for byte ──
+  {
+    const FIX5 = fs.readFileSync(path.join(ROOT, "test", "fixtures", "stats-base-3200f94.txt"), "utf8").replace(/\r\n/g, "\n");
+    const BASE5 = {};
+    { const p = FIX5.split(/\n?\/\/@@ (\w+) — [^\n]*\n/); for (let k = 1; k + 1 < p.length; k += 2) BASE5[p[k]] = p[k + 1]; }
+    const MNEW = cutDB('{statsTabShown==="monthly" && Object.keys(schedule).length > 0 && (()=>{', "\n          })()}", true);
+    const MOLD = BASE5.monthly ? BASE5.monthly.replace(/^\s*\{/, "").replace(/\}\s*$/, "") : null;
+    const NAMES5 = "h, schedule, surgeons, css, startYear, isScheduler, mySurgeon, dk, thS2, tdS, Blob, URL, document";
+    const newOf = MNEW ? viewDB(NAMES5 + ", statsTabShown", MNEW.slice(1) + "\n          })()", "db5-monthly.js") : null;
+    const oldOf = MOLD ? viewDB(NAMES5 + ", statsTab", MOLD, "db5-monthly-base.js") : null;
+    const WEEKS5 = JSON.parse(fs.readFileSync(path.join(ROOT, "test", "fixtures", "stats-made-period-live-weeks-2026-10-24.json"), "utf8"));
+    const SURG5 = [["s1", "DJA"], ["s2", "MCC"], ["s3", "RPC"], ["s4", "KJH"], ["s5", "REH"], ["s6", "FAK"], ["s7", "ARW"]].map(([id, name]) => ({ id, name }));
+    const monthly = (mk, tabKey, who) => {
+      const out = { clicks: 0 };
+      const env = { h: hDB, schedule: WEEKS5, surgeons: SURG5, css: { card: {}, cardT: {}, btn: () => ({}) }, startYear: 2026, isScheduler: who === "s6", mySurgeon: who, dk: false, thS2: {}, tdS: {},
+        Blob: function (parts, o) { out.csv = parts.join(""); out.type = o && o.type; }, URL: { createObjectURL: () => "blob:db5", revokeObjectURL: () => {} },
+        document: { createElement: () => { const a = { click: () => { out.file = a.download; out.clicks++; } }; return a; } } };
+      env[tabKey] = "monthly";
+      const t = mk ? tryDB(() => mk(env)) : "not found";
+      if (!okTree(t)) return { err: t };
+      const n = allDB(t), btn = n.find((x) => x.tag === "button" && /Export CSV/.test(textDB(x)));
+      if (btn) tryDB(() => btn.props.onClick());
+      const bodies = n.filter((x) => x.tag === "tbody");
+      return { csv: out.csv, file: out.file, clicks: out.clicks, screen: bodies.map((b) => b.kids.map((r) => r.props.key).join(",")), lines: String(out.csv || "").split("\n") };
+    };
+    const runs = {};
+    for (const who of ["s6", "admin", "", "s3", "a1"]) runs[who || "none"] = { now: monthly(newOf, "statsTabShown", who), before: monthly(oldOf, "statsTab", who) };
+    const sameFile = (k) => !!runs[k].now.csv && runs[k].now.csv === runs[k].before.csv && runs[k].now.file === runs[k].before.file && JDB(runs[k].now.screen) === JDB(runs[k].before.screen);
+    const rpc = runs.s3, rpcLine = (rpc.before.lines || []).find((l) => l.startsWith("RPC,"));
+    check("DB5 (Q9) Stats → Monthly (the REAL block against the one before, frozen in test/fixtures/stats-base-3200f94.txt; the live weeks of stats-made-period): the scheduler's, the admin's and a no-identity file are byte for byte the same (all seven rows), and so are their tables",
+      ["s6", "admin", "none"].every(sameFile) && runs.s6.now.lines.length === 8 && runs.s6.now.clicks === 1 && runs.s6.now.file === "monthly-call-summary-2026.csv", JDB({ s6: runs.s6.now.lines.length, admin: sameFile("admin"), none: sameFile("none") }));
+    check("DB5 (Q9) a member's \"⬇ Export CSV\" holds what their screen shows — the same header and ONE row, theirs, byte for byte the line the full file has for them (it held all seven surgeons' rows); their tables show only their row, as before; an APP's would hold the header alone",
+      !!rpc.now.csv && rpc.now.lines.length === 2 && rpc.now.lines[0] === rpc.before.lines[0] && !!rpcLine && rpc.now.lines[1] === rpcLine && rpc.before.lines.length === 8
+        && JDB(rpc.now.screen) === JDB(["s3", "s3"]) && JDB(rpc.before.screen) === JDB(["s3", "s3"]) && runs.a1.now.lines.length === 1 && runs.a1.before.lines.length === 8,
+      JDB({ now: rpc.now.lines, before: rpc.before.lines.length, screen: rpc.now.screen, app: runs.a1.now.lines.length }).slice(0, 700));
   }
 }
 
