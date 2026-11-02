@@ -574,15 +574,15 @@ function CallSchedule() {
     const said = back.map(p => typeof weekChangeNotice === "function" ? weekChangeNotice(p.week, p.changes, "") : null);
     const lines = back.flatMap((p, i) => said[i] ? said[i].message.split("; ") : p.changes.map(c => `${c.slotLabel || SHIFT_LABELS[c.key] || c.key} (wk of ${p.week}): ${c.oldName} → ${c.newName}`));
     const esc = t => String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-    const one = said.length === 1 && said[0] && back[0].changes.length === 1;
-    // "Undone:" leads, so every change listed reads as undone — and the e-mail's subject (its `shift`) says it too
-    return {
-      lines,
-      title: "Change Undone",
-      message: "Undone: " + lines.join("; "),
-      email: one ? { ...said[0].email, shift: "Undone: " + said[0].email.shift, detail: "Undone: " + said[0].email.detail }
-        : { shift: `Undone: ${lines.length} shift${lines.length === 1 ? "" : "s"}`, week: back[0] ? back[0].week : "", old_surgeon: "multiple", new_surgeon: "open app for details", detail: "Undone:<br>" + lines.map(esc).join("<br>") },
-    };
+    // "Undone:" leads, so every change listed reads as undone — and the e-mail's subject (its `shift`) says it too. One
+    // week: weekChangeNotice's own e-mail (its subject names the shift, or "2 shifts, week of Nov 30", as the edit's did);
+    // two weeks (a two-way swap), or an old cached helpers.js: the summary — a single change keeps its slot and names.
+    const c0 = back.length === 1 && back[0].changes.length === 1 ? back[0].changes[0] : null;
+    const email = said.length === 1 && said[0]
+      ? { ...said[0].email, shift: "Undone: " + said[0].email.shift, detail: (back[0].changes.length > 1 ? "Undone:<br>" : "Undone: ") + said[0].email.detail }
+      : c0 ? { shift: `Undone: ${c0.slotLabel || SHIFT_LABELS[c0.key] || c0.key}`, week: back[0].week, old_surgeon: c0.oldName, new_surgeon: c0.newName, detail: "Undone: " + esc(lines[0]) }
+      : { shift: `Undone: ${lines.length} shift${lines.length === 1 ? "" : "s"}`, week: back[0] ? back[0].week : "", old_surgeon: "multiple", new_surgeon: "open app for details", detail: "Undone:<br>" + lines.map(esc).join("<br>") };
+    return { lines, title: "Change Undone", message: "Undone: " + lines.join("; "), email };
   };
   const undoTap = () => {
     const step = scheduleHistory[scheduleHistory.length - 1];
@@ -1354,10 +1354,14 @@ function CallSchedule() {
           window.history.replaceState(null, "", window.location.pathname + window.location.search);
           deadLink = true;
         }
-        const deadLinkSaid = () => {
+        // (lockScreen: the Face ID screen, which has no sign-out — and signing out drops Face ID — so it names that
+        // screen's own way to the reset: "Use email & password instead". Second review of the quick wins.)
+        const deadLinkSaid = (lockScreen) => {
           if (!deadLink) return;
           if (!auth.getSession()) { setAuthMode("reset"); setResetLinkExpired(true); }
-          else showToast("That reset link has expired or was already used. To change your password, sign out, then use \"Forgot your password?\".", "info");
+          else showToast(lockScreen
+            ? "That reset link has expired or was already used. To change your password, tap \"Use email & password instead\", then \"Forgot your password?\"."
+            : "That reset link has expired or was already used. To change your password, sign out, then use \"Forgot your password?\".", "info");
         };
 
         const bioResult = await biometric.isAvailable();
@@ -1371,7 +1375,7 @@ function CallSchedule() {
           // Has biometric + stored session — require biometric to unlock
           setBiometricPending(true);
           setAuthLoading(false);
-          deadLinkSaid();
+          deadLinkSaid(true);
           return; // Don't auto-login; wait for biometric prompt
         }
 
@@ -2639,6 +2643,10 @@ function CallSchedule() {
     sessionBoundary();
     auth.bindUser(user.id); // this tab is the new account's now (review r4 branch-4) — e.g. another tab's sign-in, renewed here
     biometric.unenroll(); setBiometricEnrolled(false); setBiometricPending(false); // the previous account's enrolment (sign-out drops it too)
+    // The previous account's person goes with it, in the same render as the new account (review of the quick wins,
+    // 2026-11-02): no render pairs the new authUser with the old userProfile / mySurgeon — the push identity effect
+    // would sign this browser in as the old person under the new account. The new person is set once read, below.
+    setUserProfile(null); setMySurgeon("");
     setAuthUser(user);
     let profile = null;
     try { profile = await dbAuth.getProfile(user.id); } catch (e) { profile = null; }
@@ -5137,9 +5145,13 @@ function CallSchedule() {
     // An old cached helpers.js ignores { regenerate } and says Generate &
     // Publish's words, "everyone is notified by push and email", though ↻
     // Regenerate notifies nobody by itself (review of the quick wins,
-    // 2026-11-02): its verb and its last paragraph are then said here.
+    // 2026-11-02): its verb and its last paragraph are then said here. One
+    // so old it has no publishConfirmText can't say the period or its ⚠
+    // warnings (published weeks replaced, a period over): nothing runs, as
+    // Generate & Publish's own tap (second review of the quick wins).
+    if (typeof publishConfirmText !== "function") { showToast("This copy of the app is out of date — reload it, then ↻ Regenerate.", "error"); return; }
     const regenNotify = "Nobody is notified by itself: once it is published, the Calendar offers 📣 Notify everyone. If anything needs your OK, it opens in the preview on the Generate tab instead.";
-    let regenAsk = typeof publishConfirmText === "function" ? publishConfirmText(mondays, { schedule: scheduleRef.current, today: fmt(new Date()), regenerate: true }) : `Regenerate and publish the schedule?\n\n${regenNotify}`;
+    let regenAsk = publishConfirmText(mondays, { schedule: scheduleRef.current, today: fmt(new Date()), regenerate: true });
     if (!/^Regenerate and publish/.test(regenAsk)) {
       const paras = String(regenAsk).split("\n\n");
       paras[0] = paras[0].replace(/^Generate and publish/, "Regenerate and publish");
@@ -10403,12 +10415,16 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               <button onClick={markBackupWeek} style={css.btn(true)}>+ Mark Backup</button>
             </div>
             {(() => { const { upcoming, past } = marksListed(backupMondaySet);
-              // A row wraps, and its week date never breaks (review of the quick wins, 2026-11-02): at 320 px the 44 px ✕
-              // squeezed it to "Wk of 2026-11-" / "30". The Fierce Backup rows below are the same.
+              // The week and its label wrap, the date never breaks, and the ✕ stays at the right of the first line (review
+              // of the quick wins, 2026-11-02): at 320 px the 44 px ✕ squeezed the date over two lines, and a ✕ wrapped onto
+              // a line of its own sat nearer the next row than its own. The Fierce rows are the same. (No quote marks in
+              // this comment: the guard compilers read it as code.)
               const row = (m, ended) => (
-              <div key={m} style={{display:"flex",flexWrap:"wrap",alignItems:"center",gap:8,marginBottom:5}}>
-                <span style={{fontFamily:mono,fontSize:12,color:"#5a6a78",whiteSpace:"nowrap",textDecoration:ended?"line-through":"none"}} title={ended?"This week has ended":undefined}>Wk of {m}{ended && <span style={SR_TEXT}> (ended)</span>}</span>
-                <span style={css.backupBanner}>⚡ BACKUP — Fierce Primary</span>
+              <div key={m} style={{display:"flex",alignItems:"center",gap:8,marginBottom:5}}>
+                <div style={{display:"flex",flexWrap:"wrap",alignItems:"center",gap:"4px 8px",flex:"1 1 auto",minWidth:0}}>
+                  <span style={{fontFamily:mono,fontSize:12,color:"#5a6a78",whiteSpace:"nowrap",textDecoration:ended?"line-through":"none"}} title={ended?"This week has ended":undefined}>Wk of {m}{ended && <span style={SR_TEXT}> (ended)</span>}</span>
+                  <span style={css.backupBanner}>⚡ BACKUP — Fierce Primary</span>
+                </div>
                 <button onClick={()=>askUnmark("backup", m)} aria-label={`Remove the Backup mark from the week of ${m}`} style={{background:"none",border:"none",color:"#904040",cursor:"pointer",fontSize:14,minWidth:44,minHeight:44,padding:0}}>✕</button>
               </div>
               );
@@ -10426,9 +10442,11 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               </div>
               {(() => { const { upcoming, past } = marksListed(fierceBackupSet);
                 const row = (m, ended) => (
-                <div key={m} style={{display:"flex",flexWrap:"wrap",alignItems:"center",gap:8,marginBottom:5}}>
-                  <span style={{fontFamily:mono,fontSize:12,color:"#5a6a78",whiteSpace:"nowrap",textDecoration:ended?"line-through":"none"}} title={ended?"This week has ended":undefined}>Wk of {m}{ended && <span style={SR_TEXT}> (ended)</span>}</span>
-                  <span style={{fontSize:11,color:"#1a6fa8",background:"#e8f0fc",border:"1px solid #a8c8e0",borderRadius:6,padding:"3px 8px",fontWeight:600}}>🛡 Fierce Backup</span>
+                <div key={m} style={{display:"flex",alignItems:"center",gap:8,marginBottom:5}}>
+                  <div style={{display:"flex",flexWrap:"wrap",alignItems:"center",gap:"4px 8px",flex:"1 1 auto",minWidth:0}}>
+                    <span style={{fontFamily:mono,fontSize:12,color:"#5a6a78",whiteSpace:"nowrap",textDecoration:ended?"line-through":"none"}} title={ended?"This week has ended":undefined}>Wk of {m}{ended && <span style={SR_TEXT}> (ended)</span>}</span>
+                    <span style={{fontSize:11,color:"#1a6fa8",background:"#e8f0fc",border:"1px solid #a8c8e0",borderRadius:6,padding:"3px 8px",fontWeight:600}}>🛡 Fierce Backup</span>
+                  </div>
                   <button onClick={()=>askUnmark("fierce", m)} aria-label={`Remove the Fierce Backup mark from the week of ${m}`} style={{background:"none",border:"none",color:"#904040",cursor:"pointer",fontSize:14,minWidth:44,minHeight:44,padding:0}}>✕</button>
                 </div>
                 );
