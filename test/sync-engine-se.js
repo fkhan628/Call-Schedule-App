@@ -7496,8 +7496,9 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
       approve: fnX("sessionEpochRef, dbAuthHeaders, parse, fmt, addD, surgeons, onVac, vacations, noCallDays, confirm, userProfile, mySurgeon, fetch, SUPABASE_URL, console, showToast, setBackRequest, setVacRequests, toAdd, logAudit, schedulerAdminIds, addNotification, sendEmailNotif",
         after("  const approveVacRequest = useCallback(", ", [addNotification, sendEmailNotif, schedulerAdminIds, userProfile, surgeons, mySurgeon, vacations, noCallDays]);")),
       // (changed ON PURPOSE 2026-11-02 — sync-guards DF6: the revoke e-mails too and names who revoked it; its deps list
-      // sendEmailNotif / userProfile / surgeons / mySurgeon, handed in below as approve's are)
-      revoke: fnX("sessionEpochRef, dbAuthHeaders, confirm, fetch, SUPABASE_URL, console, showToast, setBackRequest, setVacRequests, toRemove, schedulerAdminIds, addNotification, sendEmailNotif, userProfile, surgeons, mySurgeon",
+      // sendEmailNotif / userProfile / surgeons / mySurgeon, handed in below as approve's are; + fmt, the review of QW5:
+      // its notice's "back on the call schedule" reads today — fmt is helpers.js's, in every copy)
+      revoke: fnX("sessionEpochRef, dbAuthHeaders, confirm, fetch, SUPABASE_URL, console, showToast, setBackRequest, setVacRequests, toRemove, schedulerAdminIds, addNotification, sendEmailNotif, userProfile, surgeons, mySurgeon, fmt",
         after("  const revokeApprovedVac = useCallback(", ", [addNotification, sendEmailNotif, schedulerAdminIds, userProfile, surgeons, mySurgeon]);")),
       // (owner decision 2026-10-20, changed ON PURPOSE — sync-guards CA: the edit first asks canChangeVacRequest, now in
       // its deps; this is the scheduler's edit, so the stand-in below allows it — CA runs the real predicate)
@@ -7578,7 +7579,7 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
       else if (o.direct === "toAdd") await toAdd("s3", "vacation", NEW.start_date, NEW.end_date);
       else if (which === "approve") await V.approve(Object.assign({}, common, { parse: HX.parse, fmt: HX.fmt, addD: HX.addD, surgeons: S7, onVac: () => false, vacations: vac, noCallDays: {},
         userProfile: { person_id: "s1", display_name: "AAA" }, mySurgeon: "s1", toAdd }))(Object.assign({}, REQ));
-      else if (which === "revoke") await V.revoke(Object.assign({}, common, { toRemove, userProfile: { person_id: "s1", display_name: "AAA" }, surgeons: S7, mySurgeon: "s1" }))(Object.assign({}, REQ));
+      else if (which === "revoke") await V.revoke(Object.assign({}, common, { toRemove, userProfile: { person_id: "s1", display_name: "AAA" }, surgeons: S7, mySurgeon: "s1", fmt: HX.fmt }))(Object.assign({}, REQ));
       else await V.edit(Object.assign({}, common, { editingVacReq: Object.assign({ id: 7, reason: "trip, longer" }, NEW), isScheduler: true, canChangeVacRequest: (q) => !!q, fmt: HX.fmt, vacRequests: [Object.assign({}, REQ)], toEdit,
         setEditingVacReq: mark("editor closed") }))();
       await spin(40); await ticks(A);
