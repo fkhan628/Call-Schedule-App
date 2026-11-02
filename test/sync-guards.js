@@ -11009,7 +11009,8 @@ console.log("\nAR. Requests tab copy + the APP trade note");
 
   // AR3 — the note is the gate's else branch; Pending Trades stays outside it
   const iGate = src.indexOf("(isScheduler || sMap[mySurgeon]) ? ("), iForm = src.indexOf("Propose a Shift Trade");
-  const elseRe = /\n {10}\) : \(\n {10}<div style=\{css\.card\}>\n {12}<div style=\{css\.cardT\}>🔄 Shift Trades<\/div>\n {12}<p style=\{\{[^\n]*\}\}>Shift trades are for the surgeon call schedule\. For an APP shift change, ask the scheduler\.<\/p>\n {10}<\/div>\n {10}\)\}\n\n {10}\{\/\* Pending Trades \*\/\}/;
+  // (DE, 2026-11-02, on purpose: the note's second sentence depends on who reads it — an APP lead (can_assign_apps, MS) is told "You assign APP shifts in Setup → APP Call Shifts.", any other APP still "ask the scheduler"; DE3 runs it)
+  const elseRe = /\n {10}\) : \(\n {10}<div style=\{css\.card\}>\n {12}<div style=\{css\.cardT\}>🔄 Shift Trades<\/div>\n {12}<p style=\{\{[^\n]*\}\}>Shift trades are for the surgeon call schedule\. \{userProfile\?\.can_assign_apps === true \? "You assign APP shifts in Setup → APP Call Shifts\." : "For an APP shift change, ask the scheduler\."\}<\/p>\n {10}<\/div>\n {10}\)\}\n\n {10}\{\/\* Pending Trades \*\/\}/;
   const nGate = nsrcAR.indexOf("(isScheduler || sMap[mySurgeon]) ? ("), mElse = elseRe.exec(nsrcAR), nPending = nsrcAR.indexOf("{/* Pending Trades */}");
   const formBody = nGate >= 0 && mElse && mElse.index > nGate ? nsrcAR.slice(nGate, mElse.index) : "";
   check("AR3 an APP sees a '🔄 Shift Trades' note instead: the gate's else branch, closing just before Pending Trades (outside the gate, so an APP still sees trades it is part of); the form in the true branch keeps its one Propose Trade submit and its From line; L's slotLabel ledger stays 23",
@@ -17697,6 +17698,9 @@ await (async () => {
 //       of the "admin" row and — only when there is no row — one save of the sign-in e-mail. A render loop runs the
 //       REAL load, list sync, prefill and saveNotifPref on a Face ID unlock; the control without the wait saves an
 //       empty e-mail
+//   DE3 (QW13) Setup's No-Call Days card is the scheduler's and the Clinic Manager's (main's card, byte for byte) — MS
+//       gets nothing above APP Call Shifts, so Setup opens there; Requests' trade note tells MS "You assign APP shifts
+//       in Setup → APP Call Shifts." (any other APP: main's note)
 console.log("\nDE. Settings' developer tools, the Clinic Manager's notifications, MS's Setup and Requests, the reset link, the Welcome screen");
 await (async () => {
   const nsrcD = src.replace(/\r\n/g, "\n"), J = JSON.stringify;
@@ -18089,6 +18093,43 @@ await (async () => {
       !!real && !real.threw && real.startedTogether && J(real.upserts) === J([{ id: "admin", email: "cm@dsg.test" }]) && J(real.list) === J(["admin", "s3"]) && real.loadedAs === "u-cm#1"
         && !!ctrl && !ctrl.threw && ctrl.startedTogether && J(ctrl.upserts) === J([{ id: "admin", email: "" }]),
       J({ real, ctrl }));
+  }
+
+  // ── DE3 (QW13) — MS's Setup and Requests ──
+  {
+    const SETUP_NAMES = "css, dk, mono, font, isScheduler, userProfile, ncSurgeon, setNcSurgeon, surgeons, apps, ncStart, ncEnd, setNcStart, setNcEnd, updateBannerRef, updateAvailable, addNoCall, noCallDays, fmt, showPastNoCall, setShowPastNoCall, MO, rmNoCall";
+    const ncNew = cutD("          {/* No-Call Days */}\n", "\n\n          {/* APP Shift Assignments */}", true);
+    const vNcNew = viewD(SETUP_NAMES, ncNew, "de-nocall.js"), vNcOld = viewD(SETUP_NAMES, OLD.noCall, "de-nocall-main.js");
+    const MOD = vm.runInContext("({ fmt, MO })", sandbox);
+    const ncEnv = (who, o = {}) => Object.assign({ css: CSSD, dk: !!o.dk, mono: "M", font: "F", ncSurgeon: "", ncStart: "2026-11-02", ncEnd: "2026-11-02", surgeons: SURGD, apps: APPSD, updateBannerRef: { current: null }, updateAvailable: null,
+      noCallDays: { s3: [["2026-12-01", "2026-12-01"], ["2026-10-01", "2026-10-02"]], a3: [["2026-11-20", "2026-11-20"]] }, fmt: MOD.fmt, MO: MOD.MO, showPastNoCall: !!o.past },
+      Object.fromEntries(["setNcSurgeon", "setNcStart", "setNcEnd", "addNoCall", "setShowPastNoCall", "rmNoCall"].map((n) => [n, stubD(n)])), WHO[who]);
+    const ncMs = vNcNew ? vNcNew(ncEnv("ms")) : null;
+    const ncSame = [];
+    for (const who of ["sched", "admin"]) for (const past of [false, true]) {
+      const nw = vNcNew(ncEnv(who, { past })), od = vNcOld(ncEnv(who, { past }));
+      if (!nw || nw.threw || od.threw || nw.tag !== "#frag" || nw.kids.length !== 1 || sigD(nw.kids[0]) !== sigD(od)) ncSame.push({ who, past, nw: nw && (nw.threw || nw.tag), od: od.threw || null });
+    }
+    check("DE3a Setup's 🚫 No-Call Days card: not for MS (the gate run: nothing at all); the scheduler and the Clinic Manager get main's card byte for byte (completed days shown and hidden)",
+      !!vNcNew && !!vNcOld && ncMs === false && ncSame.length === 0, J({ errs: viewErrD, ms: ncMs && (ncMs.threw || ncMs.tag), ncSame }));
+    // everything Setup draws before the APP Call Shifts card, as one fragment: MS gets none of it — Setup opens on APP Call Shifts
+    const aboveApp = cutD('        {view==="setup" && !isPublicMode && <>\n', "\n\n          {/* APP Shift Assignments */}");
+    const vAbove = viewD("isScheduler, userProfile", aboveApp && "<>\n" + stripD(aboveApp) + "\n</>", "de-setup-top.js");
+    const above = vAbove ? { ms: vAbove(WHO.ms), app: vAbove(WHO.app), sched: tryD(() => vAbove(WHO.sched)) } : null;
+    check("DE3b …so Setup opens on APP Call Shifts for MS: everything above that card (Setup Issues, Surgeons, APPs, Vacations, No-Call Days) is gated — run for MS it draws nothing; for the scheduler it draws (the env holds only the gates' names, so an ungated card would throw here)",
+      !!above && above.ms && above.ms.tag === "#frag" && above.ms.kids.length === 0 && above.app.kids.length === 0 && !!above.sched && (above.sched.threw ? /is not defined|Cannot read/.test(above.sched.threw) : above.sched.kids.length > 0),
+      J({ errs: viewErrD["de-setup-top.js"], ms: above && above.ms && (above.ms.threw || above.ms.kids), sched: above && above.sched && (above.sched.threw || above.sched.kids && above.sched.kids.length) }).slice(0, 600));
+    // Requests: the APP trade note
+    const noteNew = (() => { const s = cutD("          ) : (\n          <div style={css.card}>\n            <div style={css.cardT}>🔄 Shift Trades</div>", "\n          )}\n\n          {/* Pending Trades */}", true); return s === null ? null : s.slice("          ) : (\n".length); })();
+    const vNoteNew = viewD("css, userProfile", noteNew, "de-tradenote.js"), vNoteOld = viewD("css, userProfile", OLD.tradeNote, "de-tradenote-main.js");
+    const noteText = (v, who) => { const t = v ? v({ css: CSSD, userProfile: WHO[who].userProfile }) : null; return t && !t.threw ? textD(t) : t; };
+    // (a sentence and an expression beside it are two text nodes where main had one: React draws them as one line, so they are joined before the two compare)
+    const joinD = (n) => (n && typeof n === "object" && Array.isArray(n.kids) ? Object.assign({}, n, { kids: n.kids.map(joinD).reduce((a, k) => (typeof k === "string" && typeof a[a.length - 1] === "string" ? a.slice(0, -1).concat(a[a.length - 1] + k) : a.concat([k])), []) }) : n);
+    const plainSame = vNoteNew && vNoteOld ? ["app", "member"].every((w) => sigD(joinD(vNoteNew({ css: CSSD, userProfile: WHO[w].userProfile }))) === sigD(joinD(vNoteOld({ css: CSSD, userProfile: WHO[w].userProfile })))) : false;
+    check("DE3c Requests' 🔄 Shift Trades note, run: MS (the APP lead) reads \"Shift trades are for the surgeon call schedule. You assign APP shifts in Setup → APP Call Shifts.\" (it said \"ask the scheduler\"); any other APP reads main's note, byte for byte",
+      noteText(vNoteNew, "ms") === "🔄 Shift TradesShift trades are for the surgeon call schedule. You assign APP shifts in Setup → APP Call Shifts." && plainSame
+        && noteText(vNoteNew, "app") === "🔄 Shift TradesShift trades are for the surgeon call schedule. For an APP shift change, ask the scheduler.",
+      J({ ms: noteText(vNoteNew, "ms"), app: noteText(vNoteNew, "app"), plainSame }));
   }
 })().catch(ex => check("DE harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
 

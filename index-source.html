@@ -9789,6 +9789,11 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           </>}
 
           {/* No-Call Days */}
+          {/* The scheduler's and the Clinic Manager's, as the vacation card above (owner decision 2026-11-02, Q4). MS, in
+              Setup for the APP cards, may change only MS's own no-call days: the card offered all 12 people, said "check
+              your connection" for anyone else's and put the change back a minute later. MS's own no-call days go through
+              Requests → 🚫 No-Call Day, like everyone's; Setup opens on APP Call Shifts for MS. */}
+          {(isScheduler || userProfile?.role === "admin") && <>
           <div style={css.card}>
             <div style={css.cardT}>🚫 No-Call Days <span style={{fontWeight:400,fontSize:11,color:"#7a8a98"}}>— working, not on call</span></div>
             <p style={{fontSize:12,color:"#7a8a98",margin:"0 0 10px",lineHeight:1.5}}>
@@ -9868,6 +9873,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               </>;
             })()}
           </div>
+          </>}
 
           {/* APP Shift Assignments */}
           <div style={css.card}>
@@ -13727,7 +13733,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           })()}
 
           {/* ─── Shift Trade Requests ─── */}
-          {/* Trades are of surgeon call shifts: an APP (a* id) has no shift to give, so an APP sees a note instead of a form it can't use. */}
+          {/* Trades are of surgeon call shifts: an APP (a* id) has no shift to give, so an APP sees a note instead of a form it can't use — MS, who assigns the APP shifts, is pointed at Setup (2026-11-02, Q4). */}
           {(isScheduler || sMap[mySurgeon]) ? (
           <div style={css.card}>
             <div style={css.cardT}>🔄 Propose a Shift Trade</div>
@@ -13920,7 +13926,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           ) : (
           <div style={css.card}>
             <div style={css.cardT}>🔄 Shift Trades</div>
-            <p style={{fontSize:13,color:"#5a6a78",margin:0,lineHeight:1.5}}>Shift trades are for the surgeon call schedule. For an APP shift change, ask the scheduler.</p>
+            <p style={{fontSize:13,color:"#5a6a78",margin:0,lineHeight:1.5}}>Shift trades are for the surgeon call schedule. {userProfile?.can_assign_apps === true ? "You assign APP shifts in Setup → APP Call Shifts." : "For an APP shift change, ask the scheduler."}</p>
           </div>
           )}
 
