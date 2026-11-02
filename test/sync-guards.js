@@ -17648,6 +17648,17 @@ await (async () => {
         JD({ asked: no.asked, want: wantAsk, saved: !!no.saved, audits: no.audits.length, warn: no.warn }));
       check("DD1 …OK re-generates exactly as 3200f94 (the cards, the warning line, the audit line)",
         JD(yes.asked) === JD([wantAsk]) && effects(yes) === effects(yesO) && !yes.threw, JD({ asked: yes.asked.length, same: effects(yes) === effects(yesO) }));
+      // a day-after surgeon (B) set by hand — July 4th's — alone, and with Thanksgiving's A: each changed pair named, in the cards' order
+      const j4 = cards.find((h) => h.name === "July 4th") || {}, otherB = ["s1", "s2", "s3", "s4", "s5", "s7"].find((id) => id !== j4.surgeonA && id !== j4.surgeonB);
+      const handB = cards.map((h) => (h.name === "July 4th" ? Object.assign(cloneD(h), { surgeonB: otherB }) : cloneD(h)));
+      const both = handB.map((h) => (h.name === "Thanksgiving" ? Object.assign(cloneD(h), { surgeonA: other }) : h));
+      const noB = runG(gN, 2027, { hist: hist(handB), answer: false }), noBoth = runG(gN, 2027, { hist: hist(both), answer: false });
+      const wantB = askOf(2027, handB, runG(gO, 2027, { hist: hist(handB) }).saved), wantBoth = askOf(2027, both, runG(gO, 2027, { hist: hist(both) }).saved);
+      const lineB = `• July 4th: ${nameOfD(j4.surgeonA)} / ${nameOfD(otherB)} → ${nameOfD(j4.surgeonA)} / ${nameOfD(j4.surgeonB)}`;
+      check("DD1 …a day-after surgeon (B) set by hand is named too (\"• July 4th: <A> / <by hand> → <A> / <planned>\"); with Thanksgiving's A as well, both lines, in the cards' order; Cancel saves nothing",
+        !!wantB && wantB.endsWith("\n" + lineB) && JD(noB.asked) === JD([wantB]) && !!wantBoth && wantBoth.indexOf(lineB) > 0 && wantBoth.indexOf(lineB) < wantBoth.indexOf("• Thanksgiving: ")
+          && JD(noBoth.asked) === JD([wantBoth]) && noB.saved === null && noBoth.saved === null,
+        JD({ b: noB.asked, both: noBoth.asked }));
       // the warning line's four sources, against 3200f94: the planner's notes; FAK not on the roster (Christmas left
       // unassigned); FAK's Christmas on a Silvis primary day; a hand-written preset on a Silvis day
       const noFak = S7D.filter((s) => s.name !== "FAK");
