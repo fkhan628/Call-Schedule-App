@@ -1,0 +1,525 @@
+// The code before the UX audit's QW7 / QW15 / QW16 (branch ux/quick-wins-d, at 3200f94), byte-for-byte: the "old"
+// reference for sync-guards DD (a path these items do not change must do exactly what it did). Nine pieces of
+// index-source.html, each after a line "//@@ <name> — <where>".
+// (re-frozen ON PURPOSE 2026-11-02, integration: saveWeekEdits is this branch's code without QW16 — 3200f94's plus the
+// two other changes it has here, ↩ Undo's step label (QW4, DC8) and the notices that say the day (DF2) — so DD9 still
+// compares QW16's toast alone. The other eight pieces are 3200f94's, unchanged.)
+//@@ generateHolidayAssignments — after "  const generateHolidayAssignments = useCallback((year) => {", up to "\n  }, [surgeons, vacations, noCallDays, holidayAssignments, silvisActive, silvisFakId, silvisDays]);"
+
+    setHolidayLockWarning(""); // a healthy run clears any stale lock warning
+    const holidays = getHolidays(year);
+    const ids = surgeons.map(s => s.id);
+    const nameMap = {}; surgeons.forEach(s => nameMap[s.id] = s.name);
+    const DAYNAMES = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+
+    // Lifetime holiday counts across all stored years for overall fairness,
+    // plus TENURE ELIGIBILITY (2026-08-07): eligibleCt[id][type] = stored
+    // holidays of that type dated on/after the surgeon's start date. Start
+    // dates come from INIT_SURGEONS (the live blob roster doesn't carry
+    // them); no start = predates the seeded window = eligible for all.
+    // Absorbed holidays (no assignment stored — July 4 2023/2024) are absent
+    // from the arrays, so they're out of the DENOMINATOR by construction:
+    // nobody was eligible for a holiday that didn't exist. Same
+    // skip-the-current-year rule as the counts, and the comparison is
+    // against each holiday's actual DATE, so a mid-year start (ARW,
+    // 2023-09-01: missed Memorial Day, eligible for Labor Day) counts
+    // correctly — a per-year divisor can't see that.
+    const startOf = {};
+    ids.forEach(id => {
+      const rosterStart = surgeons.find(s => s.id === id)?.start;
+      startOf[id] = rosterStart || INIT_SURGEONS.find(s => s.id === id)?.start || null;
+    });
+    const lifetimeCt = {};
+    const eligibleCt = {};
+    ids.forEach(id => { lifetimeCt[id] = { major: 0, minor: 0 }; eligibleCt[id] = { major: 0, minor: 0 }; });
+    Object.entries(holidayAssignments).forEach(([yr, arr]) => {
+      if (String(yr) === String(year)) return; // skip current year (we're regenerating it)
+      if (!Array.isArray(arr)) return;
+      arr.forEach(h => {
+        if (h.surgeonA && lifetimeCt[h.surgeonA]) lifetimeCt[h.surgeonA][h.type]++;
+        // Dedupe collapsed pairs (2026-08-06): sA === sB — the Christmas
+        // standing rule, or pickPair's `avail[1] || avail[0]` fallback — is
+        // ONE assignment, not two. Counting both halves charged the collapsed
+        // surgeon double for the same days while a normal two-surgeon holiday
+        // charged each one.
+        if (h.surgeonB && h.surgeonB !== h.surgeonA && lifetimeCt[h.surgeonB]) lifetimeCt[h.surgeonB][h.type]++;
+        if (h.date && (h.type === "major" || h.type === "minor")) {
+          ids.forEach(id => {
+            if (!startOf[id] || h.date >= startOf[id]) eligibleCt[id][h.type]++;
+          });
+        }
+      });
+    });
+
+    const fakId = ids.find(id => (nameMap[id] || "").toUpperCase() === "FAK") || null;
+
+    // Helper: build coverage days from a holiday + assigned pair
+    // Always includes: Night Before (B) → Holiday Day (A) → Day After (B) (minimum 3 days)
+    // Night-before defaults to Surgeon B; at display time it's replaced by the actual night-shift person from the schedule
+    const buildCoverage = (hol, sA, sB) => {
+      const holDate = parse(hol.date);
+      const holDow = holDate.getDay();
+      const coverage = [];
+
+      // Night before — defaults to Surgeon B (replaced at display time by actual night-shift person;
+      // a weekend night of FAK's Christmas design week is resolved live — generator.js holidayEveHolder)
+      const evDate = addD(holDate, -1);
+      coverage.push({ date: fmt(evDate), surgeon: sB, label: hol.name + " Night Before", day: DAYNAMES[evDate.getDay()], isEve: true });
+
+      // Holiday day — Surgeon A
+      coverage.push({ date: hol.date, surgeon: sA, label: hol.name + " 24h", day: DAYNAMES[holDow] });
+
+      // CHRISTMAS TWO-DAY CAP (standing rule 2026-08-06): when one surgeon
+      // holds both halves (the FAK Eve+Day rule), coverage is Eve + the day
+      // itself and NOTHING more. Without this cap the mid-week walk below
+      // alternates sB/sA through Saturday, and with sA === sB that collapses
+      // into one name: a Tuesday Christmas (2029) would print SIX consecutive
+      // solo days, 2030 five, 2031 four. Days after Christmas revert to the
+      // normal service-week doctor — which is how 2024/2025 actually ran.
+      if (hol.name === "Christmas Day" && sA === sB) return coverage;
+
+      if (hol.endDate && hol.endDate !== hol.date) {
+        // New Year's: Dec 31 (A) + Jan 1 (B), then continue alternating
+        coverage.push({ date: hol.endDate, surgeon: sB, label: "New Year's Day 24h", day: DAYNAMES[parse(hol.endDate).getDay()] });
+        let next = addD(parse(hol.endDate), 1);
+        let toggle = true;
+        while (next.getDay() !== 0 && next.getDay() !== 1) {
+          coverage.push({ date: fmt(next), surgeon: toggle ? sA : sB, label: DAYNAMES[next.getDay()] + " 24h", day: DAYNAMES[next.getDay()] });
+          toggle = !toggle;
+          next = addD(next, 1);
+        }
+      } else if (holDow === 1) {
+        // Monday holiday (Memorial Day, Labor Day): Only Monday is 24h
+        // Night before (Sun) = Surgeon B (Eve entry already added above)
+        // Holiday Monday = Surgeon A 24h (already added above)
+        // Tuesday onward = regular service week doctor takes over (no holiday override)
+      } else if (holDow === 5) {
+        // Friday holiday: Eve (Thu), Fri (A), Sat (B)
+        coverage.push({ date: fmt(addD(holDate, 1)), surgeon: sB, label: "Sat 24h", day: "Sat" });
+      } else if (holDow === 6) {
+        // Saturday holiday: Eve (Fri), Sat (A), Sun (B)
+        coverage.push({ date: fmt(addD(holDate, 1)), surgeon: sB, label: "Sun 24h", day: "Sun" });
+      } else if (holDow === 0) {
+        // Sunday holiday: Eve (Sat), Sun (A), Mon (B)
+        const dayAfter = addD(holDate, 1);
+        coverage.push({ date: fmt(dayAfter), surgeon: sB, label: DAYNAMES[dayAfter.getDay()] + " 24h", day: DAYNAMES[dayAfter.getDay()] });
+      } else {
+        // Mid-week (Tue-Thu): Eve already added, holiday (A), then alternate B, A through Sat
+        let next = addD(holDate, 1);
+        let toggle = false; // false=B, true=A
+        while (next.getDay() !== 0 && next.getDay() !== 1) {
+          coverage.push({ date: fmt(next), surgeon: toggle ? sA : sB, label: DAYNAMES[next.getDay()] + " 24h", day: DAYNAMES[next.getDay()] });
+          toggle = !toggle;
+          next = addD(next, 1);
+        }
+      }
+      return coverage;
+    };
+
+    // silvisBusy: the DATES a holiday assignment actually hands a surgeon in
+    // one role — the non-Eve coverage rows for that role (A = even index,
+    // B = odd, the mapping swapHolidaySurgeon uses; "both" = the collapsed
+    // Christmas pair) PLUS the weekend legs the generator implies: a Fri or
+    // Sun 24h holder is given the WHOLE weekend (generator.js
+    // holidayWkndOverride), so Fri → its Sun, Sun → its Fri. Checking only
+    // hol.date + the day after missed Sat/Sun/mid-week walk days.
+    const holDatesFor = (hol, id, role) => {
+      const sA = role === "B" ? "_other" : id, sB = role === "A" ? "_other" : id;
+      const cov = buildCoverage(hol, sA, sB).filter(c => !c.isEve && c.surgeon === id);
+      const days = new Set(cov.map(c => c.date));
+      cov.forEach(c => { const dow = parse(c.date).getDay(); if (dow === 5) days.add(fmt(addD(parse(c.date), 2))); if (dow === 0) days.add(fmt(addD(parse(c.date), -2))); });
+      return [...days];
+    };
+
+    // ─── The pairs ───
+    // Presets (hand-written) are facts and count; FAK's Christmas is the
+    // standing rule; everything else is planned by helpers.js
+    // planHolidayPairs, which ranks every way to fill each group: time off,
+    // one per group, nobody sitting out a group twice running, no repeat of
+    // last year's (then two years ago's) holiday, the holiday each has had
+    // least, the 3-year major cycle, the lifetime rate, new pairings, A / B.
+    const presets = (typeof HOLIDAY_PRESETS !== "undefined") ? HOLIDAY_PRESETS[String(year)] : null;
+    const allHols = [...holidays.major.map(h => ({ ...h, type: "major" })), ...holidays.minor.map(h => ({ ...h, type: "minor" }))];
+    const assignments = [], fixedCards = [], toPlan = [];
+    const card = (hol, sA, sB) => ({ name: hol.name, date: hol.date, type: hol.type, emoji: hol.emoji || "📅", surgeonA: sA, surgeonB: sB, coverage: buildCoverage(hol, sA, sB) });
+    // A holiday of this year already worked (dated before today) is history —
+    // kept as it is on a re-generate, like a preset (the rotation reads it).
+    const todayStr = fmt(new Date());
+    const stored = holidayAssignments[String(year)] || [];
+    allHols.forEach(hol => {
+      const kept = stored.find(h => h && h.name === hol.name && h.date && h.date < todayStr);
+      if (kept) { assignments.push(kept); fixedCards.push(kept); return; }
+      // Check for pre-set assignments (e.g., handwritten schedule for this year)
+      if (presets && presets[hol.name]) {
+        const [sA, sB] = presets[hol.name];
+        // silvisBusy: a hand-written preset is a fact, so it is kept — but
+        // an overlap with FAK's Silvis primary days is said out loud.
+        if (silvisActive) {
+          const ph = [];
+          if (sA === silvisFakId) { const h = sfConflictDay(silvisDays.primary, holDatesFor(hol, sA, "A")); if (h) ph.push(h); }
+          if (sB === silvisFakId) { const h = sfConflictDay(silvisDays.primary, holDatesFor(hol, sB, "B")); if (h) ph.push(h); }
+          if (ph.length) setHolidayLockWarning(`⚠ ${hol.name} ${year} preset puts ${nameMap[silvisFakId]} on a Silvis PRIMARY day (${ph.join(", ")}) — kept as written; resolve with Silvis or change it via the swap controls.`);
+        }
+        const c = card(hol, sA, sB);
+        assignments.push(c); fixedCards.push(c);
+        return;
+      }
+
+      // CHRISTMAS STANDING RULE (2026-08-06): FAK covers BOTH Christmas Eve
+      // and Christmas Day, every year — formalizing what the 2024 and 2025
+      // schedules already did. No partner is selected; coverage is capped
+      // to the two days in buildCoverage, and the lifetimeCt dedupe counts
+      // the collapsed pair as ONE assignment.
+      if (hol.name === "Christmas Day") {
+        if (!fakId) {
+          // FAIL LOUDLY (wipe-guard doctrine): if the designated Christmas
+          // surgeon can't be resolved (renamed, departed), the lock must
+          // not silently dissolve into the normal rotation with nobody
+          // told. Surface it and leave Christmas UNASSIGNED for the
+          // scheduler to fill by hand.
+          console.error(`Christmas lock: designated surgeon "FAK" not found in the roster — Christmas ${year} left unassigned.`);
+          setHolidayLockWarning(`⚠ Christmas ${year} was NOT auto-assigned: the designated surgeon (FAK) isn't in the roster. Assign it manually via the swap controls.`);
+          return;
+        }
+        // silvisBusy: the standing rule is FAK, so check HIS dates (Eve is
+        // display-only; the 24h day, plus its weekend leg when Dec 25 is a
+        // Fri/Sun). Same fail-LOUD shape as the missing-roster case above:
+        // leave Christmas unassigned and say why — never assign silently.
+        if (silvisActive && fakId === silvisFakId) {
+          const hit = sfConflictDay(silvisDays.primary, holDatesFor(hol, fakId, "both"));
+          if (hit) {
+            console.error(`Christmas lock: ${nameMap[fakId]} is Silvis PRIMARY on ${hit} — Christmas ${year} left unassigned.`);
+            setHolidayLockWarning(`⚠ Christmas ${year} was NOT auto-assigned: ${nameMap[fakId]} is Silvis PRIMARY on ${hit} (rule silvisBusy). Resolve it with Silvis or assign manually via the swap controls.`);
+            return;
+          }
+        }
+        assignments.push(card(hol, fakId, fakId));
+        return;
+      }
+      toPlan.push(hol);
+    });
+    // Time off on the dates each ROLE holds — its 24h rows (+ the weekend leg a
+    // Fri / Sun row implies) and surgeon B's eve night when it is his — as the
+    // generator's floor sees it: vacation OR no-call; and a night ends 07:00
+    // the next morning, so a vacation starting then is too late (Warnings'
+    // into-vac rule). silvisBusy should FAK ever be planned. Ranks first.
+    const unavailable = (id, hol, role) => {
+      const days = holDatesFor(hol, id, role);
+      if (role === "B") {
+        const xc = assignments.find(h => h.name === "Christmas Day"), eve = fmt(addD(parse(hol.date), -1));
+        const takes = (mon) => { const p = holidayDesign({ [year]: xc ? [xc] : [] }, [mon], fakId, christmasSlotOk(buildGenAvailability(), vacations, buildSilvisPrimary())).pins[mon]; return !!p && p.wknd === fakId; };
+        if (holidayEveHolder({ ...hol, surgeonB: id }, eve, { [year]: xc ? [xc] : [] }, fakId, takes) === id) days.push(eve);
+      }
+      if (days.some(ds => onVac(id, ds, vacations) || onVac(id, ds, noCallDays))) return true;
+      if (days.some(ds => onVac(id, fmt(addD(parse(ds), 1)), vacations))) return true;
+      return !!(silvisActive && id === silvisFakId && sfConflictDay(silvisDays.primary, holDatesFor(hol, id, role)) !== null);
+    };
+    // The lifetime RATE of the group — assignments ÷ holidays they were
+    // eligible for (tenure-normalized, 2026-08-07). Raw counts under-served
+    // partial tenure: ARW's 1 major from 9 eligible read as "less burdened"
+    // than MCC's 2 from 12. holidayRate (config.js) guards the zero-eligible
+    // new hire: rate 0, never 0/0 = NaN.
+    const rateOf = (id, type) => holidayRate(lifetimeCt[id]?.[type] || 0, eligibleCt[id]?.[type] || 0);
+    const plan = planHolidayPairs({ year, holidays: toPlan, partners: ids.filter(id => id !== fakId), history: holidayAssignments, fixed: fixedCards, unavailable, rate: rateOf, nameOf: (id) => nameMap[id] || id });
+    toPlan.forEach(hol => { const pk = plan.picks[hol.name]; if (pk) assignments.push(card(hol, pk.surgeonA, pk.surgeonB)); });
+    if (plan.notes.length) setHolidayLockWarning(prev => [prev, ...plan.notes.map(n => "⚠ " + n)].filter(Boolean).join(" · "));
+
+    // Sort final assignments by date for display
+    assignments.sort((a, b) => a.date.localeCompare(b.date));
+    setHolidayAssignments(prev => ({ ...prev, [String(year)]: assignments }));
+    logAudit("holiday.generate", `Generated holiday assignments for ${year} (${assignments.length} holidays)`, { year, count: assignments.length });
+//@@ addAppShift — after "  const addAppShift = () => {", up to "\n  };"
+
+    if (!appShiftsLoaded) { showToast(APP_SHIFTS_NOT_LOADED, "error"); return; }
+    if(!appDate||!appPerson) return;
+    const next = {...appShifts,[appDate]:appPerson};
+    setAppShifts(next);
+    saveAppShifts(next);
+    logAudit("app_shift.assign", `Assigned APP ${nameOf(appPerson)} to ${appDate}`, { date: appDate, app_id: appPerson });
+    setAppDate(fmt(new Date()));
+//@@ rmAppShift — after "  const rmAppShift = (ds) => {", up to "\n  };"
+
+    if (!appShiftsLoaded) { showToast(APP_SHIFTS_NOT_LOADED, "error"); return; }
+    const prevId = appShifts[ds];
+    const next={...appShifts}; delete next[ds];
+    setAppShifts(next);
+    saveAppShifts(next);
+    logAudit("app_shift.remove", `Removed APP assignment on ${ds}${prevId ? " (" + nameOf(prevId) + ")" : ""}`, { date: ds });
+//@@ saveAppShifts — after "  const saveAppShifts = async (next) => {", up to "\n  };"
+
+    const ep = sessionEpochRef.current;
+    try {
+      const { error } = await supabase.from("app_shifts_data")
+        .upsert({ id: "main", data: next, updated_at: new Date().toISOString() });
+      if (sessionEpochRef.current !== ep) { if (error) console.error("APP shift save failed (the session changed meanwhile):", error); return; } // another session now
+      if (error) {
+        setSaveError(true);
+        setSaveStatus("⚠ APP shift save failed");
+        showToast("Couldn't save APP shifts — check your connection (or your permission to assign APPs) and try again.", "error");
+      } else {
+        setSaveStatus("APP shifts saved");
+        setTimeout(() => setSaveStatus(""), 1500);
+      }
+    } catch(e) {
+      if (sessionEpochRef.current !== ep) { console.error("APP shift save failed (the session changed meanwhile):", e); return; } // another session now
+      setSaveError(true);
+      setSaveStatus("⚠ APP shift save failed");
+      showToast("Couldn't save APP shifts — check your connection and try again.", "error");
+    }
+//@@ toAdd — after "  const toAdd = async (personId, kind, start, end) => {", up to "\n  };"
+
+    if (!personId || !start || !end) return;
+    const ep = sessionEpochRef.current;
+    const tell = () => { if (sessionEpochRef.current === ep) showToast("Couldn't save that — check your connection and try again.", "error"); };
+    setterFor(kind)(p => ({ ...p, [personId]: [...(p[personId] || []), [start, end]] }));
+    logAudit(kind + ".add", `Added ${kind === "nocall" ? "no-call" : "vacation"} for ${nameOf(personId)}: ${start}${start !== end ? " → " + end : ""}`, { person_id: personId, kind, start, end });
+    if (!USE_TIME_OFF) return;
+    try {
+      const { error } = await db.insert("time_off", {
+        person_id: personId, kind, start_date: start, end_date: end,
+        created_by: userProfile?.person_id || null,
+      });
+      if (error) { console.error("time_off insert error", error); tell(); }
+      // realtime reload canonicalizes the optimistic entry (adds its id)
+    } catch (e) { console.error("time_off insert ex", e); tell(); }
+//@@ addVac — after "  const addVac = () => {", up to "\n  };"
+
+    if(!vacSurgeon||!vacStart||!vacEnd) return;
+    toAdd(vacSurgeon, "vacation", vacStart, vacEnd);
+    setVacStart(fmt(new Date())); setVacEnd(fmt(new Date()));
+//@@ addNoCall — after "  const addNoCall = () => {", up to "\n  };"
+
+    if(!ncSurgeon||!ncStart||!ncEnd) return;
+    toAdd(ncSurgeon, "nocall", ncStart, ncEnd);
+    setNcStart(fmt(new Date())); setNcEnd(fmt(new Date()));
+//@@ saveWeekEdits — after "  const saveWeekEdits = useCallback((openAfter) => {", up to "\n  }, [editWeekModal,"
+
+    if (!editWeekModal) return;
+    if (!schedEditable()) return;
+    const { mondayStr, draft } = editWeekModal;
+    const oldWk = scheduleRef.current[mondayStr] || {};
+    // ONLY the slots edited in THIS editor go onto the LATEST week (design
+    // §2.6, A17(a) — mergeEditorEdits, pure, beside the sync engine): a change
+    // someone else made to another slot of this week while the editor was open
+    // is kept, never reverted by the old draft. One they made to a slot edited
+    // here refuses the whole save, naming it (the open epoch, sync v2 R15).
+    const m = mergeEditorEdits({ week: editWeekModal.openWeek, apps: editWeekModal.appsBase || {} }, draft, scheduleRef.current[mondayStr], editWeekModal.openEpoch || 0, schedSyncRef.current.epochOf(mondayStr),
+      { surgeonIds: surgeons.map(s => s.id), flags: { isBackup: backupMondaySet.has(mondayStr), isFierceBackup: fierceBackupSet.has(mondayStr) } });
+    if (!m.ok) {
+      const slotName = (x) => x.kind === "override" ? `Service Day ${x.key}` : (SHIFT_LABELS[x.key] || x.key);
+      showToast(`This week was changed by someone else while the editor was open — nothing was saved (surgeon slots or APP days). They changed the ${m.slots.map(slotName).join(", ")} you edited here. Close the editor and reopen it to start from the latest.`, "error");
+      return; // the editor stays open, so the draft can still be read
+    }
+    const next = m.week; // the week as this save writes it
+    // APP days the user actually edited in THIS editor, against what it showed
+    // when it opened (2026-10-11, appsBase) — only these are written. Before the APP-shift
+    // row has loaded this session the whole map can't be trusted: the APP part
+    // is refused, with the reason, while the surgeon edits still save (3a).
+    const appEdits = m.appEdits;
+    const appRefused = appEdits.length > 0 && !appShiftsLoaded;
+
+    // Build diff list of changes: the week as written vs as it is now
+    // (key: the slot, for the notices' dated labels — UX audit 2026-11-01; the audit keeps slotLabel)
+    const changes = []; // { slotLabel, oldId, newId, isApp, key, date }
+    if ((oldWk.dayCall || "") !== (next.dayCall || "")) {
+      changes.push({ slotLabel: `Service Week`, oldId: oldWk.dayCall || "", newId: next.dayCall || "", isApp: false, key: "dayCall" });
+    }
+    ["mon","tue","wed","thu","wknd"].forEach(nk => {
+      const oldId = oldWk.nights?.[nk] || "";
+      const newId = next.nights?.[nk] || "";
+      if (oldId !== newId) {
+        changes.push({ slotLabel: SHIFT_LABELS[nk] || nk, oldId, newId, isApp: false, key: nk });
+      }
+    });
+    // Single-day service coverage overrides
+    {
+      const oldOv = oldWk.dayCallOverrides || {};
+      const newOv = next.dayCallOverrides || {};
+      const ovDates = new Set([...Object.keys(oldOv), ...Object.keys(newOv)]);
+      ovDates.forEach(ds => {
+        const oldId = oldOv[ds] || (oldWk.dayCall || "");
+        const newId = newOv[ds] || (next.dayCall || "");
+        if (oldId !== newId) {
+          changes.push({ slotLabel: `Service Day ${ds}`, oldId, newId, isApp: false, key: "override", date: ds });
+        }
+      });
+    }
+    // Refused APP edits never reach the confirm, the audit or the notifications.
+    if (!appRefused) appEdits.forEach(([ds, newAppId]) => {
+      const oldAppId = appShifts[ds] || "";
+      if (oldAppId !== (newAppId || "")) {
+        changes.push({ slotLabel: `APP ${ds}`, oldId: oldAppId, newId: newAppId, isApp: true, key: "app", date: ds });
+      }
+    });
+
+    if (changes.length === 0) {
+      // Only refused APP edits: say so and keep the editor open.
+      if (appRefused) { showToast("The APP changes were NOT saved: " + APP_SHIFTS_NOT_LOADED, "error"); return; }
+      if (openAfter) openWeekEditor(openAfter); else setEditWeekModal(null);
+      return;
+    }
+    // silvisBusy: any change that puts FAK on a Silvis primary day is refused
+    // (scheduler override with the reason on screen). Checked from the week
+    // as written vs the old week so only NEW placements trigger it.
+    if (silvisActive) {
+      const hits = [];
+      // Service days FAK COVERS before vs after this draft: Mon..Sat where
+      // the effective holder (a Service Day override if present, else
+      // dayCall) is him, minus a holiday 24h held by someone else. Every
+      // NEWLY covered day on a Silvis primary date is a hit — that catches
+      // a new service week, an override TO him, and REMOVING an override
+      // that had released a Silvis day to someone else (the case a
+      // "did dayCall change?" test could not see).
+      const hc = oldWk.holidayCoverage || {};
+      const coveredBy = (dc, ov) => new Set(sfSlotDays(mondayStr, "dayCall").filter(ds => {
+        const c = hc[ds]; if (c && c.surgeonId && c.surgeonId !== silvisFakId) return false;
+        const o = (ov || {})[ds];
+        return ((o != null && o !== "") ? o : (dc || "")) === silvisFakId;
+      }));
+      const before = coveredBy(oldWk.dayCall, oldWk.dayCallOverrides);
+      coveredBy(next.dayCall, next.dayCallOverrides).forEach(ds => {
+        if (!before.has(ds) && silvisDays.primary.has(ds)) hits.push(`${nameOf(silvisFakId)} is Silvis PRIMARY on ${ds} (07:00 → 07:00 next day), which overlaps Service Day ${ds}`);
+      });
+      ["mon","tue","wed","thu","wknd"].forEach(nk => {
+        if (next.nights?.[nk] === silvisFakId && oldWk.nights?.[nk] !== silvisFakId) { const r = silvisBlock(silvisFakId, mondayStr, nk, oldWk); if (r) hits.push(r); }
+      });
+      if (silvisRefuse(hits)) return;
+    }
+    // Safety confirmation if many changes at once
+    if (changes.length >= 3) {
+      if (!confirm(`You are changing ${changes.length} shifts in the week of ${mondayStr}. Continue?`)) return;
+    }
+
+    // Commit — the merged week (a brand-new hand-created week carries its
+    // backup / fierce flags from the sets; 'off' recomputed, coverers
+    // included). Only when a surgeon slot changed: an APP-only save writes the
+    // APP map, never a schedule week (it used to create an empty one).
+    if (changes.some(c => !c.isApp)) {
+      const undoStep = pushUndo(); if (undoStep) undoStep.what = "edit"; // (↩ Undo names what it takes back — QW4)
+      updateSchedule(p => ({ ...p, [mondayStr]: next }));
+    }
+    // APP changes (2026-10-11): only the days edited in this editor, applied to
+    // the LATEST map; never before the APP-shift row has loaded this session —
+    // the whole map is upserted, so a write from a failed load would replace
+    // every APP's assignments. The surgeon edits above save either way (3a).
+    if (appRefused) {
+      showToast("The surgeon changes went through, but the APP changes were NOT saved: " + APP_SHIFTS_NOT_LOADED, "error");
+    } else if (appEdits.length) {
+      setAppShifts(p => {
+        const n = { ...p };
+        appEdits.forEach(([ds, aid]) => {
+          if (aid) n[ds] = aid;
+          else delete n[ds];
+        });
+        saveAppShifts(n); // persist APP changes to their own table
+        return n;
+      });
+    }
+
+    logAudit("schedule.week_edit", `Edited ${changes.length} shift${changes.length === 1 ? "" : "s"} in week of ${mondayStr}${draft.reason ? " (" + draft.reason + ")" : ""}`, { mondayStr, changes: changes.map(c => ({ slot: c.slotLabel, from: nameOf(c.oldId), to: nameOf(c.newId) })) });
+
+    // Notifications — COALESCED per recipient so a bulk save of 4 shifts
+    // produces 1 notification set per affected person instead of 4. Massive
+    // reduction in email/push noise on multi-shift edits.
+    //
+    // Email uses the existing schedule_changed template, whose data.detail
+    // (v17) now carries every change with its day, as the in-app title+body
+    // does (UX audit 2026-11-01 — below); before, n>=2 sent a summarized
+    // payload ("multiple → open app for details").
+    const reasonSuffix = draft.reason ? ` (${draft.reason})` : "";
+
+    // Build per-person change list: every affected person gets their own set
+    // of changes (filtered to only shifts they're involved in). Scheduler and
+    // admin get the full list across all changes.
+    const perPerson = new Map(); // person_id -> [{slotLabel, oldName, newName}]
+    const enrichedChanges = changes.map(c => ({
+      slotLabel: c.slotLabel,
+      oldId: c.oldId,
+      newId: c.newId,
+      oldName: c.isApp ? (aMap[c.oldId]?.name || "—") : (sMap[c.oldId]?.name || "—"),
+      newName: c.isApp ? (aMap[c.newId]?.name || "—") : (sMap[c.newId]?.name || "—"),
+      key: c.key,
+      date: c.date,
+    }));
+    enrichedChanges.forEach(ec => {
+      [ec.oldId, ec.newId].filter(Boolean).forEach(pid => {
+        if (!perPerson.has(pid)) perPerson.set(pid, []);
+        perPerson.get(pid).push({ slotLabel: ec.slotLabel, oldName: ec.oldName, newName: ec.newName });
+      });
+    });
+    // Scheduler and admin see every change regardless of personal involvement
+    schedulerAdminIds.forEach(pid => {
+      if (!pid) return;
+      if (!perPerson.has(pid)) {
+        perPerson.set(pid, enrichedChanges.map(ec => ({ slotLabel: ec.slotLabel, oldName: ec.oldName, newName: ec.newName })));
+      } else {
+        // Already a direct-affected person; ensure they see ALL changes (not just their own)
+        const existingLabels = new Set(perPerson.get(pid).map(x => x.slotLabel));
+        enrichedChanges.forEach(ec => {
+          if (!existingLabels.has(ec.slotLabel)) {
+            perPerson.get(pid).push({ slotLabel: ec.slotLabel, oldName: ec.oldName, newName: ec.newName });
+          }
+        });
+      }
+    });
+
+    // One in-app notification + one push/email batch for the whole change set.
+    // (Previously this looped per-person, inserting one identical-looking row
+    // per affected person — a single REH→DJA swap produced two rows in the
+    // shared notification panel. perPerson.keys() already holds every affected
+    // person plus schedulers, so we reuse it for push/email targeting.)
+    const allTargets = [...perPerson.keys()].filter(Boolean);
+    let title, msg, emailPayload;
+    // Each change says its day (UX audit 2026-11-01 — helpers.js weekChangeNotice, guarded as every newer helper):
+    // "Thu Dec 17 — Night: DJA → RPC" in the notice and the push, and the e-mail lists every change (its detail),
+    // its subject the one change's slot or "2 shifts, week of Jan 4". An old cached helpers.js: as before.
+    const told = typeof weekChangeNotice === "function" ? weekChangeNotice(mondayStr, enrichedChanges, draft.reason) : null;
+    if (told) {
+      title = told.title; msg = told.message; emailPayload = told.email;
+    } else if (enrichedChanges.length === 1) {
+      const c = enrichedChanges[0];
+      title = "Schedule Change";
+      msg = `${c.slotLabel}: ${c.oldName} → ${c.newName}${reasonSuffix}`;
+      emailPayload = { shift: c.slotLabel, week: mondayStr, old_surgeon: c.oldName, new_surgeon: c.newName };
+    } else {
+      title = `${enrichedChanges.length} Shifts Updated`;
+      const bullets = enrichedChanges.map(c => `${c.slotLabel}: ${c.oldName} → ${c.newName}`).join("; ");
+      msg = `Week of ${mondayStr} — ${bullets}${reasonSuffix}`;
+      emailPayload = {
+        shift: `${enrichedChanges.length} shifts`,
+        week: mondayStr,
+        old_surgeon: "multiple",
+        new_surgeon: "open app for details",
+      };
+    }
+    addNotification("schedule_changed", title, msg, { week: mondayStr }, allTargets);
+    sendEmailNotif("schedule_changed", emailPayload, allTargets);
+
+    setEditWeekModal(null);
+    if (openAfter) {
+      // Defer to next tick so state updates flush before re-opening
+      setTimeout(() => openWeekEditor(openAfter), 0);
+    }
+//@@ markHandlers — after "  const markBackupWeek = () => {", up to "\n  // 📋 Paste Fierce's schedule (owner 2026-11-01): his year's table"
+
+    if (!bkMonday) return;
+    if (!schedEditable() || !marksEditable()) return;
+    markWeek("backup", bkMonday, true);
+    if (bkMonday < mondayOfToday()) setShowPastMarks(p => ({ ...p, backup: true })); // an ended week: its list's past weeks open, where it shows
+    setBkMonday(mondayOfToday());
+  };
+  const unmarkBackupWeek = (m) => {
+    if (!schedEditable() || !marksEditable()) return;
+    markWeek("backup", m, false);
+  };
+  const markFierceBackupWeek = () => {
+    if (!bkMonday) return;
+    if (!schedEditable() || !marksEditable()) return;
+    markWeek("fierce", bkMonday, true);
+    if (bkMonday < mondayOfToday()) setShowPastMarks(p => ({ ...p, fierce: true })); // an ended week: its list's past weeks open, where it shows
+    setBkMonday(mondayOfToday());
+  };
+  const unmarkFierceBackupWeek = (m) => {
+    if (!schedEditable() || !marksEditable()) return;
+    markWeek("fierce", m, false);
+  };

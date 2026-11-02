@@ -644,7 +644,8 @@ const MUTANTS = [
   { id: "G2f", app: true, what: "G2: Generate & Publish's e-mail goes out after a session change while its notice was written (sent from the next session)",
     // (re-pinned 21/n: the call now passes the tap's session — review r4 fixes-3; the same mutation)
     // (re-pinned 2026-10-20: the notice and the e-mail moved into notifyPublished, whose fence returns false — the same mutation)
-    from: "      \"A new call schedule has been generated. Check the Schedule or Calendar tab.\", {}, null, ep);\n    if (sessionEpochRef.current !== ep) return false;\n", to: "      \"A new call schedule has been generated. Check the Schedule or Calendar tab.\", {}, null, ep);\n" },
+    // (re-pinned ON PURPOSE 2026-11-02 — sync-guards DF5: the notice names its period and carries its week; the same mutation)
+    from: "\"A new call schedule was published — tap to see your shifts.\", firstDay ? { week: firstDay } : {}, null, ep);\n    if (sessionEpochRef.current !== ep) return false;\n", to: "\"A new call schedule was published — tap to see your shifts.\", firstDay ? { week: firstDay } : {}, null, ep);\n" },
   { id: "G2g", app: true, what: "G2: Accept & Publish goes on after its snapshot though the session changed (published as the next account)",
     from: "        if (sessionEpochRef.current !== ep) { setSaveStatus(\"\"); return; } // nothing published as the next session", to: "        // nothing published as the next session" },
   { id: "G2g2", app: true, what: "G2 (variant): Accept & Publish takes the session's identity after its snapshot's await",
@@ -960,8 +961,9 @@ const MUTANTS = [
     from: "if (sessionEpochRef.current !== ep) { if (error) console.error(\"APP-access update failed:\", error); return; }", to: "if (false) { if (error) console.error(\"APP-access update failed:\", error); return; }" },
   { id: "I4x", app: true, what: "I4 audit: the test notification's outcome said on the next session's screen",
     from: "        if (sessionEpochRef.current !== ep) return;\n        setNotifTestSent(\"Browser + email notifications sent!\");", to: "        setNotifTestSent(\"Browser + email notifications sent!\");" },
-  { id: "I4y", app: true, what: "I4 audit: the Settings panel's push test alerts its result on the next session's screen",
-    from: "                        const data = await resp.json().catch(()=>({}));\n                        if (sessionEpochRef.current !== ep) return;\n                        // Key success", to: "                        const data = await resp.json().catch(()=>({}));\n                        // Key success" },
+  // (sync-guards DE, 2026-11-02, on purpose: the push test is Developer tools' named sendTestPush, at the component's own indent)
+  { id: "I4y", app: true, what: "I4 audit: Developer tools' push test alerts its result on the next session's screen",
+    from: "      const data = await resp.json().catch(()=>({}));\n      if (sessionEpochRef.current !== ep) return;\n      // Key success", to: "      const data = await resp.json().catch(()=>({}));\n      // Key success" },
   { id: "I4y2", app: true, what: "I4 audit: the Settings panel's reminder test alerts its result on the next session's screen",
     from: "                        if (sessionEpochRef.current !== ep) return;\n                        alert(`Vacation deadline reminder result:", to: "                        alert(`Vacation deadline reminder result:" },
   { id: "I4r4", app: true, what: "I4 audit: an office contact removal's failure told on the next session's screen",
@@ -4940,6 +4942,7 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
     jobClaimRef: env.jobClaimRef || (env.schedSyncRef && env.schedSyncRef.jobClaimRef) || { current: null }, // (2026-10-27, P7: a reset / restore is a pending job from its tap — the app session's own, which its gate reads; SE-X15 (f))
     previewMarksMoved: env.previewMarksMoved || (() => []), marksMovedText: env.marksMovedText || (() => ""), // (2026-11-01: Accept & Publish refuses a preview whose Backup marks changed since it was made — none here; sync-guards CX runs it)
     flipGate: env.flipGate || (() => null), // (2026-11-01 round 2: ↩ Undo of a publish / clear step waits for a Backup flip still saving — none here; sync-guards CX runs it)
+    generateAndPublishDone: env.generateAndPublishDone || (() => {}), // (2026-11-02: Generate & Publish's toast and Calendar once its notice went — nothing on screen here; sync-guards DC runs it)
     setupWritesRef: env.setupWritesRef || { current: { seq: 0, n: 0 } }, // (round 2: the poll skips a row read while one of this session's flip counts saves is out — none here; sync-guards CX22 runs it)
     timeOffLoadSeqRef: env.timeOffLoadSeqRef || { current: { read: 0, del: 0, shown: 0 } } })) : mk); // (deleteTimeOff counts its answers for the time-off reads — review r7 fix-2)
   const HX = appHelpers();
@@ -4988,7 +4991,7 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
     // the weeks push effect (its 800-ms debounce)
     pushFx: fnX("loaded, isPublicMode, schedSyncRef, setTimeout, clearTimeout", wrap("() => {", after("  // for edits (the pull and the authoritative jobs request their own).\n  useEffect(() => {", "\n  }, [loaded, schedule]);"), "\n  }")),
     // the session boundary + sign-out, and the re-auth that can land on another account (P4)
-    boundary: sess(fnX("searchRef, setSearching, setSearchStats, setPreviewSchedule, setShowPreview, schedSyncRef, setScheduleHistory, setEditWeekModal, setReauthNeeded, setStaleTokenWarn, setIsScheduler, setupReadRef, lastSyncRef, confirm, auth, biometric, setAuthUser, setUserProfile, setNeedsProfile, setMySurgeon, setBiometricEnrolled, setBiometricPending, sessionEpochRef, forgetDayOffs, setJustPublished",
+    boundary: sess(fnX("searchRef, setSearching, setSearchStats, setPreviewSchedule, setShowPreview, schedSyncRef, setScheduleHistory, setEditWeekModal, setReauthNeeded, setStaleTokenWarn, setIsScheduler, setupReadRef, lastSyncRef, confirm, auth, biometric, setAuthUser, setUserProfile, setNeedsProfile, setMySurgeon, setBiometricEnrolled, setBiometricPending, sessionEpochRef, forgetDayOffs, setJustPublished, window, localStorage, userProfile, mySurgeon",
       wrap("(() => { const sessionBoundary = () => {", after("  const sessionBoundary = () => {", "\n  // ════"), "\n  return { sessionBoundary, handleSignOut }; })()"))),
     reauth: fnX("schedSyncRef, authUser, setReauthNeeded, setStaleTokenWarn, showToast, sessionBoundary, biometric, setBiometricEnrolled, setBiometricPending, setAuthUser, dbAuth, setUserProfile, setMySurgeon, setNeedsProfile, setIsScheduler, setReloadTrigger, pendingSaveRef, setSetupSaveNudge, auth",
       decl("reauthLanded", "\n  };\n")),
@@ -5026,7 +5029,8 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
     // (20/n) Generate & Publish's notice and e-mail (doGenerateAndNotify), and the setup's signature (setupSig — review r3 G7)
     // (review fix 2026-10-20: notifyPublished takes down a pending Accept & Publish banner — justPublished, notifiedRef,
     // setJustPublished; none is up in these runs, and sess() gives setJustPublished its no-op)
-    notify: sess(fnX("sessionEpochRef, doGenerate, addNotification, sendEmailNotif, MO, startMonth, endMoIdx, startYear, mondays, periodLabel, periodText, justPublished, notifiedRef, setJustPublished", decl("doGenerateAndNotify", "\n  };\n") && wrap("(() => { const notifyPublished = ", after("  const notifyPublished = ", "\n  };\n"), "\n  };\n  return " + decl("doGenerateAndNotify", "\n  };\n") + "; })()"))), // (mondays, periodLabel: the e-mail's period since sync-guards BD — UX audit 2026-10-19; periodText, the component's one guarded line for it, since the review fixes; 2026-10-20: + notifyPublished, the one sender it and Accept & Publish's banner share — sync-guards CD)
+    // (2026-11-02, on purpose: + generateAndPublishDone — sess() gives it its no-op; sync-guards DC runs the real one)
+    notify: sess(fnX("sessionEpochRef, doGenerate, addNotification, sendEmailNotif, MO, startMonth, endMoIdx, startYear, mondays, periodLabel, periodText, justPublished, notifiedRef, setJustPublished, generateAndPublishDone", decl("doGenerateAndNotify", "\n  };\n") && wrap("(() => { const notifyPublished = ", after("  const notifyPublished = ", "\n  };\n"), "\n  };\n  return " + decl("doGenerateAndNotify", "\n  };\n") + "; })()"))), // (mondays, periodLabel: the e-mail's period since sync-guards BD — UX audit 2026-10-19; periodText, the component's one guarded line for it, since the review fixes; 2026-10-20: + notifyPublished, the one sender it and Accept & Publish's banner share — sync-guards CD)
     setupSig: fnX("", after("  const setupSig = ", ";\n")),
     gen: fnX("searchRef, showToast, schedEditable, schedSyncRef, buildPrefs", decl("doGenerate", "\n  };\n")), // (only its first statements are reached here: the gates, then buildPrefs)
     // (21/n) the trade's decline, and the notice paths (addNotification, sendPushNotif, sendEmailNotif) — review r4 branch-2 / fixes-3
@@ -5399,12 +5403,15 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
     open(X[1]); draft(d => { d.dayCall = "s7"; });
     await peer(X[1], w => (w.nights.wed = "s6", w));
     from = t.log.length; save(); await A.eng.push();
+    // (Changed ON PURPOSE 2026-11-02, sync-guards DD9: a save that went through says so, naming who was told — one success
+    // toast each, "Saved — s2 and s7 were notified" (nameOf is the id here); the engine's own toasts still none.)
+    const SAVED = (a, b) => [`Saved — ${a} and ${b} were notified`, "success"];
     check("SE-X6 …their change to ANOTHER slot (X1's Wed night) → Save writes only the edit, onto the latest week: the table has both, by one CAS PATCH",
-      writesOf(t, from, "TOK_A").length === 1 && t.get(X[1]).data.dayCall === "s7" && t.get(X[1]).data.nights.wed === "s6" && A.modal === null && A.toasts.length === 0, JSON.stringify({ row: t.get(X[1]).data, toasts: A.toasts }));
+      writesOf(t, from, "TOK_A").length === 1 && t.get(X[1]).data.dayCall === "s7" && t.get(X[1]).data.nights.wed === "s6" && A.modal === null && JSON.stringify(A.toasts) === JSON.stringify([SAVED("s2", "s7")]), JSON.stringify({ row: t.get(X[1]).data, toasts: A.toasts }));
     open(X[2]); draft(d => { d.dayCall = "s6"; });
     from = t.log.length; save(); await A.eng.push();
     check("SE-X6 …control: nobody else touches the week → the edit lands (one PATCH), one undo step, one audit line",
-      writesOf(t, from, "TOK_A").length === 1 && t.get(X[2]).data.dayCall === "s6" && A.history.length === 2 && rec.audits.length === 2 && A.toasts.length === 0, JSON.stringify({ h: A.history.length, audits: rec.audits.length }));
+      writesOf(t, from, "TOK_A").length === 1 && t.get(X[2]).data.dayCall === "s6" && A.history.length === 2 && rec.audits.length === 2 && JSON.stringify(A.toasts) === JSON.stringify([SAVED("s2", "s7"), SAVED("s5", "s6")]), JSON.stringify({ h: A.history.length, audits: rec.audits.length, toasts: A.toasts }));
   });
 
   // SE-X7 — the REAL acceptPreview (and publishNotLanded / runPublish) on the
@@ -5539,7 +5546,9 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
   const bEnv = (A, c) => { const noop = () => {}; return { searchRef: { current: null }, setSearching: noop, setSearchStats: noop, setPreviewSchedule: noop, setShowPreview: noop, schedSyncRef: A.schedSyncRef,
     setScheduleHistory: A.setScheduleHistory, setEditWeekModal: A.setModal, setReauthNeeded: noop, setStaleTokenWarn: noop, setIsScheduler: c.set("isScheduler"), setupReadRef: c.setupReadRef, lastSyncRef: c.lastSyncRef,
     confirm: () => true, auth: A.auth, biometric: { unenroll: noop }, setAuthUser: c.set("authUser"), setUserProfile: c.set("userProfile"), setNeedsProfile: noop, setMySurgeon: noop, setBiometricEnrolled: noop, setBiometricPending: noop,
-    pendingSaveRef: c.pendingSaveRef, setSetupSaveNudge: c.set("setupSaveNudge"), forgetDayOffs: c.forgetDayOffs || noop }; }; // (23/n: the boundary's day-off forget — review r6 fix-3)
+    pendingSaveRef: c.pendingSaveRef, setSetupSaveNudge: c.set("setupSaveNudge"), forgetDayOffs: c.forgetDayOffs || noop, // (23/n: the boundary's day-off forget — review r6 fix-3)
+    // (the quick wins' review, 2026-11-02: sign-out drops the browser's push identity and the remembered name — no OneSignal here)
+    window: {}, localStorage: { getItem: () => null, removeItem: noop }, userProfile: null, mySurgeon: "" }; };
   // …and "Sign in again" landing on the SAME account (a renewed session — the real reauthLanded's same-account branch).
   const sameAccount = (A, c) => Object.assign(bEnv(A, c), { authUser: { id: "auth-a" }, showToast: A.showToast, dbAuth: { getProfile: async () => null }, setReloadTrigger: () => { c.reloads++; } });
   // …and "Sign in again" landing on ANOTHER account, a scheduler (the real reauthLanded, crossing that boundary).
@@ -7668,7 +7677,8 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
       officeUpd: fnX("setOfficeContacts, db, alert, console, showToast, sessionEpochRef", decl("updateOfficeContact", "\n  };\n")),
       officeDel: fnX("officeContacts, confirm, setOfficeContacts, fetch, SUPABASE_URL, dbAuthHeaders, console, showToast, sessionEpochRef", decl("deleteOfficeContact", "\n  };\n")),
       officePub: fnX("confirm, officeContacts, setOfficeNotifBusy, SUPABASE_URL, fetch, dbAuthHeaders, publishLabel, alert, showToast, setShowPublishDialog, sessionEpochRef, console", decl("triggerPublishNotify", "\n  };\n")),
-      officeDigest: fnX("confirm, setOfficeNotifBusy, SUPABASE_URL, fetch, dbAuthHeaders, alert, sessionEpochRef, console", decl("triggerDigestTest", "\n  };\n")),
+      // (sync-guards DE, 2026-11-02, on purpose: the digest button is Developer tools' sendOfficeDigestNow — its question names the active office contacts, so it reads them)
+      officeDigest: fnX("officeContacts, confirm, setOfficeNotifBusy, SUPABASE_URL, fetch, dbAuthHeaders, alert, sessionEpochRef, console", decl("sendOfficeDigestNow", "\n  };\n")),
       pushPerm: fnX("setPushDiag, navigator, window, setPushPermission, setOneSignalSubscribed, mySurgeon, console, setTimeout, setPushSubscriptionId, setPushExternalId, sessionEpochRef", cbody("requestPushPermission", "[mySurgeon]")),
       testNote: fnX("sendBrowserNotif, setNotifTestSent, edgeFunctionUrl, mySurgeon, notifPrefs, sendEmailNotif, setTimeout, sessionEpochRef", cbody("sendTestNotification", "[sendBrowserNotif, sendEmailNotif, edgeFunctionUrl, notifPrefs, mySurgeon]")),
       upload: fnX("setScanning, setScanMsg, surgeons, setPriorCounts, console, fileRef, sessionEpochRef", cbody("handleTemplateUpload", "[surgeons]")),
@@ -7679,7 +7689,9 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
       appAccess: fnX("p, dbAuth, alert, setAllProfiles, authUser, setUserProfile, sessionEpochRef, console",
         (() => { const h = "<input type=\"checkbox\" checked={!!p.can_assign_apps} onChange={async (e)=>{", i = nsx.indexOf(h), e = i < 0 ? -1 : nsx.indexOf("\n                        }} style={{cursor:\"pointer\",width:16,height:16}}/>", i);
           return i < 0 || e < 0 || nsx.indexOf(h, i + 1) !== -1 ? null : "async (e) => {" + nsx.slice(i + h.length, e) + "\n}"; })()),
-      testPush: fnX("edgeFunctionUrl, fetch, dbAuthHeaders, alert, confirm, sessionEpochRef", jsx("/send-push\");\n                        const resp = await fetch(pushUrl", "<button onClick={async ()=>{")),
+      // (sync-guards DE, 2026-11-02, on purpose: the test push is Developer tools' named sendTestPush; run as its everyone
+      // test — the one that went to every phone, now asked first — so the env below adds what its question names)
+      testPush: (() => { const f = fnX("edgeFunctionUrl, mySurgeon, surgeons, apps, confirm, sessionEpochRef, fetch, dbAuthHeaders, alert, nameOf, console", decl("sendTestPush", "\n  };\n")); return f && ((env) => () => f(env)(true)); })(),
       testRemind: fnX("edgeFunctionUrl, fetch, dbAuthHeaders, alert, confirm, sessionEpochRef", jsx("/vacation-deadline-reminder\");", "<button onClick={async ()=>{")),
     };
     const hMiss = Object.keys(H).filter(k => typeof H[k] !== "function");
@@ -7805,7 +7817,7 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
     }, (x, x0, f, f0) => f.late.length === 0 && f0.early.some(k => /^toast: Couldn't remove the contact/.test(k)));
     for (const [id, fnK, okSaid, failSaid] of [["officePub", "officePub", /^toast: Sent 2 email/, /^alert: Publish failed/], ["officeDigest", "officeDigest", /^alert: Digest run: 2 email/, /^alert: Digest failed/]]) {
       add(id, `the office ${id === "officePub" ? "'new schedule published' e-mail" : "digest run"} (its POST): its result never said on the next screen`, async (r, fail) => {
-        await H[fnK]({ confirm: () => true, officeContacts: [], setOfficeNotifBusy: noopX, SUPABASE_URL: BASE, dbAuthHeaders: r.hdr, publishLabel: "Jan", alert: r.say("alert"), showToast: r.say("toast"), setShowPublishDialog: r.mark("dialog"),
+        await H[fnK]({ confirm: () => true, officeContacts: [{ id: 1, name: "Desk", email: "desk@dsg.test", active: true, departments: [] }], setOfficeNotifBusy: noopX, SUPABASE_URL: BASE, dbAuthHeaders: r.hdr, publishLabel: "Jan", alert: r.say("alert"), showToast: r.say("toast"), setShowPublishDialog: r.mark("dialog"),
           sessionEpochRef: r.ep, console: r.console, fetch: async (url, init) => { r.writes.push("POST " + init.headers.Authorization); await r.cross(); return fail ? r.resp(500, { error: "x" }) : r.resp(200, { sent: 2, affected_surgeons: [] }); } })();
       }, (x, x0, f, f0) => x.late.length === 0 && f.late.length === 0 && x0.early.some(k => okSaid.test(k)) && f0.early.some(k => failSaid.test(k)));
     }
@@ -7844,8 +7856,9 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
         dbAuth: { upsertProfile: async () => { r.write("UPSERT user_profiles"); await r.cross(); return { error: fail ? "RLS" : null }; } } })({ target: { checked: true } });
     }, (x, x0, f, f0) => x.late.length === 0 && f.late.length === 0 && ["list", "profile"].every(k => x0.early.includes(k)) && f0.early.some(k => /^alert: Failed to update/.test(k)));
     for (const id of ["testPush", "testRemind"]) {
-      add(id, `the Settings panel's '${id === "testPush" ? "Test Push to All Devices" : "Test Vacation Deadline Reminder"}' button: its result never said on the next screen`, async (r) => {
+      add(id, `Developer tools' '${id === "testPush" ? "📣 Test push to every phone…" : "Test Vacation Deadline Reminder"}' button: its result never said on the next screen`, async (r) => {
         await H[id]({ edgeFunctionUrl: "https://fn.test/functions/v1/send-notification", dbAuthHeaders: r.hdr, alert: r.say("alert"), confirm: () => true, sessionEpochRef: r.ep,
+          mySurgeon: "s1", surgeons: S7, apps: [], nameOf: (x) => x, console: r.console,
           fetch: async () => { r.write("POST"); await r.cross(); return r.resp(200, {}); } })();
       }, (x, x0) => x.late.length === 0 && x0.early.some(k => /^alert: /.test(k)), true);
     }

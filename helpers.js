@@ -543,6 +543,28 @@ function onCallNowText(callNow, name) {
     : { backup: false, text: `🟢 On call now: ${name} — ${callNow.slot}, until ${callNow.until}` };
 }
 
+// The APP on call at an instant (UX audit 2026-11-01, QW2). The On Call Today
+// card reads only today's APP, so after midnight it dropped the APP whose
+// overnight runs to 7a — and named tonight's, who starts at 5p, as if on now.
+// An APP shift's hours are the app's own (buildAppICSEvents, the day sheet,
+// the card): a weekday's runs 5p → 7a the next morning, a Saturday's or
+// Sunday's 7a → 7a. So, at CENTRAL hours (centralClock, as onCallNow):
+//   before 7a    the PREVIOUS date's APP, until 7a (lastNight: true)
+//   7a – 5p      Sat / Sun that date's APP; Mon–Fri nobody
+//   from 5p      that date's APP, until 7a
+// appShifts maps a date to an APP id, as calData reads it. Returns { aid, ds,
+// until: "7a", lastNight } — ds the shift's own date — or null when no APP
+// holds that hour (no shift, a weekday daytime, no instant). now is passed in,
+// so there is no clock here.
+function appOnCallNow(appShifts, now) {
+  const c = centralClock(now);
+  if (!c) return null;
+  const x = parse(c.ds), dow = x.getDay();
+  const ds = c.h < 7 ? fmt(addD(x, -1)) : dow === 0 || dow === 6 || c.h >= 17 ? c.ds : null;
+  const aid = ds && appShifts && typeof appShifts === "object" ? appShifts[ds] : null;
+  return typeof aid === "string" && aid ? { aid, ds, until: "7a", lastNight: c.h < 7 } : null;
+}
+
 // Why a calendar month is blank (UX audit, 2026-10-18). A month with no
 // surgeon call looks the same whether nothing loaded or the month is simply
 // not published yet, so the Calendar tab asks this for the month it shows
@@ -784,6 +806,28 @@ function weekRangeLabel(mStr) {
   return `${monthDayLabel(mStr)} – ${monthDayLabel(fmt(addD(parse(mStr), 6)))}`;
 }
 
+// Mine's date style for every date on screen (UX audit 2026-11-01): the
+// weekday and the month/day, "Mon 11/9", with the year when it isn't today's
+// year ("Mon 1/4/2027": a date booked a year ahead must not read as next
+// week), as Mine writes its vacation and no-call days. Requests, Stats, the
+// toasts and questions, Generate and Schedule Warnings showed raw ISO dates,
+// sometimes three formats in one card; raw "YYYY-MM-DD" now stays only in the
+// CSV and calendar files.
+//   mineDayLabel("2026-11-09", "2026-11-02")                 → "Mon 11/9"
+//   mineDayLabel("2027-01-04", "2026-11-02")                 → "Mon 1/4/2027"
+//   mineRangeLabel("2026-11-09", "2026-11-13", "2026-11-02") → "Mon 11/9 → Fri 11/13"
+//   mineRangeLabel("2026-11-09", "2026-11-09", "2026-11-02") → "Mon 11/9" (one day)
+// A value that isn't a date is shown as it is ("" for none). Pure: today is
+// passed in; dates are local, via parse.
+function mineDayLabel(ds, today) {
+  const s = String(ds || "");
+  if (!/^\d{4}-\d\d-\d\d$/.test(s)) return s;
+  return s.slice(0, 4) === String(today || "").slice(0, 4) ? dayMonthLabel(s) : `${dayMonthLabel(s)}/${s.slice(0, 4)}`;
+}
+function mineRangeLabel(start, end, today) {
+  return !end || end === start ? mineDayLabel(start, today) : `${mineDayLabel(start, today)} → ${mineDayLabel(end, today)}`;
+}
+
 // The time-off request form's one line under its dates (UX audit 2026-10-19),
 // so the range is read back before it is sent. Days counted inclusive, by date.
 //   rangeSummary("2026-12-14", "2026-12-18") → "5 days, Mon Dec 14 – Fri Dec 18"
@@ -977,14 +1021,23 @@ function publishedThrough(schedule) {
 // instead, and Accept & Publish there (acceptPreview) sends no notice by
 // itself: the Calendar then asks the scheduler whether to notify everyone
 // (owner decision 2026-10-20 — said so here since the review fixes).
+// The Calendar's ↻ Regenerate asks it too (UX audit 2026-11-01, QW4: one tap
+// re-rolled and re-published the period, even one already over): the same
+// period, the same weeks it replaces, the same warnings — only its first
+// words and its last line differ (opts.regenerate), since it tells nobody by
+// itself: once it has published, the Calendar offers 📣 Notify everyone.
 //   mondays: the period's Mondays, as Dates or "YYYY-MM-DD"
-//   opts:    { schedule: the published weeks by Monday, today: "YYYY-MM-DD" }
+//   opts:    { schedule: the published weeks by Monday, today: "YYYY-MM-DD",
+//              regenerate: true for ↻ Regenerate }
 // Pure: no clock, no state.
 function publishConfirmText(mondays, opts) {
   const o = opts || {};
   const ms = (mondays || []).map(m => (typeof m === "string" ? m : fmt(m))).sort();
-  const notify = "If it publishes straight away, everyone is notified by push and email (per their notification settings). If anything needs your OK, the preview opens instead — after ✓ Accept & Publish there, you choose whether to notify everyone.";
-  if (!ms.length) return `Generate and publish the schedule?\n\n${notify}`;
+  const verb = o.regenerate ? "Regenerate and publish" : "Generate and publish";
+  const notify = o.regenerate
+    ? "Nobody is notified by itself: once it is published, the Calendar offers 📣 Notify everyone. If anything needs your OK, it opens in the preview on the Generate tab instead."
+    : "If it publishes straight away, everyone is notified by push and email (per their notification settings). If anything needs your OK, the preview opens instead — after ✓ Accept & Publish there, you choose whether to notify everyone.";
+  if (!ms.length) return `${verb} the schedule?\n\n${notify}`;
   const n = ms.length, first = ms[0], end = fmt(addD(parse(ms[n - 1]), 6));
   const sched = o.schedule || {};
   const k = ms.filter(m => sched[m]).length;
@@ -994,7 +1047,7 @@ function publishConfirmText(mondays, opts) {
     : `⚠ ${k} of the ${n} weeks ${k === 1 ? "is" : "are"} already published and will be replaced.`);
   if (typeof o.today === "string" && end < o.today) warn.push("⚠ This whole period is already over — publishing it changes past call history, counts and billing.");
   else if (typeof o.today === "string" && first < o.today) warn.push("⚠ This period has already started.");
-  return `Generate and publish ${monthDayLabel(first, true)} → ${monthDayLabel(end, true)} (${n} week${n === 1 ? "" : "s"})?\n\n${warn.length ? warn.join("\n") + "\n\n" : ""}${notify}`;
+  return `${verb} ${monthDayLabel(first, true)} → ${monthDayLabel(end, true)} (${n} week${n === 1 ? "" : "s"})?\n\n${warn.length ? warn.join("\n") + "\n\n" : ""}${notify}`;
 }
 
 // A schedule period, said one way (UX audit 2026-10-19): its first Monday
@@ -1014,6 +1067,37 @@ function periodLabel(firstMonday, lastMonday) {
   if (!first || !last) return "";
   const end = fmt(addD(parse(last), 6));
   return `${monthDayLabel(first, first.slice(0, 4) !== end.slice(0, 4))} – ${monthDayLabel(end, true)}`;
+}
+
+// A span of dates said as periodLabel says a period (UX audit 2026-11-01), its
+// two ends as they are — Stats → This year ("Jan 5, 2026 – Jan 3, 2027") and
+// the APP table ("Jun 2, 2025 – Feb 20, 2027"):
+//   dateSpanLabel("2026-11-02", "2027-01-03") → "Nov 2, 2026 – Jan 3, 2027"
+//   dateSpanLabel("2026-05-04", "2026-08-09") → "May 4 – Aug 9, 2026"
+//   dateSpanLabel("2026-11-02", "2026-11-02") → "Nov 2, 2026"
+// "YYYY-MM-DD" ends; "" when either is missing. Pure: no clock, no state.
+function dateSpanLabel(start, end) {
+  if (!start || !end) return "";
+  if (start === end) return monthDayLabel(start, true);
+  return `${monthDayLabel(start, start.slice(0, 4) !== end.slice(0, 4))} – ${monthDayLabel(end, true)}`;
+}
+
+// What Stats says where its numbers would be (UX audit 2026-11-01): it told
+// everyone "Generate a schedule first." — while the schedule was still
+// loading, after its read failed, and to members, who can't generate. Now as
+// Mine's empty state says it: still loading; the read failed; and only the
+// scheduler is told to generate — everyone else that nothing is published
+// (in This year, when other years' weeks are: nothing for this year yet).
+//   o: { loaded (the blob), seeded / loadFailed (the schedule's own load, as
+//        schedSync reports it), isScheduler, hasWeeks (any week at all),
+//        scope ("ytd" = This year) }
+// Pure: no clock, no state.
+function statsEmptyText(o) {
+  const x = o || {};
+  if (!x.loaded || (!x.seeded && !x.loadFailed)) return "Loading the schedule…";
+  if (x.loadFailed) return "The schedule didn't load — these numbers will show once it does.";
+  if (x.isScheduler) return "Generate a schedule first.";
+  return x.scope === "ytd" && x.hasWeeks ? "No schedule published for this year yet." : "No schedule published yet.";
 }
 
 // Where the Generate tab's period sits against the published schedule (UX
@@ -1193,6 +1277,99 @@ function slotLabel(mondayStr, shiftKey) {
   if (shiftKey === "dayCall") return `Service Wk of ${md}`;
   if (shiftKey === "wknd") return `Wknd — ${DOW[d.getDay()]} ${md}`;
   return `${DOW[d.getDay()]} ${md} — Night`;
+}
+
+/* ═══ Notices say the day (UX audit 2026-11-01) ═══
+   A schedule change's notice read "Thu Night: DJA → RPC" in the bell and the
+   push — which Thursday? — and its e-mail added only "week of 2026-12-14"; a
+   two-shift e-mail said "multiple → open app for details"; the swap tool's
+   reassignment said "Thu Night (wk of 2026-12-14)"; a request's notices said
+   "2026-12-14 to 2026-12-18". Each change now names its own day, composed with
+   slotLabel above (the labels the week editor shows, so a notice and the
+   editor can't disagree): ONE composition per event for the bell, the push
+   and the e-mail, as the trade composers do. Pure: no clock, no state; dates
+   are local, via parse. */
+// "Wed Dec 9": a date's weekday and day, as slotLabel writes them (no year).
+function noticeDay(ds) {
+  return `${["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][parse(ds).getDay()]} ${monthDayLabel(ds)}`;
+}
+// One change of a week, said with its day. c.key is the slot ("dayCall",
+// "mon" … "thu", "wknd"), or "override" / "app" with c.date (one day's
+// service coverage / APP call):
+//   "Service Wk of Dec 14", "Thu Dec 17 — Night", "Wknd — Fri Dec 18"
+//   (slotLabel; its legacy "dc" too), "Service day Wed Dec 16", "APP Thu Dec 17"
+// Anything else keeps the label it came with (c.slotLabel).
+function changeSlotText(mondayStr, c) {
+  if (c.key === "override") return `Service day ${noticeDay(c.date)}`;
+  if (c.key === "app") return `APP ${noticeDay(c.date)}`;
+  if (["dayCall", "dc", "mon", "tue", "wed", "thu", "wknd"].includes(c.key)) return slotLabel(mondayStr, c.key);
+  return String(c.slotLabel || c.key || "");
+}
+// A week's changes, told (the week editor's save; the swap tool's one-way
+// reassignment): the bell's notice — the push says the same — and the
+// schedule_changed e-mail's data.
+//   changes: [{ key, date, oldName, newName }], in the editor's order
+//   reason:  the editor's Reason ("" or none: nothing added)
+//   one change → { title: "Schedule Change", message: "Thu Dec 17 — Night: DJA → RPC (Covering)" }
+//   several    → { title: "2 Shifts Updated",
+//                  message: "Mon Jan 4 — Night: DJA → RPC; Tue Jan 5 — Night: MCC → FAK" }
+//   email: send-notification puts data.detail into the e-mail as it is (v17),
+//     so a multi-shift e-mail lists each change on its own line ("<br>"), each
+//     line escaped; data.shift is the e-mail's subject — the one change's slot,
+//     or "2 shifts, week of Jan 4". week / old_surgeon / new_surgeon go as before.
+function weekChangeNotice(mondayStr, changes, reason) {
+  const list = changes || [];
+  const one = list.length === 1;
+  const lines = list.map(c => `${changeSlotText(mondayStr, c)}: ${c.oldName} → ${c.newName}`);
+  const why = reason ? ` (${reason})` : "";
+  const esc = t => String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  return {
+    title: one ? "Schedule Change" : `${list.length} Shifts Updated`,
+    message: lines.join("; ") + why,
+    email: {
+      shift: one ? changeSlotText(mondayStr, list[0]) : `${list.length} shifts, week of ${monthDayLabel(mondayStr)}`,
+      week: mondayStr,
+      old_surgeon: one ? list[0].oldName : "multiple",
+      new_surgeon: one ? list[0].newName : "open app for details",
+      detail: lines.map(esc).join("<br>") + esc(why),
+    },
+  };
+}
+// A time-off request's dates in words: "Mon Dec 14 – Fri Dec 18"; one day
+// "Mon Dec 14"; across a new year each date has its year (rangeSummary's
+// dates, without the count). Anything else is said as it came.
+function requestDates(start, end) {
+  const s = rangeSummary(start, end);
+  return s ? s.slice(s.indexOf(", ") + 2) : `${start || ""} → ${end || ""}`;
+}
+// A time-off request's notice (the bell's; the push says the same). req: the
+// request ({ surgeon_name, start_date, end_date, request_type }); a no-call
+// request says "no-call day" for one day, "no-call days" for several.
+//   ("submitted", req)        → "RPC requested vacation Mon Dec 7 – Fri Dec 11"
+//   ("approved", req)         → "KJH's vacation Mon Dec 14 – Fri Dec 18 was approved"
+//   ("denied", req, { note }) → "ARW's vacation Mon Jan 4 – Tue Jan 5 was denied: Too many out"
+function requestNoticeText(what, req, o) {
+  const one = !!req.start_date && req.start_date === req.end_date;
+  const noCall = req.request_type === "nocall";
+  const noun = noCall ? (one ? "no-call day" : "no-call days") : "vacation";
+  const was = noCall && !one ? "were" : "was";
+  const dates = requestDates(req.start_date, req.end_date);
+  const name = req.surgeon_name;
+  if (what === "submitted") return `${name} requested ${noCall && one ? "a no-call day" : noun} ${dates}`;
+  if (what === "approved") return `${name}'s ${noun} ${dates} ${was} approved`;
+  if (what === "denied") return `${name}'s ${noun} ${dates} ${was} denied${o && o.note ? ": " + o.note : ""}`;
+  return `${name}'s ${noun} ${dates}`;
+}
+// The first day a period's label names, read back (periodLabel writes it):
+//   "Feb 22 – May 30, 2027" → "2027-02-22"; "Dec 28, 2026 – Mar 28, 2027" → "2026-12-28"
+// The "Schedule Published" notice opens the Calendar there (its link's week,
+// and the bell's). null for anything else.
+function periodLabelStart(label) {
+  const m = /^([A-Z][a-z]{2}) (\d{1,2})(?:, (\d{4}))? – [A-Z][a-z]{2} \d{1,2}, (\d{4})$/.exec(String(label || ""));
+  const mo = m ? ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"].indexOf(m[1]) : -1;
+  if (mo < 0) return null;
+  const d = new Date(Number(m[3] || m[4]), mo, Number(m[2]));
+  return d.getMonth() === mo ? fmt(d) : null;
 }
 
 /* ═══ Toasts: the app's short messages stack (UX audit 2026-10-19) ═══
