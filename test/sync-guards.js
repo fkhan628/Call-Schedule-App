@@ -7187,7 +7187,7 @@ await (async () => {
   const iS = onceAt("  const updateSchedule = useCallback((fn) => {"), eS = endAt("\n  }, [commitSchedule]);", iS);
   const iG = onceAt("  const schedEditable = (job, own) => {"), eG = endAt("\n  };\n", iG);
   const iN = onceAt("  const netCountsText = (net) => {"), eN = endAt("\n  };", iN);
-  const NAMES = "surgeons, parse, Date, useCallback, useRef, useEffect, schedSync, scheduleRef, commitSchedule, schedSyncRef, sessionEpochRef, stateBundleRef, setPriorCounts, setYear1Counts, setupReadRef, auth, lastSyncRef, setupBaseRef, supabase, console, showToast, setReauthNeeded, jobClaimRef, bkMonday, setBkMonday, mondayOfToday, backupMondaySet, fierceBackupSet, setBackupMondaySet, setFierceBackupSet, logAudit, scheduleHistory, setScheduleHistory, setJustPublished, publishUndoneRef, fiercePaste, setFiercePaste, loadFailedRef, previewSchedRef, flipSettlesRef, flipSettlesSeen, flipSavesRef, setupWritesRef, scheduleHistoryRef, publishSearchRunning, publishingRef, previewOrigin";
+  const NAMES = "surgeons, parse, Date, useCallback, useRef, useEffect, schedSync, scheduleRef, commitSchedule, schedSyncRef, sessionEpochRef, stateBundleRef, setPriorCounts, setYear1Counts, setupReadRef, auth, lastSyncRef, setupBaseRef, supabase, console, showToast, setReauthNeeded, jobClaimRef, bkMonday, setBkMonday, mondayOfToday, backupMondaySet, fierceBackupSet, setBackupMondaySet, setFierceBackupSet, logAudit, scheduleHistory, setScheduleHistory, setJustPublished, publishUndoneRef, fiercePaste, setFiercePaste, loadFailedRef, previewSchedRef, flipSettlesRef, flipSettlesSeen, flipSavesRef, setupWritesRef, scheduleHistoryRef, publishSearchRunning, publishingRef, previewOrigin, setShowPastMarks"; // (+ setShowPastMarks 2026-11-01, section CY: + Mark on an ended week opens its list's past weeks)
   const partsX = { iC, eC, iM, eM, iU, eU, iS, eS, iG, eG, iN, eN };
   let factory = null, whyNot = null;
   if (Object.values(partsX).every((x) => x >= 0)) {
@@ -7273,7 +7273,7 @@ ${nsrcX.slice(iM, eM)}
           if (a.upsertMode === "throw") throw new TypeError("Failed to fetch"); if (a.upsertMode === "string") return { error: "{\"code\":\"57014\",\"message\":\"canceling statement due to statement timeout\"}" };
           if (a.upsertFail) return { error: { message: "mock: network" } }; a.blob.push(clone(row.data)); a.blobTs.push(row.updated_at); return { error: null }; } }) },
         console: { error: (...x) => a.errors.push(x.map(String).join(" ")), warn() {}, log() {}, info() {} }, showToast: (m, tone) => a.toasts.push([String(m), tone || "info"]),
-        setReauthNeeded: () => {}, jobClaimRef: a.claim, bkMonday: a.bk, setBkMonday: (v) => { a.bk = v; }, mondayOfToday: () => "2026-10-26",
+        setReauthNeeded: () => {}, jobClaimRef: a.claim, bkMonday: a.bk, setBkMonday: (v) => { a.bk = v; }, mondayOfToday: () => "2026-10-26", setShowPastMarks: (f) => { a.pastShown = f(a.pastShown || { backup: false, fierce: false }); },
         flipSettlesRef: a.settles, flipSettlesSeen: a.settles.current, flipSavesRef: a.saves, setupWritesRef: a.writes, scheduleHistoryRef: a.histRef,
         publishSearchRunning: () => a.searching, publishingRef: a.publishing, previewOrigin: a.origin,
         backupMondaySet: new Set(a.backup), fierceBackupSet: new Set(a.fierce),
@@ -8042,6 +8042,302 @@ ${nsrcX.slice(iAP, eAP)}
       && errsX.length === 0,
     J({ swf: countX("setWeekFlag("), mw: countX("markWeek("), push: /pushUndo\(/.test(handlers), fx: kFx, settle: iSettle, errors: errsX.slice(0, 3) }));
 })().catch((ex) => check("CX harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
+
+// ─── CY. Setup's Backup Weeks card hides the weeks that have ended (owner 2026-11-01) ───
+// Faraz, 2026-11-01: "Can we hide fierce weeks that have passed". The card's
+// two lists — Backup weeks (Fierce primary) and Fierce Backup weeks — showed
+// every mark in the sets, ended weeks too, so each year's new weeks sat under a
+// growing list of old ones. Now a week shows until it has ended; the ended ones
+// wait behind a switch at the top of each list. Only the lists change: the sets
+// keep every mark (the generator stamps weeks from them, the setup saves them).
+// The real code, sliced and run with stubs; the card's JSX rendered through CJ's
+// h() compiler (copied here, and taught `return <…>`):
+//   CY1 marksListed with the real mondayOfToday, the clock pinned in Central time: a week shows while its
+//       Monday is this week's or later — on Sun 11/1 (at noon, and at 23:30 when UTC is already Monday) the
+//       week of 10/26, in progress, shows and 10/19 is past; on Mon 11/2 10/26 is past; a week shows on its
+//       own Monday and Sunday, not the Monday after; across New Year; each group in date order, the two
+//       together exactly the set — marks that aren't date strings (null, a number, "") included
+//   CY2 the + Mark buttons (the real markBackupWeek / markFierceBackupWeek) and the paste's Apply (the real
+//       applyFiercePaste): marking an ended week opens ITS list's past weeks, the other list's switch kept;
+//       this week or a later one, or a removal, opens nothing; a refused tap opens and marks nothing; the ✕
+//       handlers never touch a switch; the real effect shuts a list's switch once it has no ended week left
+//   CY3 the card, rendered: each list puts its switch first, then — only while its own switch is open — its
+//       ended weeks in date order, struck through, "(ended)" for a screen reader, then its upcoming weeks;
+//       no switch without ended weeks; the switch is a live 44px <button> (not disabled, hidden or out of
+//       the tab order) whose aria-expanded follows it, whose label names its list and whose tap flips its
+//       own list only; every ✕ is named for its week and unmarks it
+//   CY4 only the lists change: the setup save still carries both whole sets, the generator and a loaded
+//       file's weeks still get them, the switches are view state — never saved; the effect's dependencies
+//       are declared before it (React reads them while the component renders)
+console.log("\nCY. Setup's Backup Weeks card hides the weeks that have ended");
+{
+  const nsrcY = src.replace(/\r\n/g, "\n"), JY = JSON.stringify;
+  const countY = (s) => nsrcY.split(s).length - 1;
+  // The text from `start` (exactly one occurrence) up to the first `end` after it; null when absent.
+  const cutY = (start, end) => { const i = nsrcY.indexOf(start); if (i < 0 || nsrcY.indexOf(start, i + 1) !== -1) return null; const e = nsrcY.indexOf(end, i + start.length); return e < 0 ? null : nsrcY.slice(i, e); };
+  const compileY = (names, body, ret) => { try { return vm.runInContext(`(function (env) { const { ${names} } = env;\n${body}\n return ${ret}; })`, sandbox); } catch (ex) { return null; } };
+  // "Today" for the slice's own `new Date()`: that local day at noon, or at the hour given.
+  const dayAt = (ymd, hh = 12, mm = 0) => { const [y, m, d] = ymd.split("-").map(Number); return class extends Date { constructor(...a) { if (a.length) super(...a); else super(y, m - 1, d, hh, mm, 0); } }; };
+
+  const motY = cutY("  const mondayOfToday = () => ", "\n");
+  const mlY = cutY("  const marksListed = (set) => {", "\n  };\n");
+  const mlF = motY && mlY && compileY("Date", motY + "\n" + mlY + "\n  };", "marksListed");
+  // Central time for CY1 (the owner's): a "today" taken in UTC differs from the local one on Sunday evenings.
+  // Restored to the zone it ran in (an unset TZ reads back as UTC on Windows, so the resolved name is put back).
+  const tz0 = process.env.TZ, zone0 = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  let runs = null, odd = null, tzOk = false;
+  if (mlF) {
+    process.env.TZ = "America/Chicago";
+    try {
+      tzOk = new Date(2026, 10, 1, 23, 30).toISOString() === "2026-11-02T05:30:00.000Z";
+      const SET = ["2027-03-08", "2026-02-02", "2026-11-09", "2026-10-19", "2026-10-26", "2026-12-28", "2026-06-15"];
+      const on = (ymd, hh, mm, set) => mlF({ Date: dayAt(ymd, hh, mm) })(new Set(set || SET));
+      runs = { sun: on("2026-11-01"), sunLate: on("2026-11-01", 23, 30), mon: on("2026-11-02"), ownMon: on("2026-11-09"), ownSun: on("2026-11-15"), monAfter: on("2026-11-16"),
+        nyFri: on("2027-01-01"), nySun: on("2027-01-03"), nyMon: on("2027-01-04"), empty: on("2026-11-01", 12, 0, []) };
+      runs.SET = SET;
+      const ODD = [null, 20261026, "", "abc", "2026-10-19", "2027-01-04"];
+      odd = { got: on("2026-11-01", 12, 0, ODD), ODD };
+    } finally { process.env.TZ = tz0 === undefined ? zone0 : tz0; }
+  }
+  if (!mlF) check("CY marksListed (with mondayOfToday) is extractable", false, JY({ mondayOfToday: !!motY, marksListed: !!mlY }));
+  else {
+    const whole = (r, set) => { const all = r.upcoming.concat(r.past); return all.length === set.length && set.every((x) => all.filter((y) => Object.is(x, y)).length === 1)
+      && JY(r.upcoming) === JY([...r.upcoming].sort()) && JY(r.past) === JY([...r.past].sort()); };
+    check("CY1 marksListed splits a list at this week's Monday — the real mondayOfToday, in Central time: on Sun 11/1, at noon and at 23:30 (UTC already Monday), the week of 10/26 (in progress) shows with 11/9, 12/28 and 3/8/2027, and 2/2, 6/15, 10/19 are past; on Mon 11/2 10/26 is past too",
+      tzOk && JY(runs.sun) === JY({ upcoming: ["2026-10-26", "2026-11-09", "2026-12-28", "2027-03-08"], past: ["2026-02-02", "2026-06-15", "2026-10-19"] })
+        && JY(runs.sunLate) === JY(runs.sun) && mlY.includes("thisMon = mondayOfToday()")
+        && JY(runs.mon) === JY({ upcoming: ["2026-11-09", "2026-12-28", "2027-03-08"], past: ["2026-02-02", "2026-06-15", "2026-10-19", "2026-10-26"] }),
+      JY({ tzOk, sun: runs.sun, sunLate: runs.sunLate, mon: runs.mon }));
+    check("CY1 …a week shows on its own Monday and its Sunday and is past the Monday after (11/9: shown on 11/9 and 11/15, past on 11/16); across New Year the week of 12/28 shows on Fri 1/1 and Sun 1/3 and is past on Mon 1/4; each group in date order, the two together exactly the set; marks that aren't date strings (null, 20261026, \"\") are listed too, as past, where their ✕ reaches them; an empty set gives two empty lists",
+      runs.ownMon.upcoming[0] === "2026-11-09" && runs.ownSun.upcoming[0] === "2026-11-09" && runs.monAfter.past.includes("2026-11-09") && !runs.monAfter.upcoming.includes("2026-11-09")
+        && runs.nyFri.upcoming[0] === "2026-12-28" && runs.nySun.upcoming[0] === "2026-12-28" && runs.nyMon.past.includes("2026-12-28") && JY(runs.nyMon.upcoming) === JY(["2027-03-08"])
+        && ["sun", "sunLate", "mon", "ownMon", "ownSun", "monAfter", "nyFri", "nySun", "nyMon"].every((k) => whole(runs[k], runs.SET))
+        && whole(odd.got, odd.ODD) && [null, 20261026, ""].every((x) => odd.got.past.some((y) => Object.is(x, y)))
+        && JY(runs.empty) === JY({ upcoming: [], past: [] }),
+      JY({ ownMon: runs.ownMon, monAfter: runs.monAfter, nyMon: runs.nyMon, odd: odd.got }));
+  }
+
+  // ── the handlers: + Mark, the paste's Apply, the effect ──
+  const hY = cutY("  const markBackupWeek = () => {", "\n  // 📋 Paste Fierce's schedule (owner 2026-11-01): his year's table");
+  const hF = hY && compileY("bkMonday, schedEditable, marksEditable, markWeek, setBkMonday, mondayOfToday, setShowPastMarks", hY,
+    "{ markBackupWeek, unmarkBackupWeek, markFierceBackupWeek, unmarkFierceBackupWeek }");
+  if (!hF) check("CY the four mark handlers are extractable", false, "anchor / compile");
+  else {
+    // One tap on a fresh render: today's week is 10/26; o.gate / o.marks false refuse it; o.sw is the switches before it.
+    const tap = (which, bk, o = {}) => {
+      const r = { marks: [], picker: [], sw: Object.assign({ backup: false, fierce: false }, o.sw), swCalls: 0 };
+      hF({ bkMonday: bk, schedEditable: () => o.gate !== false, marksEditable: () => o.marks !== false, markWeek: (...a) => { r.marks.push(a); },
+        setBkMonday: (v) => { r.picker.push(v); }, mondayOfToday: () => "2026-10-26",
+        setShowPastMarks: (f) => { r.swCalls++; r.sw = typeof f === "function" ? f(r.sw) : f; } })[which](o.arg);
+      return r;
+    };
+    const pastB = tap("markBackupWeek", "2026-10-12"), pastB2 = tap("markBackupWeek", "2026-10-12", { sw: { fierce: true } });
+    const nowB = tap("markBackupWeek", "2026-10-26"), laterB = tap("markBackupWeek", "2027-01-04");
+    const pastF = tap("markFierceBackupWeek", "2026-03-30"), pastF2 = tap("markFierceBackupWeek", "2026-03-30", { sw: { backup: true } }), nowF = tap("markFierceBackupWeek", "2026-10-26");
+    const refused = [tap("markBackupWeek", "2026-10-12", { gate: false }), tap("markBackupWeek", "2026-10-12", { marks: false }),
+      tap("markFierceBackupWeek", "2026-10-12", { gate: false }), tap("markFierceBackupWeek", "2026-10-12", { marks: false })];
+    const un = [tap("unmarkBackupWeek", "2026-10-26", { arg: "2026-10-12" }), tap("unmarkFierceBackupWeek", "2026-10-26", { arg: "2026-03-30" })];
+    check("CY2 + Mark Backup on an ended week (10/12; this week is 10/26) marks it and opens the Backup list's past weeks — the Fierce Backup list's switch kept, shut or open; this week (10/26) or a later one (1/4/2027) opens nothing; + Mark Fierce Backup on an ended week opens ITS list's only",
+      JY(pastB.marks) === JY([["backup", "2026-10-12", true]]) && JY(pastB.sw) === JY({ backup: true, fierce: false }) && pastB.swCalls === 1
+        && JY(pastB2.sw) === JY({ backup: true, fierce: true })
+        && nowB.swCalls === 0 && JY(nowB.marks) === JY([["backup", "2026-10-26", true]]) && laterB.swCalls === 0 && laterB.marks.length === 1
+        && JY(pastF.marks) === JY([["fierce", "2026-03-30", true]]) && JY(pastF.sw) === JY({ backup: false, fierce: true }) && pastF.swCalls === 1
+        && JY(pastF2.sw) === JY({ backup: true, fierce: true }) && nowF.swCalls === 0 && nowF.marks.length === 1,
+      JY({ pastB, pastB2, nowB, laterB, pastF, pastF2, nowF }));
+    check("CY2 …a tap refused by the edit gate or the marks gate (an ended week, either kind) marks nothing and opens nothing; the ✕ (unmark) handlers unmark and never touch a switch; after a mark the picker goes back to this week's Monday, as before",
+      refused.every((r) => r.marks.length === 0 && r.swCalls === 0 && r.picker.length === 0)
+        && un.every((r) => r.swCalls === 0 && r.marks.length === 1 && r.marks[0][2] === false)
+        && JY(pastB.picker) === JY(["2026-10-26"]) && JY(pastF.picker) === JY(["2026-10-26"]),
+      JY({ refused, un }));
+  }
+  const apY = cutY("  const applyFiercePaste = () => {", "\n  };\n");
+  const apF = apY && compileY("fiercePaste, schedEditable, marksEditable, planFierceWeeks, backupMondaySet, fierceBackupSet, storedFlagsOf, showToast, setFiercePaste, focusSoon, markWeek, mondayOfToday, setShowPastMarks",
+    apY + "\n  };", "applyFiercePaste");
+  if (!apF) check("CY the paste's Apply (applyFiercePaste) is extractable", false, "anchor / compile");
+  else {
+    // One Apply of a preview whose plan is `plan` (today's week 10/26); o.marks false refuses it; o.sw is the switches before it.
+    const apply = (plan, o = {}) => {
+      const P = { backup: Object.assign({ add: [], remove: [], same: [] }, plan.backup), fierce: Object.assign({ add: [], remove: [], same: [] }, plan.fierce) };
+      const r = { marks: [], sw: Object.assign({ backup: false, fierce: false }, o.sw), swCalls: 0 };
+      apF({ fiercePaste: { preview: { year: 2026, parsed: { rows: [] }, plan: P, sig: JY(P) } }, schedEditable: () => true, marksEditable: () => o.marks !== false,
+        planFierceWeeks: () => P, backupMondaySet: new Set(), fierceBackupSet: new Set(), storedFlagsOf: () => ({}), showToast: () => {}, setFiercePaste: () => {}, focusSoon: () => {},
+        markWeek: (...a) => { r.marks.push(a); }, mondayOfToday: () => "2026-10-26",
+        setShowPastMarks: (f) => { r.swCalls++; r.sw = typeof f === "function" ? f(r.sw) : f; } })();
+      return r;
+    };
+    const aB = apply({ backup: { add: ["2026-10-12", "2027-01-04"] } }), aF = apply({ fierce: { add: ["2026-03-30"] } }, { sw: { backup: true } });
+    const aBoth = apply({ backup: { add: ["2026-10-19"] }, fierce: { add: ["2026-06-01", "2027-02-01"] } });
+    const aLater = apply({ backup: { add: ["2027-01-04", "2026-10-26"] }, fierce: { add: ["2027-02-01"] } }), aRemove = apply({ backup: { remove: ["2026-10-12"] }, fierce: { remove: ["2026-03-30"] } });
+    const aRefused = apply({ backup: { add: ["2026-10-12"] } }, { marks: false });
+    check("CY2 the paste's Apply (the real applyFiercePaste) opens a list's past weeks when it marks an ended week there (Backup 10/12 → the Backup list; Fierce Backup 3/30 → the Fierce Backup list, the Backup list's open switch kept; one of each → both), once; only this week or later weeks, or removals, open nothing; a refused Apply marks and opens nothing",
+      aB.swCalls === 1 && JY(aB.sw) === JY({ backup: true, fierce: false }) && aB.marks.length === 2 && aF.swCalls === 1 && JY(aF.sw) === JY({ backup: true, fierce: true })
+        && aBoth.swCalls === 1 && JY(aBoth.sw) === JY({ backup: true, fierce: true })
+        && aLater.swCalls === 0 && aLater.marks.length === 3 && aRemove.swCalls === 0 && aRemove.marks.length === 2 && aRefused.swCalls === 0 && aRefused.marks.length === 0,
+      JY({ aB, aF, aBoth, aLater, aRemove, aRefused }));
+  }
+  const EFF_END = "\n  }, [backupMondaySet, fierceBackupSet]);";
+  const efY = cutY("  useEffect(() => {\n    const ended = (set) => marksListed(set).past.length > 0;", EFF_END);
+  const efF = efY && mlF && compileY("useEffect, marksListed, setShowPastMarks, backupMondaySet, fierceBackupSet", efY + EFF_END, "null");
+  if (!efF) check("CY the switch-shutting effect is extractable", false, JY({ effect: !!efY }));
+  else {
+    // The effect run once (as React runs it after a render) on these sets, the switches `sw` before it; today Sun 11/1 (this week 10/26).
+    const ml = mlF({ Date: dayAt("2026-11-01") });
+    const eff = (bk, fb, sw) => { const r = { sw, same: null, deps: null }; efF({ useEffect: (f, deps) => { r.deps = deps; f(); }, marksListed: ml,
+      backupMondaySet: new Set(bk), fierceBackupSet: new Set(fb), setShowPastMarks: (f) => { const n = f(r.sw); r.same = n === r.sw; r.sw = n; } }); return r; };
+    const keep = eff(["2026-10-12", "2027-01-04"], ["2026-03-30"], { backup: true, fierce: true });
+    const shutB = eff(["2027-01-04"], ["2026-03-30"], { backup: true, fierce: true }), shutF = eff(["2026-10-12"], ["2027-02-01"], { backup: true, fierce: true });
+    const shut = { backup: false, fierce: false }, closed = eff([], [], shut);
+    check("CY2 the real effect: a list whose switch is open but has no ended week left (its last one ✕'d, or put back) is shut — the other list's kept open while it has some; a list with ended weeks keeps its switch as it is (the same state, no re-render); runs on the two sets",
+      keep.same === true && JY(keep.sw) === JY({ backup: true, fierce: true }) && JY(shutB.sw) === JY({ backup: false, fierce: true }) && JY(shutF.sw) === JY({ backup: true, fierce: false })
+        && closed.same === true && closed.sw === shut && keep.deps && keep.deps.length === 2,
+      JY({ keep, shutB, shutF, closed: closed.sw }));
+  }
+
+  // ── the card, rendered: its two lists through CJ's h() compiler (copied) — and taught `return <…>` ──
+  const jsxY = (code) => {
+    const q = (x) => JSON.stringify(x);
+    const skipStr = (k) => { const ch = code[k]; for (let m = k + 1; m < code.length; m++) { if (code[m] === "\\") { m++; continue; } if (code[m] === ch) return m; } return code.length; };
+    const close = (j) => {
+      let depth = 0;
+      for (let k = j; k < code.length; k++) {
+        const ch = code[k];
+        if (ch === '"' || ch === "'") { k = skipStr(k); continue; }
+        if (ch === "`") { for (k = k + 1; k < code.length && code[k] !== "`"; k++) { if (code[k] === "\\") k++; else if (code[k] === "$" && code[k + 1] === "{") k = close(k + 1); } continue; }
+        if (ch === "{") depth++; else if (ch === "}" && --depth === 0) return k;
+      }
+      throw new Error("unbalanced { at " + j);
+    };
+    const opens = (k) => code[k] === "<" && (/[A-Za-z]/.test(code[k + 1] || "") || code[k + 1] === ">");
+    const el = (k) => {
+      let j = k + 1, tag = "#frag";
+      if (code[j] !== ">") { tag = /^[A-Za-z][\w.]*/.exec(code.slice(j))[0]; j += tag.length; }
+      const props = [], kids = [];
+      for (;;) {
+        while (/\s/.test(code[j])) j++;
+        if (code[j] === "/" && code[j + 1] === ">") return [`h(${q(tag)}, {${props.join(", ")}})`, j + 2];
+        if (code[j] === ">") { j++; break; }
+        const nm = (/^[\w-]+/.exec(code.slice(j)) || [""])[0];
+        if (!nm) throw new Error("attribute at " + j + ": " + code.slice(j, j + 30));
+        j += nm.length;
+        if (code[j] !== "=") { props.push(`${q(nm)}: true`); continue; }
+        j++;
+        if (code[j] === '"') { const e = skipStr(j); props.push(`${q(nm)}: ${code.slice(j, e + 1)}`); j = e + 1; }
+        else if (code[j] === "{") { const e = close(j); props.push(`${q(nm)}: (${jsxY(code.slice(j + 1, e))})`); j = e + 1; }
+        else throw new Error("attribute value at " + j);
+      }
+      let text = "";
+      const flush = () => {
+        if (!text) return;
+        const lines = text.split("\n");
+        const t = lines.length === 1 ? text : lines.map((l, i) => (i > 0 ? l.replace(/^\s+/, "") : l)).map((l, i, a) => (i < a.length - 1 ? l.replace(/\s+$/, "") : l)).filter((l) => l.length).join(" ");
+        if (t.length && !(lines.length > 1 && !t.trim())) kids.push(q(t));
+        text = "";
+      };
+      for (;;) {
+        if (j >= code.length) throw new Error("unclosed <" + tag + ">");
+        if (code.startsWith("</", j)) { flush(); j = code.indexOf(">", j) + 1; break; }
+        if (opens(j)) { flush(); const [js, e] = el(j); kids.push(js); j = e; continue; }
+        if (code[j] === "{") { flush(); const e = close(j); const inner = code.slice(j + 1, e); if (inner.replace(/\/\*[\s\S]*?\*\//g, "").trim()) kids.push(`(${jsxY(inner)})`); j = e + 1; continue; }
+        text += code[j]; j++;
+      }
+      return [`h(${q(tag)}, {${props.join(", ")}}${kids.length ? ", " + kids.join(", ") : ""})`, j];
+    };
+    let out = "";
+    for (let i = 0; i < code.length;) {
+      const ch = code[i];
+      if (ch === '"' || ch === "'") { const e = skipStr(i); out += code.slice(i, e + 1); i = e + 1; continue; }
+      if (ch === "`") { const e0 = i; let k = i + 1; for (; k < code.length && code[k] !== "`"; k++) { if (code[k] === "\\") k++; else if (code[k] === "$" && code[k + 1] === "{") k = close(k + 1); } out += code.slice(e0, k + 1); i = k + 1; continue; }
+      const before = out.replace(/\s+$/, "");
+      if (opens(i) && (/^\s*$/.test(out) || /[(?:,&|>{[=]$/.test(before) || /\breturn$/.test(before))) { const [js, e] = el(i); out += js; i = e; continue; }
+      out += ch; i++;
+    }
+    return out;
+  };
+  const hhY = (tag, props, ...kids) => ({ tag, props: props || {}, kids: kids.flat(Infinity).filter((k) => k !== null && k !== undefined && k !== false && k !== true && k !== "") });
+  const textY = (n) => (n == null ? "" : typeof n !== "object" ? String(n) : n.kids.map(textY).join(""));
+  const srY = cutY("  const SR_TEXT = ", "\n");
+  const srF = srY && compileY("", srY, "SR_TEXT"), SRT = srF && srF({});
+  const tgY = cutY("  const pastMarksToggle = (kind, n) => {", "\n  };\n");
+  const LIST = (set) => `(() => { const { upcoming, past } = marksListed(${set});`;
+  const lbY = cutY(LIST("backupMondaySet"), "})()}"), lfY = cutY(LIST("fierceBackupSet"), "})()}");
+  let tgF = null, lbF = null, lfF = null, whyY = "";
+  try {
+    tgF = tgY && vm.runInContext(`(function (env) { const { h, showPastMarks, setShowPastMarks, font } = env;\n${jsxY(tgY + "\n  };")}\n return pastMarksToggle; })`, sandbox);
+    const NAMES_L = "h, marksListed, pastMarksToggle, showPastMarks, SR_TEXT, css, mono, unmarkBackupWeek, unmarkFierceBackupWeek, backupMondaySet, fierceBackupSet";
+    lbF = lbY && vm.runInContext(`(function (env) { const { ${NAMES_L} } = env; return (${jsxY(lbY + "})()")}); })`, sandbox);
+    lfF = lfY && vm.runInContext(`(function (env) { const { ${NAMES_L} } = env; return (${jsxY(lfY + "})()")}); })`, sandbox);
+  } catch (ex) { whyY = String(ex).slice(0, 200); }
+  if (!(tgF && lbF && lfF && SRT && mlF)) check("CY the card's two lists, the switch and SR_TEXT are extractable and compile (JSX → h())", false, JY({ toggle: !!tgF, backup: !!lbF, fierce: !!lfF, sr: !!SRT, why: whyY }));
+  else {
+    // One render of a list on Sun 11/1 (this week 10/26) with its switch shut or open; taps are recorded.
+    const ml = mlF({ Date: dayAt("2026-11-01") });
+    const render = (kind, set, open) => {
+      const r = { sw: { backup: false, fierce: false, [kind]: open }, unmarked: [], swCalls: 0 };
+      const show = r.sw;
+      const toggle = tgF({ h: hhY, showPastMarks: show, font: "font", setShowPastMarks: (f) => { r.swCalls++; r.after = f(Object.assign({}, show, { [kind === "backup" ? "fierce" : "backup"]: "kept" })); } });
+      const env = { h: hhY, marksListed: ml, pastMarksToggle: toggle, showPastMarks: show, SR_TEXT: SRT, css: { backupBanner: { k: "banner" } }, mono: "mono",
+        unmarkBackupWeek: (m) => r.unmarked.push(["backup", m]), unmarkFierceBackupWeek: (m) => r.unmarked.push(["fierce", m]), backupMondaySet: new Set(set), fierceBackupSet: new Set(set) };
+      r.tree = (kind === "backup" ? lbF : lfF)(env);
+      r.kids = r.tree && r.tree.tag === "#frag" ? r.tree.kids : [];
+      r.switch = r.kids.find((k) => k.tag === "button" && k.props["data-past-marks"]) || null;
+      r.rows = r.kids.filter((k) => k.tag === "div").map((d) => { const [date, , x] = d.kids;
+        return { m: d.props.key, text: textY(date), struck: !!(date && date.props.style && date.props.style.textDecoration === "line-through"), title: date && date.props.title,
+          sr: !!(date && date.kids.some((c) => typeof c === "object" && c.props.style === SRT && textY(c) === " (ended)")), x }; });
+      return r;
+    };
+    const SETB = ["2027-01-04", "2026-10-12", "2026-02-02", "2026-10-26"], NAME = { backup: "Backup", fierce: "Fierce Backup" };
+    const views = {};
+    ["backup", "fierce"].forEach((kind) => { views[kind] = { shut: render(kind, SETB, false), open: render(kind, SETB, true), none: render(kind, ["2026-10-26", "2027-01-04"], true), one: render(kind, ["2026-10-12", "2027-01-04"], false) }; });
+    // the list as read top to bottom: "switch", each week ("~" when struck through), anything else by its tag
+    const order = (v) => v.kids.map((k) => (k.tag === "button" ? "switch" : k.tag !== "div" ? "<" + k.tag + ">"
+      : k.props.key + ((v.rows.find((r) => r.m === k.props.key) || {}).struck ? "~" : ""))).join(" ");
+    check("CY3 the card, rendered: each list puts its switch first, then — only while its own switch is open — its ended weeks in date order, struck through, titled \"This week has ended\" and with \"(ended)\" for a screen reader (the real SR_TEXT), then its upcoming weeks, not struck; shut, only the switch and the upcoming weeks; no switch when the list has no ended weeks (even with its switch state open)",
+      ["backup", "fierce"].every((kind) => { const v = views[kind];
+        return order(v.shut) === "switch 2026-10-26 2027-01-04" && order(v.open) === "switch 2026-02-02~ 2026-10-12~ 2026-10-26 2027-01-04" && order(v.none) === "2026-10-26 2027-01-04"
+          && v.open.rows.filter((r) => r.struck).every((r) => r.sr && r.title === "This week has ended" && r.text === "Wk of " + r.m + " (ended)")
+          && v.open.rows.filter((r) => !r.struck).every((r) => !r.sr && r.title === undefined && r.text === "Wk of " + r.m); })
+        && SRT.position === "absolute" && SRT.width === 1 && SRT.overflow === "hidden",
+      JY({ backup: { shut: order(views.backup.shut), open: order(views.backup.open), none: order(views.backup.none) }, fierce: { open: order(views.fierce.open) },
+        rows: views.backup.open.rows.map((r) => ({ m: r.m, text: r.text, struck: r.struck, title: r.title, sr: r.sr })), sr: SRT && { position: SRT.position, width: SRT.width, overflow: SRT.overflow } }));
+    const live = (s) => !!s && s.tag === "button" && !("disabled" in s.props) && !("hidden" in s.props) && s.props["aria-hidden"] === undefined && (s.props.tabIndex === undefined || s.props.tabIndex >= 0)
+      && s.props.style && s.props.style.minHeight === 44 && s.props.style.display !== "none" && s.props.style.visibility !== "hidden" && typeof s.props.onClick === "function";
+    const tapped = {};
+    // (each tap only when the switch is there to tap: a missing one fails the check below, it doesn't crash the section)
+    ["backup", "fierce"].forEach((kind) => { ["shut", "open"].forEach((st) => { const v = views[kind][st]; if (live(v.switch)) v.switch.props.onClick(); tapped[kind + st] = { calls: v.swCalls, after: v.after || {} }; }); });
+    check("CY3 …the switch is a live 44px <button> — not disabled, hidden or out of the tab order — whose aria-expanded follows it and whose label names its list (\"Show 2 past Backup weeks\", \"Show 1 past Fierce Backup week\", \"Hide past Fierce Backup weeks\"); a tap flips ITS list's switch once, the other list's kept",
+      ["backup", "fierce"].every((kind) => { const v = views[kind], N = NAME[kind];
+        return live(v.shut.switch) && live(v.open.switch) && v.shut.switch.props["aria-expanded"] === false && v.open.switch.props["aria-expanded"] === true
+          && textY(v.shut.switch) === `Show 2 past ${N} weeks` && textY(v.open.switch) === `Hide past ${N} weeks` && textY(v.one.switch) === `Show 1 past ${N} week`
+          && v.shut.switch.props["data-past-marks"] === kind && v.shut.switch.props.style.color === "#1a6fa8"
+          && tapped[kind + "shut"].calls === 1 && tapped[kind + "shut"].after[kind] === true && tapped[kind + "open"].after[kind] === false
+          && tapped[kind + "shut"].after[kind === "backup" ? "fierce" : "backup"] === "kept"; })
+        && countY("        button { color: #c0c8d8 !important; }") === 1,
+      JY({ labels: ["backup", "fierce"].map((kind) => [textY(views[kind].shut.switch), textY(views[kind].open.switch), textY(views[kind].one.switch)]), tapped }));
+    const xs = ["backup", "fierce"].map((kind) => views[kind].open.rows.map((r) => { const x = r.x && r.x.tag === "button" ? r.x : null; if (x && typeof x.props.onClick === "function") x.props.onClick();
+      return { kind, m: r.m, label: x && x.props["aria-label"], text: x ? textY(x) : null }; }));
+    check("CY3 …every ✕ is named for its week (\"Remove the Backup mark from the week of 2026-10-12\", \"Remove the Fierce Backup mark from …\") and unmarks exactly that week, ended or upcoming; the switch is #1a6fa8 on the light card and, as every button, the dark sheet's #c0c8d8 in dark mode (that rule pinned)",
+      xs.every((rows, i) => { const kind = ["backup", "fierce"][i], v = views[kind].open;
+        return rows.length === 4 && rows.every((x) => x.text === "✕" && x.label === `Remove the ${NAME[kind]} mark from the week of ${x.m}`)
+          && JY(v.unmarked) === JY(rows.map((x) => [kind, x.m])); }),
+      JY(xs.map((rows) => rows.map((x) => x.label))));
+  }
+
+  const bundleY = cutY("  const buildStateBundle = (overrides = {}) => ({", "\n  });") || "";
+  const depsY = nsrcY.split("\n").find((l) => l.startsWith("  }, [loaded, surgeons, apps, vacations, noCallDays, backupMondaySet, fierceBackupSet, schedule,")) || "";
+  const iEff = nsrcY.indexOf("  useEffect(() => {\n    const ended = (set) => marksListed(set).past.length > 0;");
+  check("CY4 only the lists change: the setup save still carries both WHOLE sets (backupMondays, fierceBackup); the generator's two searches and a loaded file's weeks still get the whole sets; the switches are view state — not in the saved setup, its autosave's dependencies or localStorage; their writers are the switch, the two + Mark handlers, the paste's Apply and the effect",
+    bundleY.includes("    backupMondays: [...backupMondaySet],\n    fierceBackup: [...fierceBackupSet],") && !/PastMarks/.test(bundleY) && depsY.length > 0 && !/PastMarks/.test(depsY)
+      && countY("createScheduleSearch(surgeons, mondays, availability, backupMondaySet, priorCounts, prefs, fierceBackupSet,") === 1
+      && countY("createScheduleSearch(surgeons, ms, buildGenAvailability(), backupMondaySet, priorCounts, buildPrefs(), fierceBackupSet,") === 1
+      && countY("shapeScheduleWeeks(v.weeks, surgeons, backupMondaySet, fierceBackupSet, holidayAssignments)") === 1
+      && !/localStorage[^\n]*PastMarks|PastMarks[^\n]*localStorage/.test(nsrcY) && countY("setShowPastMarks(") === 5,
+    JY({ bundle: bundleY.length, deps: depsY.slice(0, 90), writers: countY("setShowPastMarks(") }));
+  check("CY4 …the switch-shutting effect's dependencies (backupMondaySet, fierceBackupSet) and what it calls (marksListed, setShowPastMarks) are declared before it — React reads the dependency array while the component renders",
+    iEff > 0 && iEff > nsrcY.indexOf("  const [backupMondaySet, setBackupMondaySet] = useState(") && iEff > nsrcY.indexOf("  const [fierceBackupSet, setFierceBackupSet] = useState(")
+      && iEff > nsrcY.indexOf("  const marksListed = (set) => {") && iEff > nsrcY.indexOf("  const [showPastMarks, setShowPastMarks] = useState(")
+      && nsrcY.indexOf("  const [backupMondaySet, setBackupMondaySet] = useState(") > 0 && countY("  useEffect(() => {\n    const ended = (set) => marksListed(set).past.length > 0;") === 1,
+    JY({ iEff }));
+}
 
 // ─── BC. Generate & Publish asks once; Stats → Billing opens on the newest months (UX audit 2026-10-19) ───
 // Generate & Publish ran on the tap and a publish pushes and emails everyone,

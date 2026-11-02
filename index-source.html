@@ -690,6 +690,42 @@ function CallSchedule() {
   // preview ({ year, parsed, plan, sig } — previewFiercePaste) and the last
   // Apply's plan.
   const [fiercePaste, setFiercePaste] = useState(() => ({ open: false, year: new Date().getFullYear() + 1, text: "", preview: null, applied: null }));
+  // The Backup Weeks card's two lists show a week until it has ended: its Monday
+  // is this week's or later (owner 2026-11-01: hide Fierce's weeks that have
+  // passed). The ended ones wait behind a switch at the top of each list; shown,
+  // they come first, in date order, struck through. + Mark and the paste's Apply
+  // open a list's when they mark an ended week, so the mark can be seen. Only
+  // the lists change: the sets keep every mark, so the generator, the stored
+  // weeks and the saved setup are as before.
+  const [showPastMarks, setShowPastMarks] = useState({ backup: false, fierce: false });
+  // A list split at this week's Monday. Past is whatever isn't upcoming, so every
+  // entry is listed — a mark that isn't a date string too, where its ✕ can reach it.
+  const marksListed = (set) => {
+    const all = [...set].sort(), thisMon = mondayOfToday(), upcoming = (m) => m >= thisMon;
+    return { upcoming: all.filter(upcoming), past: all.filter(m => !upcoming(m)) };
+  };
+  // Read only by a screen reader (as the calendar's SR_ONLY): "(ended)" after a struck-through week.
+  const SR_TEXT = {position:"absolute",width:1,height:1,padding:0,margin:-1,overflow:"hidden",clip:"rect(0 0 0 0)",whiteSpace:"nowrap",border:0};
+  // The switch at the top of a list, shown when it has ended weeks. It names its
+  // list: VoiceOver reads the two switches alike otherwise. A <button>: in dark
+  // mode the dark sheet sets every button's text to #c0c8d8 (9.5:1 on the card).
+  const pastMarksToggle = (kind, n) => {
+    if (!n) return null;
+    const list = kind === "backup" ? "Backup" : "Fierce Backup";
+    return (
+    <button data-past-marks={kind} onClick={()=>setShowPastMarks(p=>({...p,[kind]:!p[kind]}))} aria-expanded={showPastMarks[kind]}
+      style={{display:"block",minHeight:44,background:"none",border:"none",padding:"0 2px",color:"#1a6fa8",fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:font,textDecoration:"underline"}}>
+      {showPastMarks[kind] ? `Hide past ${list} weeks` : `Show ${n} past ${list} week${n === 1 ? "" : "s"}`}
+    </button>
+    );
+  };
+  // A list left with no ended weeks (its last one ✕'d, or put back by the server)
+  // shuts its switch, so the next week to end doesn't show up already open.
+  useEffect(() => {
+    const ended = (set) => marksListed(set).past.length > 0;
+    setShowPastMarks(p => (p.backup && !ended(backupMondaySet)) || (p.fierce && !ended(fierceBackupSet))
+      ? { backup: p.backup && ended(backupMondaySet), fierce: p.fierce && ended(fierceBackupSet) } : p);
+  }, [backupMondaySet, fierceBackupSet]);
   const [appDate, setAppDate] = useState(() => fmt(new Date()));
   const [appPerson, setAppPerson] = useState("");
   const [scanning, setScanning] = useState(false);
@@ -7483,6 +7519,7 @@ function CallSchedule() {
     if (!bkMonday) return;
     if (!schedEditable() || !marksEditable()) return;
     markWeek("backup", bkMonday, true);
+    if (bkMonday < mondayOfToday()) setShowPastMarks(p => ({ ...p, backup: true })); // an ended week: its list's past weeks open, where it shows
     setBkMonday(mondayOfToday());
   };
   const unmarkBackupWeek = (m) => {
@@ -7493,6 +7530,7 @@ function CallSchedule() {
     if (!bkMonday) return;
     if (!schedEditable() || !marksEditable()) return;
     markWeek("fierce", bkMonday, true);
+    if (bkMonday < mondayOfToday()) setShowPastMarks(p => ({ ...p, fierce: true })); // an ended week: its list's past weeks open, where it shows
     setBkMonday(mondayOfToday());
   };
   const unmarkFierceBackupWeek = (m) => {
@@ -7536,6 +7574,8 @@ function CallSchedule() {
     plan.backup.remove.forEach(m => markWeek("backup", m, false, "paste"));
     plan.fierce.add.forEach(m => markWeek("fierce", m, true, "paste"));
     plan.fierce.remove.forEach(m => markWeek("fierce", m, false, "paste"));
+    const thisMon = mondayOfToday(), ended = (o) => o.add.some(m => m < thisMon); // an ended week marked: its list's past weeks open, where it shows
+    if (ended(plan.backup) || ended(plan.fierce)) setShowPastMarks(p => ({ backup: p.backup || ended(plan.backup), fierce: p.fierce || ended(plan.fierce) }));
     setFiercePaste(p => Object.assign({}, p, { preview: null, applied: { year: pv.year, plan } }));
     focusSoon('[data-fierce-applied="1"]');
     const pm = (o) => `+${o.add.length}${o.remove.length ? ` −${o.remove.length}` : ""}`;
@@ -9748,13 +9788,15 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               </div>
               <button onClick={markBackupWeek} style={css.btn(true)}>+ Mark Backup</button>
             </div>
-            {[...backupMondaySet].sort().map(m=>(
+            {(() => { const { upcoming, past } = marksListed(backupMondaySet);
+              const row = (m, ended) => (
               <div key={m} style={{display:"flex",alignItems:"center",gap:8,marginBottom:5}}>
-                <span style={{fontFamily:mono,fontSize:12,color:"#5a6a78"}}>Wk of {m}</span>
+                <span style={{fontFamily:mono,fontSize:12,color:"#5a6a78",textDecoration:ended?"line-through":"none"}} title={ended?"This week has ended":undefined}>Wk of {m}{ended && <span style={SR_TEXT}> (ended)</span>}</span>
                 <span style={css.backupBanner}>⚡ BACKUP — Fierce Primary</span>
-                <button onClick={()=>unmarkBackupWeek(m)} style={{background:"none",border:"none",color:"#904040",cursor:"pointer",fontSize:12}}>✕</button>
+                <button onClick={()=>unmarkBackupWeek(m)} aria-label={`Remove the Backup mark from the week of ${m}`} style={{background:"none",border:"none",color:"#904040",cursor:"pointer",fontSize:12}}>✕</button>
               </div>
-            ))}
+              );
+              return <>{pastMarksToggle("backup", past.length)}{showPastMarks.backup && past.map(m => row(m, true))}{upcoming.map(m => row(m, false))}</>; })()}
 
             {/* Fierce Backup weeks — label only, no schedule change */}
             <div style={{marginTop:14,paddingTop:14,borderTop:"1px solid #e0e4ea"}}>
@@ -9766,13 +9808,15 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 </div>
                 <button onClick={markFierceBackupWeek} style={{...css.btn(true),background:"linear-gradient(135deg,#e0ecf8,#d0e0f0)",borderColor:"#a0c0e0",color:"#1a6fa8",padding:"7px 16px",fontSize:12}}>+ Mark Fierce Backup</button>
               </div>
-              {[...fierceBackupSet].sort().map(m=>(
+              {(() => { const { upcoming, past } = marksListed(fierceBackupSet);
+                const row = (m, ended) => (
                 <div key={m} style={{display:"flex",alignItems:"center",gap:8,marginBottom:5}}>
-                  <span style={{fontFamily:mono,fontSize:12,color:"#5a6a78"}}>Wk of {m}</span>
+                  <span style={{fontFamily:mono,fontSize:12,color:"#5a6a78",textDecoration:ended?"line-through":"none"}} title={ended?"This week has ended":undefined}>Wk of {m}{ended && <span style={SR_TEXT}> (ended)</span>}</span>
                   <span style={{fontSize:11,color:"#1a6fa8",background:"#e8f0fc",border:"1px solid #a8c8e0",borderRadius:6,padding:"3px 8px",fontWeight:600}}>🛡 Fierce Backup</span>
-                  <button onClick={()=>unmarkFierceBackupWeek(m)} style={{background:"none",border:"none",color:"#904040",cursor:"pointer",fontSize:12}}>✕</button>
+                  <button onClick={()=>unmarkFierceBackupWeek(m)} aria-label={`Remove the Fierce Backup mark from the week of ${m}`} style={{background:"none",border:"none",color:"#904040",cursor:"pointer",fontSize:12}}>✕</button>
                 </div>
-              ))}
+                );
+                return <>{pastMarksToggle("fierce", past.length)}{showPastMarks.fierce && past.map(m => row(m, true))}{upcoming.map(m => row(m, false))}</>; })()}
             </div>
           </div>
 
