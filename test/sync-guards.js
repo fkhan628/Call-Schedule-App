@@ -11533,7 +11533,7 @@ console.log("\nAT. A trade waiting on your answer");
   const addSrc = arrowBody("const addAppShift = () => {", "() => {");
   const rmBody = arrowBody("const rmAppShift = (ds) => {", "(ds) => {");
   const paintBody = arrowBody("const commitAppPaint = async (draft) => {", "async (draft) => {");
-  const saveBody = arrowBody("const saveAppShifts = async (next) => {", "async (next) => {");
+  const saveBody = arrowBody("const saveAppShifts = async (next, said) => {", "async (next, said) => {"); // (changed ON PURPOSE 2026-11-02, DD4: + Assign's saved line, said once it has saved)
   const ENV = "appShiftsLoaded, appShifts, appDate, appPerson, showToast, setAppShifts, saveAppShifts, logAudit, nameOf, setAppDate, supabase, APP_SHIFTS_NOT_LOADED, setSaveError, setSaveStatus, sessionEpochRef, confirm"; // (22/n: saveAppShifts / commitAppPaint read the session at the call — review r5 fix-1)
   // (Changed ON PURPOSE 2026-11-02, DD2: the APP ✕ asks first — confirm, answered OK here; DD2 runs the question and its Cancel.)
   const mk = (body) => { try { return body ? vm.runInContext(`(function (env) { const { ${ENV} } = env; return (${body}); })`, sandbox) : null; } catch (ex) { return null; } };
@@ -11635,8 +11635,9 @@ console.log("\nAT. A trade waiting on your answer");
   }
   check("AB3 both reads of the main row arm the guard right after .single() (mount + poll); nothing else arms it",
     (src.match(/\.eq\("id", "main"\)\.single\(\);\r?\n\s*setAppShiftsLoaded\(true\);/g) || []).length === 2 && count("setAppShiftsLoaded(true)") === 2);
+  // (Changed ON PURPOSE 2026-11-02, DD4: + Assign also waits for an APP to be picked — its disabled reads both.)
   check("AB3 the APP card disables + Assign and Paint Month until the row loads, and says why",
-    count("disabled={!appShiftsLoaded}") === 2 && count("⚠ {APP_SHIFTS_NOT_LOADED}") === 1);
+    count("disabled={!appShiftsLoaded}") === 1 && count("disabled={!appShiftsLoaded || !appPerson}") === 1 && count("⚠ {APP_SHIFTS_NOT_LOADED}") === 1);
   {
     const s1 = envAB(true, { supabase: { from: () => ({ upsert: async () => ({ error: { code: "42501", message: "denied" } }) }) } });
     const s2 = envAB(true, { supabase: { from: () => ({ upsert: async () => { throw new TypeError("Failed to fetch"); } }) } });
@@ -15787,11 +15788,13 @@ await (async () => {
     const asFn = (code) => (code ? code.replace(/^\s*const \w+ = (useCallback\()?/, "").replace(/(, \[[^\]]*\]\);|;)\s*$/, "") : null);
     const respBK = (status, json) => ({ ok: status >= 200 && status < 300, status, json: async () => json, text: async () => J(json) });
     // Each site's REAL save handler, run on the state the pick left: what it writes.
+    // (Changed ON PURPOSE 2026-11-02, DD4: + Add hands toAdd the line it says once saved — addedLine, stubbed here; the
+    // dates written are what this compares, so the stand-in toAdd records its first four arguments. DD4 runs the line.)
     const SAVES = {
-      addVac: async (S) => { const w = []; const f = fnBK("vacSurgeon, vacStart, vacEnd, toAdd, setVacStart, setVacEnd", asFn(sliceBK("  const addVac = () => {", "\n  };")));
-        if (!f) return null; f({ vacSurgeon: "s3", vacStart: S.vacStart, vacEnd: S.vacEnd, toAdd: (...a) => w.push(["toAdd", ...a]), setVacStart: () => {}, setVacEnd: () => {} })(); return w; },
-      addNoCall: async (S) => { const w = []; const f = fnBK("ncSurgeon, ncStart, ncEnd, toAdd, setNcStart, setNcEnd", asFn(sliceBK("  const addNoCall = () => {", "\n  };")));
-        if (!f) return null; f({ ncSurgeon: "s3", ncStart: S.ncStart, ncEnd: S.ncEnd, toAdd: (...a) => w.push(["toAdd", ...a]), setNcStart: () => {}, setNcEnd: () => {} })(); return w; },
+      addVac: async (S) => { const w = []; const f = fnBK("vacSurgeon, vacStart, vacEnd, toAdd, setVacStart, setVacEnd, addedLine", asFn(sliceBK("  const addVac = () => {", "\n  };")));
+        if (!f) return null; f({ vacSurgeon: "s3", vacStart: S.vacStart, vacEnd: S.vacEnd, toAdd: (p, k, s, e) => w.push(["toAdd", p, k, s, e]), setVacStart: () => {}, setVacEnd: () => {}, addedLine: () => "added" })(); return w; },
+      addNoCall: async (S) => { const w = []; const f = fnBK("ncSurgeon, ncStart, ncEnd, toAdd, setNcStart, setNcEnd, addedLine", asFn(sliceBK("  const addNoCall = () => {", "\n  };")));
+        if (!f) return null; f({ ncSurgeon: "s3", ncStart: S.ncStart, ncEnd: S.ncEnd, toAdd: (p, k, s, e) => w.push(["toAdd", p, k, s, e]), setNcStart: () => {}, setNcEnd: () => {}, addedLine: () => "added" })(); return w; },
       saveEditVac: async (S) => { const w = []; const f = fnBK("editVac, vacations, toEdit, setEditVac", asFn(sliceBK("  const saveEditVac = () => {", "\n  };")));
         if (!f) return null; f({ editVac: S.editVac, vacations: { s3: [["2099-01-04", "2099-01-08"], ["2099-11-09", "2099-11-13"]] }, toEdit: (...a) => w.push(["toEdit", ...a]), setEditVac: () => {} })(); return w; },
       saveMyVacEdit: async (S) => { const w = []; const f = fnBK("myVacEdit, myVacs, isScheduler, showToast, setMyVacEdit, toEdit, addNotification, myId, myName, schedulerAdminIds, alert, console",
@@ -16055,11 +16058,13 @@ await (async () => {
     const iRow = nsrcBK.indexOf(ROW), rowSrc = iRow < 0 ? "" : nsrcBK.slice(iRow, nsrcBK.indexOf("</div>", iRow));
     const lumR = (hex) => { const n = parseInt(hex.replace("#", ""), 16); return [n >> 16, (n >> 8) & 255, n & 255].map((v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); }).reduce((a, v, k) => a + v * [0.2126, 0.7152, 0.0722][k], 0); };
     const crR = (a, b) => { const x = lumR(a), y = lumR(b); return Math.round(((Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05)) * 100) / 100; };
-    const rowCr = { ok: crR("#1a8040", "#f0f8ff"), cancel: crR("#904040", "#f0f8ff"), forced: crR("#c0c8d8", "#f0f8ff") };
-    check("BK7 (review fix) the Setup inline edit row is pale in both themes (#f0f8ff, no dark navy branch), like the vacation group box around it (background:\"#f8f9fb\", which stays pale in dark mode too); ✓ and ✕ keep their colors in their own spans — measured on the row: ✓ " + rowCr.ok + ":1, ✕ " + rowCr.cancel + ":1 (the dark sheet's forced #c0c8d8 would be " + rowCr.forced + ":1)",
+    // (Changed ON PURPOSE 2026-11-02, DD4: ✓ / ✕ are "Save" / "Cancel" in words, 44px — Save white on its own green fill,
+    // Cancel red on its own white; still each in its own span, measured as before. DD4 renders the row.)
+    const rowCr = { ok: crR("#ffffff", "#1a7a3c"), cancel: crR("#904040", "#ffffff"), forced: crR("#c0c8d8", "#f0f8ff") };
+    check("BK7 (review fix) the Setup inline edit row is pale in both themes (#f0f8ff, no dark navy branch), like the vacation group box around it (background:\"#f8f9fb\", which stays pale in dark mode too); Save and Cancel keep their colors in their own spans — measured: Save's white on its #1a7a3c " + rowCr.ok + ":1, Cancel's red on its white " + rowCr.cancel + ":1 (the dark sheet's forced #c0c8d8 on the row would be " + rowCr.forced + ":1)",
       count(ROW) === 1 && !rowSrc.includes("#16213e") && rowSrc.includes("<DateRangeField label=\"Vacation dates\" compact editing start={editVac.start}")
-        && rowSrc.includes('<button onClick={saveEditVac} style={{background:"none",border:"none",cursor:"pointer",fontSize:13,fontWeight:700}}><span style={{color:"#1a8040"}}>✓</span></button>')
-        && rowSrc.includes('<button onClick={()=>setEditVac(null)} style={{background:"none",border:"none",cursor:"pointer",fontSize:11}}><span style={{color:"#904040"}}>✕</span></button>')
+        && rowSrc.includes('<button onClick={saveEditVac} style={{minHeight:44,minWidth:44,padding:"0 14px",background:"#1a7a3c",border:"none",borderRadius:6,cursor:"pointer",fontSize:13,fontWeight:700,fontFamily:font}}><span style={{color:"#fff"}}>Save</span></button>')
+        && rowSrc.includes('<button onClick={()=>setEditVac(null)} style={{minHeight:44,minWidth:44,padding:"0 12px",background:"#fff",border:"1px solid #d8b8b8",borderRadius:6,cursor:"pointer",fontSize:13,fontWeight:600,fontFamily:font}}><span style={{color:"#904040"}}>Cancel</span></button>')
         && count('<div key={p.id} style={{marginBottom:5,border:"1px solid #e0e4ea",borderRadius:7,overflow:"hidden",background:"#f8f9fb"}}>') === 1
         && rowCr.ok >= 4.5 && rowCr.cancel >= 4.5 && rowCr.forced < 2,
       J({ row: iRow, rowCr }));
@@ -17479,6 +17484,14 @@ await (async () => {
 //       and its counts move back" (from the counts floor — the real flagNet; before it, no counts), one not generated
 //       yet, a published Fierce Backup week loses its label; Cancel runs no handler, OK the ✕'s own handler for that
 //       week, once; the card's two lists, rendered, send each ✕ there; the four mark handlers are as they were
+//   DD4 (QW15) + Add (vacations, no-call) and + Assign (APP) are dimmed and can't be tapped until a person / APP is
+//       picked; each add says what it added once it has saved ("Added DJA's vacation Mon Dec 14 → Fri Dec 18 · 5 days",
+//       "Assigned MS to the APP call Thu Nov 5 (was MA's)") — never after a failure or a session change — through the
+//       line toAdd / saveAppShifts are handed; with none (a request's approval, the week editor) both are as before
+//   DD5 (QW15) each list row's ✕ (vacations, no-call, Backup / Fierce Backup) is 44×44 and named; the inline edit's ✓ / ✕
+//       are "Save" / "Cancel" in words; their colours read ≥ 4.5:1 where they sit
+//   DD6 (QW15) the APP list keeps past shifts behind "Show completed shifts", as the vacation list does, writes its dates
+//       as "Thu Nov 5", and each row's ✕ is 44×44 and named
 console.log("\nDD. Setup asks first; Setup's lists; the week editor's close, names and Save");
 await (async () => {
   const nsrcD = src.replace(/\r\n/g, "\n"), JD = JSON.stringify, cloneD = (o) => JSON.parse(JSON.stringify(o));
@@ -17766,6 +17779,221 @@ await (async () => {
       check("DD3 …the four mark handlers are byte for byte 3200f94's (their gates, then the mark — CX, CY and SE-G run them); askUnmark is called only from the two ✕ and calls no mark itself",
         handlersNow !== null && OLD.markHandlers === handlersNow + "\n" && countD("askUnmark(") === 2 && !/markWeek\(|setWeekFlag\(|pushUndo\(/.test(ASK),
         JD({ found: handlersNow !== null, same: OLD.markHandlers === handlersNow + "\n", calls: countD("askUnmark(") }));
+    }
+  }
+
+  // Contrast (WCAG), for the colours DD5 / DD6 measure
+  const lumD = (h) => { const v = h.slice(1).match(/../g).map((x) => parseInt(x, 16) / 255).map((c) => (c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4))); return 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2]; };
+  const crD = (a, b) => { const A = String(a).replace(/^#(.)(.)(.)$/, "#$1$1$2$2$3$3"), B = String(b).replace(/^#(.)(.)(.)$/, "#$1$1$2$2$3$3"); if (!/^#[0-9a-f]{6}$/i.test(A) || !/^#[0-9a-f]{6}$/i.test(B)) return 0; const x = lumD(A), y = lumD(B); return Math.round((Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05) * 100) / 100; };
+  // One element of today's JSX, by the text it starts with, through its own closing tag (one level: a single-line button).
+  const elD = (start, close) => { const i = nsrcD.indexOf(start); if (i < 0 || nsrcD.indexOf(start, i + 1) !== -1) return null; const j = nsrcD.indexOf(close, i); return j < 0 ? null : nsrcD.slice(i, j + close.length); };
+  const cssD = { btn: (a) => ({ background: a ? "linear-gradient(135deg,#1a6fa8,#2488c8)" : "#f0f2f5", color: a ? "#ffffff" : "#5a6a78" }), inp: {}, card: {}, cardT: {}, backupBanner: {} };
+
+  // ── DD4 — + Add / + Assign wait for a person; each add says what it added once it is saved ──
+  {
+    const ADDS = [["vacations' + Add", '<button onClick={addVac} disabled={!vacSurgeon}', "vacSurgeon", "Pick a person first"], ["no-call's + Add", '<button onClick={addNoCall} disabled={!ncSurgeon}', "ncSurgeon", "Pick a person first"],
+      ["APP's + Assign", '<button onClick={addAppShift} disabled={!appShiftsLoaded || !appPerson}', "appPerson", "Pick an APP first"]];
+    const btnBad = [];
+    for (const [label, start, key, hint] of ADDS) {
+      const s = elD(start, "</button>"), f = s && compileD("h, css, addVac, addNoCall, addAppShift, vacSurgeon, ncSurgeon, appPerson, appShiftsLoaded", jsxD(s), "dd-add-btn.js");
+      if (!f) { btnBad.push(`${label}: not found`); continue; }
+      const at = (v, loaded) => f({ h: hD, css: cssD, addVac() {}, addNoCall() {}, addAppShift() {}, vacSurgeon: "", ncSurgeon: "", appPerson: "", appShiftsLoaded: loaded !== false, [key]: v });
+      const off = at(""), on = at(key === "appPerson" ? "a3" : "s1"), cold = at("a3", false);
+      if (!(off.props.disabled === true && off.props.style.opacity === 0.4 && off.props.style.cursor === "not-allowed" && off.props.title === hint && textD(off) === (key === "appPerson" ? "+ Assign" : "+ Add")
+        && on.props.disabled === false && on.props.style.opacity === 1 && on.props.style.cursor === "pointer" && on.props.title === undefined && on.props.style.background === cssD.btn(true).background)) btnBad.push(`${label}: ${JD([off.props, on.props])}`);
+      if (key === "appPerson" && !(cold.props.disabled === true && cold.props.title === undefined && cold.props.style.opacity === 0.4)) btnBad.push(`${label} before the APP row loaded: ${JD(cold.props)}`);
+    }
+    check("DD4 + Add (vacations, no-call) and + Assign (APP), rendered: dimmed (0.4), not tappable and titled \"Pick a person first\" / \"Pick an APP first\" until one is picked, then the primary button as before; + Assign stays off before the APP row has loaded (no hint then: the card's own line says why)",
+      btnBad.length === 0, btnBad.join(" | "));
+    // toAdd: the REAL one (today's and 3200f94's), its insert answered as asked
+    const TA = "sessionEpochRef, showToast, setterFor, logAudit, nameOf, USE_TIME_OFF, db, userProfile, console";
+    const taN = compileD(TA, fnOf("async (personId, kind, start, end, said) => {", cutD("  const toAdd = async (personId, kind, start, end, said) => {", "\n  };")), "dd-toadd.js");
+    const taO = compileD(TA, fnOf("async (personId, kind, start, end) => {", OLD.toAdd), "dd-toadd-old.js");
+    if (!taN || !taO) check("DD4 toAdd (today's and 3200f94's) is extractable and compiles", false, JD({ now: !!taN, old: !!taO }));
+    else {
+      const runTA = async (fn, args, o = {}) => {
+        const r = { toasts: [], sets: [], audits: [], inserts: [], errors: [] }, ep = { current: 1 };
+        try {
+          await fn({ sessionEpochRef: ep, showToast: (m, t) => r.toasts.push([String(m), t || "info"]), setterFor: () => (u) => r.sets.push(u({})), logAudit: (a, m, meta) => r.audits.push([a, m, meta]), nameOf: nameOfD,
+            USE_TIME_OFF: o.blob !== true, userProfile: { person_id: "s6" }, console: { error: (...a) => r.errors.push(a.map(String).join(" ")) },
+            db: { insert: async (t, row) => { r.inserts.push([t, row]); if (o.signOut) ep.current++; if (o.throws) throw new TypeError("Failed to fetch"); return { error: o.fails ? { message: "500" } : null }; } } })(...args);
+        } catch (ex) { r.threw = String(ex).slice(0, 160); }
+        return r;
+      };
+      const ARGS = ["s1", "vacation", "2026-12-14", "2026-12-18"], SAID = "Added DJA's vacation Mon Dec 14 → Fri Dec 18 · 5 days";
+      const ok = await runTA(taN, [...ARGS, SAID]), okO = await runTA(taO, ARGS), plain = await runTA(taN, ARGS);
+      const fail = await runTA(taN, [...ARGS, SAID], { fails: true }), threw = await runTA(taN, [...ARGS, SAID], { throws: true }), gone = await runTA(taN, [...ARGS, SAID], { signOut: true }), blob = await runTA(taN, [...ARGS, SAID], { blob: true });
+      const failO = await runTA(taO, ARGS, { fails: true }), blobO = await runTA(taO, ARGS, { blob: true });
+      const same = (a, b) => JD([a.sets, a.audits, a.inserts, a.errors]) === JD([b.sets, b.audits, b.inserts, b.errors]);
+      check("DD4 toAdd (the real one) says the line it is handed once its insert has gone through — a success toast, after the optimistic entry and the audit line as 3200f94 writes them; with no line (a request's approval) it says nothing new — every effect exactly as 3200f94",
+        JD(ok.toasts) === JD([[SAID, "success"]]) && same(ok, okO) && okO.toasts.length === 0 && JD(plain) === JD(okO) && ok.inserts.length === 1 && !ok.threw,
+        JD({ ok: ok.toasts, plain: plain.toasts, same: same(ok, okO) }));
+      check("DD4 …a refused or failed insert says only 3200f94's \"Couldn't save that …\" (never the line); a session changed while it was out says nothing at all; time off kept in the blob (no time_off table) says the line at once — the rest exactly as 3200f94",
+        JD(fail.toasts) === JD(failO.toasts) && JD(fail.toasts) === JD([["Couldn't save that — check your connection and try again.", "error"]]) && JD(threw.toasts) === JD(fail.toasts)
+          && gone.toasts.length === 0 && JD(blob.toasts) === JD([[SAID, "success"]]) && same(blob, blobO) && blob.inserts.length === 0 && same(fail, failO),
+        JD({ fail: fail.toasts, threw: threw.toasts, gone: gone.toasts, blob: blob.toasts }));
+    }
+    // addVac / addNoCall (the real ones, with the real addedLine and helpers.js rangeLabel): what they hand toAdd
+    const ALS = nsrcD.match(/\n  (const addedLine = \(pid, what, s, e\) => [^\n]*;)\n/);
+    const AV = "vacSurgeon, vacStart, vacEnd, ncSurgeon, ncStart, ncEnd, toAdd, setVacStart, setVacEnd, setNcStart, setNcEnd, nameOf, Date";
+    const mkAV = (head, body, name) => (ALS && body != null ? compileD(AV, `(() => { ${ALS[1]}\n  return ${head}${body}\n  }; })()`, name) : null);
+    const avN = mkAV("() => {", cutD("  const addVac = () => {", "\n  };"), "dd-addvac.js"), ncN = mkAV("() => {", cutD("  const addNoCall = () => {", "\n  };"), "dd-addnc.js");
+    const avO = compileD(AV, fnOf("() => {", OLD.addVac), "dd-addvac-old.js"), ncO = compileD(AV, fnOf("() => {", OLD.addNoCall), "dd-addnc-old.js");
+    if (!avN || !ncN || !avO || !ncO) check("DD4 addVac / addNoCall (with addedLine) and 3200f94's are extractable and compile", false, JD({ line: !!ALS, avN: !!avN, ncN: !!ncN, avO: !!avO, ncO: !!ncO }));
+    else {
+      const runAV = (fn, o) => { const r = { calls: [], resets: [] };
+        fn(Object.assign({ vacSurgeon: "", vacStart: "", vacEnd: "", ncSurgeon: "", ncStart: "", ncEnd: "", toAdd: (...a) => r.calls.push(a), nameOf: nameOfD, Date: DateD,
+          setVacStart: (v) => r.resets.push(["vacStart", v]), setVacEnd: (v) => r.resets.push(["vacEnd", v]), setNcStart: (v) => r.resets.push(["ncStart", v]), setNcEnd: (v) => r.resets.push(["ncEnd", v]) }, o))();
+        return r; };
+      const CASES = [
+        [avN, avO, { vacSurgeon: "s1", vacStart: "2026-12-14", vacEnd: "2026-12-18" }, "Added DJA's vacation Mon Dec 14 → Fri Dec 18 · 5 days"],
+        [avN, avO, { vacSurgeon: "a1", vacStart: "2026-12-28", vacEnd: "2027-01-01" }, "Added MA's vacation Mon Dec 28 → Fri Jan 1, 2027 · 5 days"],
+        [ncN, ncO, { ncSurgeon: "s3", ncStart: "2026-12-01", ncEnd: "2026-12-01" }, "Added RPC's no-call day Tue Dec 1 · 1 day"],
+        [ncN, ncO, { ncSurgeon: "s3", ncStart: "2026-12-01", ncEnd: "2026-12-03" }, "Added RPC's no-call days Tue Dec 1 → Thu Dec 3 · 3 days"],
+      ];
+      const bad = [];
+      for (const [n, o, st, line] of CASES) {
+        const a = runAV(n, st), b = runAV(o, st);
+        if (a.calls.length !== 1 || JD(a.calls[0].slice(0, 4)) !== JD(b.calls[0]) || a.calls[0][4] !== line || a.calls[0].length !== 5 || JD(a.resets) !== JD(b.resets)) bad.push(`${line}: ${JD(a.calls)} vs ${JD(b.calls)}`);
+      }
+      const none = runAV(avN, { vacSurgeon: "", vacStart: "2026-12-14", vacEnd: "2026-12-18" });
+      check("DD4 + Add (the real addVac / addNoCall, addedLine and rangeLabel): toAdd gets 3200f94's four arguments plus the line it says once saved — \"Added DJA's vacation Mon Dec 14 → Fri Dec 18 · 5 days\", across a new year \"… → Fri Jan 1, 2027 · 5 days\", \"Added RPC's no-call day Tue Dec 1 · 1 day\", \"… no-call days Tue Dec 1 → Thu Dec 3 · 3 days\"; the dates reset to today as before; with no person nothing happens",
+        bad.length === 0 && none.calls.length === 0 && none.resets.length === 0, bad.join(" | "));
+    }
+    // saveAppShifts (the real one, today's and 3200f94's): the line once saved
+    const SA = "supabase, setSaveError, setSaveStatus, showToast, setTimeout, sessionEpochRef, console";
+    const saN = compileD(SA, fnOf("async (next, said) => {", cutD("  const saveAppShifts = async (next, said) => {", "\n  };")), "dd-saveapp.js"), saO = compileD(SA, fnOf("async (next) => {", OLD.saveAppShifts), "dd-saveapp-old.js");
+    if (!saN || !saO) check("DD4 saveAppShifts (today's and 3200f94's) is extractable and compiles", false, JD({ now: !!saN, old: !!saO }));
+    else {
+      const runSA = async (fn, args, o = {}) => {
+        const r = { toasts: [], status: [], errs: [], upserts: [] }, ep = { current: 1 };
+        await fn({ supabase: { from: () => ({ upsert: async (row) => { r.upserts.push(row.data); if (o.signOut) ep.current++; if (o.throws) throw new TypeError("Failed to fetch"); return { error: o.fails ? { code: "42501" } : null }; } }) },
+          setSaveError: (v) => r.errs.push(v), setSaveStatus: (v) => r.status.push(v), showToast: (m, t) => r.toasts.push([String(m), t || "info"]), setTimeout: () => {}, sessionEpochRef: ep, console: { error() {} } })(...args);
+        return r;
+      };
+      const MAP = { "2026-11-05": "a3" }, LINE = "Assigned MS to the APP call Thu Nov 5 (was MA's)";
+      const ok = await runSA(saN, [MAP, LINE]), okO = await runSA(saO, [MAP]), plain = await runSA(saN, [MAP]);
+      const fail = await runSA(saN, [MAP, LINE], { fails: true }), failO = await runSA(saO, [MAP], { fails: true }), threw = await runSA(saN, [MAP, LINE], { throws: true }), gone = await runSA(saN, [MAP, LINE], { signOut: true });
+      const rest = (r) => JD([r.status, r.errs, r.upserts]);
+      check("DD4 saveAppShifts (the real one) says the line it is handed once the APP map has saved, after 3200f94's \"APP shifts saved\"; a failed save says only 3200f94's \"Couldn't save APP shifts …\"; after a session change nothing; with no line (the week editor, the ✕) exactly 3200f94",
+        JD(ok.toasts) === JD([[LINE, "success"]]) && rest(ok) === rest(okO) && JD(plain) === JD(okO) && JD(fail) === JD(failO) && /^Couldn't save APP shifts/.test((fail.toasts[0] || [""])[0]) && threw.toasts.length === 1 && !/Assigned/.test(JD(threw.toasts)) && gone.toasts.length === 0,
+        JD({ ok: ok.toasts, plain: plain.toasts, fail: fail.toasts, threw: threw.toasts, gone: gone.toasts }));
+    }
+    // addAppShift hands saveAppShifts its line (the real one, DD2's way)
+    const ENVA2 = "appShiftsLoaded, appShifts, appDate, appPerson, showToast, setAppShifts, saveAppShifts, logAudit, nameOf, setAppDate, APP_SHIFTS_NOT_LOADED, confirm, Date";
+    const add2 = compileD(ENVA2, fnOf("() => {", cutD("  const addAppShift = () => {", "\n  };")), "dd-add2.js");
+    const lines = add2 ? [["2026-11-05", "a3"], ["2026-11-04", "a3"], ["2027-01-08", "a1"]].map(([d, a]) => { const r = []; add2({ appShiftsLoaded: true, appShifts: { "2026-11-05": "a1", "2027-01-08": "a2" }, appDate: d, appPerson: a, showToast() {}, setAppShifts() {},
+      saveAppShifts: (m, said) => r.push(said), logAudit() {}, nameOf: nameOfD, setAppDate() {}, APP_SHIFTS_NOT_LOADED: "", confirm: () => true, Date: DateD })(); return r[0]; }) : null;
+    check("DD4 …+ Assign hands it \"Assigned MS to the APP call Thu Nov 5 (was MA's)\" — \"Assigned MS to the APP call Wed Nov 4\" on a free date, \"… Fri Jan 8, 2027 (was SJ's)\" next year",
+      JD(lines) === JD(["Assigned MS to the APP call Thu Nov 5 (was MA's)", "Assigned MS to the APP call Wed Nov 4", "Assigned MA to the APP call Fri Jan 8, 2027 (was SJ's)"]), JD(lines));
+  }
+
+  // ── DD5 — the rows' buttons: finger-sized and named; Save / Cancel in words ──
+  {
+    const big = (b) => !!b && b.props.style && b.props.style.minWidth >= 44 && b.props.style.minHeight >= 44;
+    const VSTART = "(()=>{\n              const allPeople = [...surgeons.map(s=>({...s,type:\"s\"})), ...apps.map(a=>({...a,type:\"a\"}))];\n              const peopleWithVac";
+    const vi = nsrcD.indexOf(VSTART), vj = vi < 0 ? -1 : nsrcD.indexOf("\n            })()}", vi);
+    const NSTART = "(()=>{\n              const allPeople = [...surgeons.map(s=>({...s,type:\"s\"})), ...apps.map(a=>({...a,type:\"a\"}))];\n              const withNc";
+    const ni = nsrcD.indexOf(NSTART), nj = ni < 0 ? -1 : nsrcD.indexOf("\n            })()}", ni);
+    const TOD = nsrcD.match(/\n  (const timeOffDates = \(s, e\) => \{\n[\s\S]*?\n  \};)\n/);
+    const LN = "h, surgeons, apps, vacations, noCallDays, showPastVacations, setShowPastVacations, showPastNoCall, setShowPastNoCall, expandedVacGroups, toggleVacGroup, editVac, setEditVac, saveEditVac, rmVac, rmNoCall, mono, font, MO, fmt, dk, css, updateBannerRef, updateAvailable, Date, dayMonthLabel";
+    let vF = null, nF = null, why = "";
+    try {
+      vF = vi > 0 && vj > vi && TOD && compileD(LN, `(() => { ${TOD[1]}\n return ${jsxD(stripD(nsrcD.slice(vi, vj)) + "\n            })()")}; })()`, "dd-vac-list.js");
+      nF = ni > 0 && nj > ni && TOD && compileD(LN, `(() => { ${TOD[1]}\n return ${jsxD(stripD(nsrcD.slice(ni, nj)) + "\n            })()")}; })()`, "dd-nc-list.js");
+    } catch (ex) { why = String(ex).slice(0, 160); }
+    if (!vF || !nF) check("DD5 the vacation and no-call lists (with timeOffDates) are extractable and compile (JSX → h())", false, JD({ vac: !!vF, nc: !!nF, tod: !!TOD, why }));
+    else {
+      const S7L = S7D.slice(), APL = APPSD.slice();
+      const envL = (o) => Object.assign({ h: hD, surgeons: S7L, apps: APL, vacations: { s1: [["2026-12-14", "2026-12-18"], ["2027-03-08", "2027-03-12"]] }, noCallDays: { s3: [["2026-12-01", "2026-12-01"], ["2026-12-07", "2026-12-09"]] },
+        showPastVacations: false, setShowPastVacations() {}, showPastNoCall: false, setShowPastNoCall() {}, expandedVacGroups: { sv_s1: true }, toggleVacGroup() {}, editVac: null, setEditVac() {}, saveEditVac() {},
+        rmVac() {}, rmNoCall() {}, mono: "mono", font: "font", MO: vm.runInContext("MO", sandbox), fmt: vm.runInContext("fmt", sandbox), dk: false, css: cssD, updateBannerRef: { current: null }, updateAvailable: null, Date: DateD,
+        dayMonthLabel: vm.runInContext("dayMonthLabel", sandbox) }, o);
+      // the vacation entries, their ✕, the edit row
+      const calls = [];
+      const vt = vF(envL({ rmVac: (...a) => calls.push(["rmVac", ...a]) }));
+      const vx = allD(vt).filter((n) => n.tag === "button" && /'s vacation /.test(n.props["aria-label"] || ""));
+      vx.forEach((b) => b.props.onClick({ stopPropagation() { calls.push(["stop"]); } }));
+      const spanOf = (b) => b.kids.find((k) => k && k.tag === "span");
+      const xRed = vx.map((b) => (spanOf(b) || { props: { style: {} } }).props.style.color);
+      check("DD5 a vacation's ✕ (the list, rendered): finger-sized (44×44), named for the person and the dates — \"Remove DJA's vacation Mon 12/14 → Fri 12/18\", \"… Mon 3/8/2027 → Fri 3/12/2027\" (as its question says them) — its ✕ in its own red span (≥ 4.5:1 on the white chip: the dark sheet's forced button text would be unreadable there), and it still removes that entry (rmVac, the entry's index) without opening the editor",
+        vx.length === 2 && vx.every(big) && JD(vx.map((b) => b.props["aria-label"])) === JD(["Remove DJA's vacation Mon 12/14 → Fri 12/18", "Remove DJA's vacation Mon 3/8/2027 → Fri 3/12/2027"])
+          && vx.every((b) => textD(b) === "✕") && xRed.every((c) => c === "#904040" && crD(c, "#ffffff") >= 4.5) && JD(calls) === JD([["stop"], ["rmVac", "s1", 0], ["stop"], ["rmVac", "s1", 1]]),
+        JD({ n: vx.length, labels: vx.map((b) => b.props["aria-label"]), calls, xRed }));
+      const ed = [];
+      const et = vF(envL({ editVac: { sid: "s1", idx: 0, start: "2026-12-14", end: "2026-12-18" }, saveEditVac: () => ed.push("save"), setEditVac: (v) => ed.push(["set", v]) }));
+      const eb = allD(et).filter((n) => n.tag === "button" && /^(Save|Cancel|✓|✕)$/.test(textD(n)) && !(n.props["aria-label"] || ""));
+      const save = eb.find((b) => textD(b) === "Save"), cancel = eb.find((b) => textD(b) === "Cancel");
+      if (save) save.props.onClick(); if (cancel) cancel.props.onClick();
+      const sCol = save && spanOf(save) && spanOf(save).props.style.color, cCol = cancel && spanOf(cancel) && spanOf(cancel).props.style.color;
+      check("DD5 the inline edit row (rendered): \"Save\" and \"Cancel\" in words — no ✓ / ✕ left there — each at least 44px; Save white on its own green (" + crD(sCol || "", save ? save.props.style.background : "") + ":1), Cancel red on its own white (" + crD(cCol || "", cancel ? cancel.props.style.background : "") + ":1), each in its own span; Save saves (saveEditVac), Cancel only closes the row",
+        eb.length === 2 && big(save) && big(cancel) && sCol === "#fff" && crD("#ffffff", save.props.style.background) >= 4.5 && cCol === "#904040" && crD(cCol, cancel.props.style.background) >= 4.5
+          && JD(ed) === JD(["save", ["set", null]]),
+        JD({ texts: eb.map(textD), ed, save: save && save.props.style, cancel: cancel && cancel.props.style }));
+      // the no-call chips' ✕
+      const nc = [];
+      const nt = nF(envL({ rmNoCall: (...a) => nc.push(a) }));
+      const nx = allD(nt).filter((n) => n.tag === "button" && /'s no-call /.test(n.props["aria-label"] || ""));
+      nx.forEach((b) => b.props.onClick());
+      const nCol = nx.map((b) => (spanOf(b) || { props: { style: {} } }).props.style.color);
+      check("DD5 a no-call chip's ✕ (rendered): 44×44, named — \"Remove RPC's no-call day Tue 12/1\", \"Remove RPC's no-call days Mon 12/7 → Wed 12/9\" — its ✕ in its own span at ≥ 4.5:1 on the chip (#fcf6e8; it was #a08040, 3.45:1), and it removes that entry (rmNoCall)",
+        nx.length === 2 && nx.every(big) && JD(nx.map((b) => b.props["aria-label"])) === JD(["Remove RPC's no-call day Tue 12/1", "Remove RPC's no-call days Mon 12/7 → Wed 12/9"])
+          && nCol.every((c) => !!c && crD(c, "#fcf6e8") >= 4.5) && JD(nc) === JD([["s3", 0], ["s3", 1]]),
+        JD({ labels: nx.map((b) => b.props["aria-label"]), nCol, nc }));
+    }
+    // the Backup / Fierce Backup ✕ (DD3's lists): 44×44 too
+    const LIST2 = (set) => `(() => { const { upcoming, past } = marksListed(${set});`;
+    const sizes = ["backupMondaySet", "fierceBackupSet"].map((set) => {
+      const i = nsrcD.indexOf(LIST2(set)), j = i < 0 ? -1 : nsrcD.indexOf("})()}", i); if (i < 0 || j < 0) return null;
+      const f = compileD("h, marksListed, pastMarksToggle, showPastMarks, SR_TEXT, css, mono, askUnmark, backupMondaySet, fierceBackupSet, dk, font", jsxD(nsrcD.slice(i, j) + "})()"), "dd-marks-size.js");
+      if (!f) return null;
+      const t = f({ h: hD, marksListed: (s) => ({ upcoming: [...s].sort(), past: [] }), pastMarksToggle: () => null, showPastMarks: {}, SR_TEXT: {}, css: cssD, mono: "mono", askUnmark() {}, backupMondaySet: new Set(["2026-11-23"]), fierceBackupSet: new Set(["2026-12-07"]), dk: false, font: "font" });
+      return allD(t).filter((n) => n.tag === "button" && /mark from the week of/.test(n.props["aria-label"] || "")).map((b) => big(b) && textD(b) === "✕" && crD(b.props.style.color, "#ffffff") >= 4.5);
+    });
+    check("DD5 the Backup and Fierce Backup ✕ (rendered): 44×44, still the ✕ named for its week, red at ≥ 4.5:1 on the card (in dark mode the sheet's forced #c0c8d8 on the navy card)",
+      JD(sizes) === JD([[true], [true]]), JD(sizes));
+  }
+
+  // ── DD6 — the APP list: completed shifts behind a switch, readable dates ──
+  {
+    const AI = nsrcD.indexOf("{Object.keys(appShifts).length > 0 && (() => {\n              const todayAp = fmt(new Date());"), AJ = AI < 0 ? -1 : nsrcD.indexOf("\n            })()}", AI);
+    const AN = "h, appShifts, appShiftsListExpanded, setAppShiftsListExpanded, showPastAppShifts, setShowPastAppShifts, fmt, parse, DAY_HDR, SR_TEXT, dk, AppBadge, nameOf, rmAppShift, font, mono, Date";
+    let aF = null, why = "";
+    try { aF = AI > 0 && AJ > AI && compileD(AN, jsxD(stripD(nsrcD.slice(AI + 1, AJ)) + "\n            })()"), "dd-app-list.js"); } catch (ex) { why = String(ex).slice(0, 160); }
+    if (!aF) check("DD6 the APP list is extractable and compiles (JSX → h())", false, JD({ at: AI, why }));
+    else {
+      const MAP = { "2026-10-12": "a1", "2026-11-03": "a3", "2026-10-25": "a2", "2026-11-05": "a1", "2027-01-08": "a2", "2026-11-02": "a1", "2026-11-01": "a1" };
+      const SR = { position: "absolute", width: 1 };
+      const runL = (o) => { const r = { rm: [], sw: [], ex: [] };
+        r.tree = aF(Object.assign({ h: hD, appShifts: MAP, appShiftsListExpanded: true, setAppShiftsListExpanded: (f) => r.ex.push(typeof f === "function" ? f(true) : f), showPastAppShifts: false, setShowPastAppShifts: (v) => r.sw.push(v),
+          fmt: vm.runInContext("fmt", sandbox), parse: vm.runInContext("parse", sandbox), DAY_HDR: vm.runInContext("DAY_HDR", sandbox), SR_TEXT: SR, dk: false, AppBadge: "AppBadge", nameOf: nameOfD, rmAppShift: (ds) => r.rm.push(ds), font: "font", mono: "mono", Date: DateD }, o));
+        const all = allD(r.tree);
+        r.rows = all.filter((n) => n.tag === "div" && n.props.key && /^\d{4}-/.test(n.props.key)).map((d) => { const [date, badge, time, x] = d.kids;
+          return { ds: d.props.key, date: date.kids.filter((k) => typeof k === "string").join(""), done: !!(date.props.style && date.props.style.textDecoration === "line-through"), sr: date.kids.some((k) => k && typeof k === "object" && k.props.style === SR && textD(k) === " (completed)"),
+            color: date.props.style && date.props.style.color, app: badge && badge.props.id, time: textD(time), x }; });
+        r.toggle = all.find((n) => n.tag === "input" && n.props.type === "checkbox") || null;
+        r.text = textD(r.tree);
+        return r; };
+      const shut = runL({}), open = runL({ showPastAppShifts: true }), dark = runL({ showPastAppShifts: true, dk: true }), none = runL({ appShifts: { "2026-10-12": "a1" } }), soon = runL({ appShifts: { "2026-11-05": "a1" } });
+      check("DD6 the APP list (rendered, today Mon Nov 2): past shifts hidden by default — only today's and later, in date order, each date as the range field writes it (\"Mon Nov 2\", \"Tue Nov 3\", \"Thu Nov 5\", \"Fri Jan 8, 2027\" — no \"2026-10-12\"); the header counts the upcoming ones; the switch \"Show completed shifts\" (3 past hidden), as the vacation list's",
+        JD(shut.rows.map((r) => r.ds)) === JD(["2026-11-02", "2026-11-03", "2026-11-05", "2027-01-08"]) && JD(shut.rows.map((r) => r.date)) === JD(["Mon Nov 2", "Tue Nov 3", "Thu Nov 5", "Fri Jan 8, 2027"])
+          && shut.rows.every((r) => !r.done && !r.sr) && !/\d{4}-\d\d-\d\d/.test(shut.text) && /Hide assigned shifts \(4 upcoming\)/.test(shut.text) && /Show completed shifts\(3 past hidden\)/.test(shut.text.replace(/\s+\(/g, "("))
+          && !!shut.toggle && shut.toggle.props.checked === false,
+        JD({ rows: shut.rows.map((r) => [r.ds, r.date]), text: shut.text.slice(0, 200) }));
+      const doneRows = open.rows.filter((r) => r.done);
+      shut.toggle.props.onChange({ target: { checked: true } }); open.toggle.props.onChange({ target: { checked: false } });
+      check("DD6 …switched on, every shift in date order, the past ones struck through with \"(completed)\" for a screen reader, the switch saying \"showing all\"; its tap sets only the switch (nothing is deleted — no ✕ runs); no past shift → no switch; no upcoming one → \"No upcoming APP shifts.\"",
+        JD(open.rows.map((r) => r.ds)) === JD(Object.keys(MAP).sort()) && JD(doneRows.map((r) => r.ds)) === JD(["2026-10-12", "2026-10-25", "2026-11-01"]) && doneRows.every((r) => r.sr && r.date === ({ "2026-10-12": "Mon Oct 12", "2026-10-25": "Sun Oct 25", "2026-11-01": "Sun Nov 1" })[r.ds])
+          && /showing all/.test(open.text) && JD(shut.sw) === "[true]" && JD(open.sw) === "[false]" && shut.rm.length === 0 && open.rm.length === 0
+          && !soon.toggle && soon.rows.length === 1 && /No upcoming APP shifts\./.test(none.text) && none.rows.length === 0 && !!none.toggle,
+        JD({ open: open.rows.map((r) => [r.ds, r.done, r.sr]), sw: [shut.sw, open.sw], soon: !!soon.toggle, none: none.text.slice(0, 160) }));
+      const xs = open.rows.map((r) => r.x);
+      xs.forEach((b) => b && b.props.onClick());
+      const inks = { light: [open.rows.find((r) => !r.done).color, doneRows[0].color].map((c) => crD(c, "#ffffff")), dark: [dark.rows.find((r) => !r.done).color, dark.rows.find((r) => r.done).color].map((c) => crD(c, "#16213e")) };
+      check("DD6 …each row's ✕ is 44×44 and named — \"Remove MA's APP call Thu Nov 5\" — and removes that date (rmAppShift, which asks first — DD2); the dates read ≥ 4.5:1 in both modes (light on the white card, dark on the navy card), past ones too",
+        xs.length === 7 && xs.every((b) => !!b && b.tag === "button" && b.props.style.minWidth >= 44 && b.props.style.minHeight >= 44 && textD(b) === "✕") && xs[3].props["aria-label"] === "Remove MA's APP call Mon Nov 2"
+          && open.rows.every((r) => r.x.props["aria-label"] === `Remove ${nameOfD(r.app)}'s APP call ${r.date}`) && JD(open.rm) === JD(Object.keys(MAP).sort()) && [...inks.light, ...inks.dark].every((x) => x >= 4.5),
+        JD({ labels: xs.map((b) => b && b.props["aria-label"]), rm: open.rm, inks }));
     }
   }
 })().catch((ex) => check("DD harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));

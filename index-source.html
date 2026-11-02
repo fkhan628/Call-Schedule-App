@@ -896,6 +896,7 @@ function CallSchedule() {
   const [showPastVacations, setShowPastVacations] = useState(false); // Setup tab: hide completed vacations by default
   const [showPastNoCall, setShowPastNoCall] = useState(false); // Setup tab: same idiom for the no-call list (Bucket B, 2026-09-06)
   const [appShiftsListExpanded, setAppShiftsListExpanded] = useState(false); // Setup tab: collapse APP shift list by default to reduce clutter
+  const [showPastAppShifts, setShowPastAppShifts] = useState(false); // Setup tab: past APP shifts hidden, as the vacation list's are (UX audit 2026-11-01, QW15)
   const [dayOffMonth, setDayOffMonth] = useState(() => { const n = new Date(); return { y: n.getFullYear(), m: n.getMonth() }; }); // APP Days Off entry grid month
 
   // ─── Office Notifications ───
@@ -1960,19 +1961,23 @@ function CallSchedule() {
   // there); a failure is never told on the next session's screen (the
   // session at the call, checked after the await — as deleteTimeOff's).
 
-  const toAdd = async (personId, kind, start, end) => {
+  // said (Setup's + Add, UX audit 2026-11-01, QW15): the line that says it was added — once the insert has gone
+  // through (at once when time off lives in the blob), never on the next session's screen; a failure says so instead.
+  const toAdd = async (personId, kind, start, end, said) => {
     if (!personId || !start || !end) return;
     const ep = sessionEpochRef.current;
     const tell = () => { if (sessionEpochRef.current === ep) showToast("Couldn't save that — check your connection and try again.", "error"); };
+    const done = () => { if (said && sessionEpochRef.current === ep) showToast(said, "success"); };
     setterFor(kind)(p => ({ ...p, [personId]: [...(p[personId] || []), [start, end]] }));
     logAudit(kind + ".add", `Added ${kind === "nocall" ? "no-call" : "vacation"} for ${nameOf(personId)}: ${start}${start !== end ? " → " + end : ""}`, { person_id: personId, kind, start, end });
-    if (!USE_TIME_OFF) return;
+    if (!USE_TIME_OFF) { done(); return; }
     try {
       const { error } = await db.insert("time_off", {
         person_id: personId, kind, start_date: start, end_date: end,
         created_by: userProfile?.person_id || null,
       });
       if (error) { console.error("time_off insert error", error); tell(); }
+      else done();
       // realtime reload canonicalizes the optimistic entry (adds its id)
     } catch (e) { console.error("time_off insert ex", e); tell(); }
   };
@@ -5415,9 +5420,13 @@ function CallSchedule() {
     setEdgeUrlDraft(null); setEdgeUrlErr("");
   };
 
+  // + Add says what it added once it is saved (UX audit 2026-11-01, QW15: a tap added it, or did nothing, without a
+  // word): "Added DJA's vacation Mon Dec 14 → Fri Dec 18 · 5 days" — the range as the field wrote it (helpers.js
+  // rangeLabel; an old cached helpers.js: the raw dates). The button waits for a person (the card's + Add).
+  const addedLine = (pid, what, s, e) => `Added ${nameOf(pid)}'s ${what} ${typeof rangeLabel === "function" ? rangeLabel(s, e, fmt(new Date())) : s === e ? s : `${s} → ${e}`}`;
   const addVac = () => {
     if(!vacSurgeon||!vacStart||!vacEnd) return;
-    toAdd(vacSurgeon, "vacation", vacStart, vacEnd);
+    toAdd(vacSurgeon, "vacation", vacStart, vacEnd, addedLine(vacSurgeon, "vacation", vacStart, vacEnd));
     setVacStart(fmt(new Date())); setVacEnd(fmt(new Date()));
   };
   // Setup's ✕ on a vacation or a no-call asks first (UX audit 2026-10-19): it
@@ -5432,7 +5441,7 @@ function CallSchedule() {
   const rmVac = (sid,idx) => { const r=(vacations[sid]||[])[idx]; if(!r) return; if(!confirm(`Remove ${nameOf(sid)}'s vacation ${timeOffDates(r[0],r[1])}?`)) return; toRemove(sid,"vacation",r[0],r[1]); };
   const addNoCall = () => {
     if(!ncSurgeon||!ncStart||!ncEnd) return;
-    toAdd(ncSurgeon, "nocall", ncStart, ncEnd);
+    toAdd(ncSurgeon, "nocall", ncStart, ncEnd, addedLine(ncSurgeon, ncStart === ncEnd ? "no-call day" : "no-call days", ncStart, ncEnd));
     setNcStart(fmt(new Date())); setNcEnd(fmt(new Date()));
   };
   const rmNoCall = (sid,idx) => { const r=(noCallDays[sid]||[])[idx]; if(!r) return; if(!confirm(`Remove ${nameOf(sid)}'s no-call ${r[0]===r[1]?"day":"days"} ${timeOffDates(r[0],r[1])}?`)) return; toRemove(sid,"nocall",r[0],r[1]); };
@@ -5460,7 +5469,9 @@ function CallSchedule() {
   // permission, and an APP assigner can never touch the schedule blob.
   // (review r5 fix-1) Sent with the headers of its call; after a session
   // change during it, nothing of it is said on the next session's screen.
-  const saveAppShifts = async (next) => {
+  // said (+ Assign, UX audit 2026-11-01, QW15): the line that says the
+  // assignment was saved — once it has; a failure says so instead.
+  const saveAppShifts = async (next, said) => {
     const ep = sessionEpochRef.current;
     try {
       const { error } = await supabase.from("app_shifts_data")
@@ -5473,6 +5484,7 @@ function CallSchedule() {
       } else {
         setSaveStatus("APP shifts saved");
         setTimeout(() => setSaveStatus(""), 1500);
+        if (said) showToast(said, "success");
       }
     } catch(e) {
       if (sessionEpochRef.current !== ep) { console.error("APP shift save failed (the session changed meanwhile):", e); return; } // another session now
@@ -5495,7 +5507,7 @@ function CallSchedule() {
     if (was && !confirm(`${day} is ${nameOf(was)}'s APP call. Give it to ${nameOf(appPerson)} instead?`)) return;
     const next = {...appShifts,[appDate]:appPerson};
     setAppShifts(next);
-    saveAppShifts(next);
+    saveAppShifts(next, `Assigned ${nameOf(appPerson)} to the APP call ${day}${was ? ` (was ${nameOf(was)}'s)` : ""}`); // said once saved (QW15)
     logAudit("app_shift.assign", `Assigned APP ${nameOf(appPerson)} to ${appDate}${was ? ` (replacing ${nameOf(was)})` : ""}`, was ? { date: appDate, app_id: appPerson, replaced: was } : { date: appDate, app_id: appPerson });
     setAppDate(fmt(new Date()));
   };
@@ -9741,7 +9753,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 {/* One calendar for start and end (DateRangeField); back-dating allowed here. */}
                 <DateRangeField label="Vacation dates" start={vacStart} end={vacEnd} min="" onChange={(s, e) => { setVacStart(s); setVacEnd(e); }} dk={dk} css={css} bannerRef={updateBannerRef} bannerOn={updateAvailable} style={{minWidth:230}}/>
               </div>
-              <button onClick={addVac} style={css.btn(true)}>+ Add</button>
+              {/* + Add waits for a person (UX audit 2026-11-01, QW15): a tap before one is picked did nothing and said nothing */}
+              <button onClick={addVac} disabled={!vacSurgeon} title={vacSurgeon ? undefined : "Pick a person first"} style={{...css.btn(true),opacity:vacSurgeon?1:0.4,cursor:vacSurgeon?"pointer":"not-allowed"}}>+ Add</button>
               <button onClick={()=>setPaintSheet("timeoff")} style={{...css.btn(false),fontWeight:700}}>🖌 Paint Month</button>
               {Object.values(vacations).some(v=>v.length>0) && (
                 <button onClick={clearAllVacations} style={{background:"none",border:"1px solid #e0a0a0",color:"#904040",borderRadius:6,padding:"6px 12px",fontSize:11,cursor:"pointer",fontFamily:font}}>🗑 Clear All</button>
@@ -9827,19 +9840,21 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                         return editVac && editVac.sid===p.id && editVac.idx===originalIdx ? (
                           // The edit row is pale in both themes, like the group box it sits in (whose background:"#f8f9fb" the
                           // dark stylesheet never matches — the browser writes it rgb(248, 249, 251) — so it stays pale in
-                          // dark mode too; a navy row inside it looked broken). ✓ and ✕ keep their colors in their own spans:
-                          // the dark stylesheet forces every button's text to #c0c8d8, unreadable on this pale row.
+                          // dark mode too; a navy row inside it looked broken). Save and Cancel keep their colors in their own
+                          // spans: the dark stylesheet forces every button's text to #c0c8d8, unreadable on this pale row. They
+                          // are words, finger-sized (UX audit 2026-11-01, QW15): a 9px ✓ and a ✕ that looked like the delete ✕.
                           <div key={i} style={{display:"inline-flex",gap:4,alignItems:"center",flexWrap:"wrap",maxWidth:"100%",boxSizing:"border-box",background:"#f0f8ff",border:"1px solid #a0c0e0",borderRadius:5,padding:"3px 6px",marginBottom:4,marginRight:4}}>
                             <DateRangeField label="Vacation dates" compact editing start={editVac.start} end={editVac.end} min="" onChange={(s, e) => setEditVac(pr => ({ ...pr, start: s, end: e }))} dk={dk} css={css} bannerRef={updateBannerRef} bannerOn={updateAvailable}/>
-                            <button onClick={saveEditVac} style={{background:"none",border:"none",cursor:"pointer",fontSize:13,fontWeight:700}}><span style={{color:"#1a8040"}}>✓</span></button>
-                            <button onClick={()=>setEditVac(null)} style={{background:"none",border:"none",cursor:"pointer",fontSize:11}}><span style={{color:"#904040"}}>✕</span></button>
+                            <button onClick={saveEditVac} style={{minHeight:44,minWidth:44,padding:"0 14px",background:"#1a7a3c",border:"none",borderRadius:6,cursor:"pointer",fontSize:13,fontWeight:700,fontFamily:font}}><span style={{color:"#fff"}}>Save</span></button>
+                            <button onClick={()=>setEditVac(null)} style={{minHeight:44,minWidth:44,padding:"0 12px",background:"#fff",border:"1px solid #d8b8b8",borderRadius:6,cursor:"pointer",fontSize:13,fontWeight:600,fontFamily:font}}><span style={{color:"#904040"}}>Cancel</span></button>
                           </div>
                         ) : (
-                          <span key={i} style={{display:"inline-flex",alignItems:"center",fontFamily:mono,fontSize:11,color:isPast?"#a8a8a8":"#5a6a78",cursor:"pointer",padding:"2px 6px",borderRadius:4,border:`1px solid ${isPast?"#d8d8d8":"#e8ecf0"}`,background:isPast?"#f8f8f8":"#fff",marginBottom:4,marginRight:4,textDecoration:isPast?"line-through":"none"}}
+                          <span key={i} style={{display:"inline-flex",alignItems:"center",fontFamily:mono,fontSize:11,color:isPast?"#a8a8a8":"#5a6a78",cursor:"pointer",padding:"0 0 0 6px",borderRadius:4,border:`1px solid ${isPast?"#d8d8d8":"#e8ecf0"}`,background:isPast?"#f8f8f8":"#fff",marginBottom:4,marginRight:4,textDecoration:isPast?"line-through":"none"}}
                             onClick={()=>setEditVac({sid:p.id,idx:originalIdx,start:vs,end:ve})}
                             title={isPast?"Past vacation — click to edit":"Click to edit dates"}>
                             {vs} → {ve}
-                            <button onClick={e=>{e.stopPropagation();rmVac(p.id,originalIdx);}} style={{background:"none",border:"none",color:"#904040",cursor:"pointer",fontSize:11,marginLeft:4}}>✕</button>
+                            {/* finger-sized and named (QW15); its ✕ in its own span: the dark sheet's forced button text is unreadable on this white chip */}
+                            <button aria-label={`Remove ${p.name}'s vacation ${timeOffDates(vs, ve)}`} onClick={e=>{e.stopPropagation();rmVac(p.id,originalIdx);}} style={{background:"none",border:"none",cursor:"pointer",fontSize:13,minWidth:44,minHeight:44,padding:0,fontFamily:font}}><span style={{color:"#904040"}}>✕</span></button>
                           </span>
                         );
                       })}
@@ -9880,7 +9895,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 {/* One calendar for start and end (DateRangeField); back-dating allowed here. */}
                 <DateRangeField label="No-call dates" start={ncStart} end={ncEnd} min="" onChange={(s, e) => { setNcStart(s); setNcEnd(e); }} dk={dk} css={css} bannerRef={updateBannerRef} bannerOn={updateAvailable} style={{minWidth:230}}/>
               </div>
-              <button onClick={addNoCall} style={css.btn(true)}>+ Add</button>
+              <button onClick={addNoCall} disabled={!ncSurgeon} title={ncSurgeon ? undefined : "Pick a person first"} style={{...css.btn(true),opacity:ncSurgeon?1:0.4,cursor:ncSurgeon?"pointer":"not-allowed"}}>+ Add</button>
             </div>
             {(()=>{
               const allPeople = [...surgeons.map(s=>({...s,type:"s"})), ...apps.map(a=>({...a,type:"a"}))];
@@ -9925,9 +9940,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   <div style={{display:"flex",gap:4,flexWrap:"wrap",marginLeft:"auto",alignItems:"center"}}>
                     {p.rows
                       .map(({s,e,origIdx})=>(
-                      <span key={origIdx} style={{display:"inline-flex",alignItems:"center",gap:4,fontFamily:mono,fontSize:10,color:"#6a6030",background:"#fcf6e8",padding:"1px 6px",borderRadius:4,border:"1px solid #e8dcae"}}>
+                      <span key={origIdx} style={{display:"inline-flex",alignItems:"center",gap:0,fontFamily:mono,fontSize:10,color:"#6a6030",background:"#fcf6e8",padding:"0 0 0 6px",borderRadius:4,border:"1px solid #e8dcae"}}>
                         {ncRange(s,e)}
-                        <button onClick={()=>rmNoCall(p.id,origIdx)} style={{background:"none",border:"none",color:"#a08040",cursor:"pointer",fontSize:11,padding:0,lineHeight:1}}>✕</button>
+                        {/* finger-sized and named (UX audit 2026-11-01, QW15); its ✕ in its own span, as the vacation chip's */}
+                        <button aria-label={`Remove ${p.name}'s no-call ${s===e?"day":"days"} ${timeOffDates(s,e)}`} onClick={()=>rmNoCall(p.id,origIdx)} style={{background:"none",border:"none",cursor:"pointer",fontSize:13,padding:0,lineHeight:1,minWidth:44,minHeight:44,fontFamily:font}}><span style={{color:"#7a5a18"}}>✕</span></button>
                       </span>
                     ))}
                   </div>
@@ -9956,7 +9972,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   {apps.map(a=><option key={a.id} value={a.id}>{a.name}</option>)}
                 </select>
               </div>
-              <button onClick={addAppShift} disabled={!appShiftsLoaded} style={{...css.btn(true),opacity:appShiftsLoaded?1:0.4,cursor:appShiftsLoaded?"pointer":"not-allowed"}}>+ Assign</button>
+              {/* …and waits for an APP too (UX audit 2026-11-01, QW15): a tap before one is picked did nothing and said nothing */}
+              <button onClick={addAppShift} disabled={!appShiftsLoaded || !appPerson} title={appShiftsLoaded && !appPerson ? "Pick an APP first" : undefined} style={{...css.btn(true),opacity:appShiftsLoaded && appPerson?1:0.4,cursor:appShiftsLoaded && appPerson?"pointer":"not-allowed"}}>+ Assign</button>
               <button onClick={()=>setPaintSheet("app")} disabled={!appShiftsLoaded} style={{...css.btn(false),fontWeight:700,opacity:appShiftsLoaded?1:0.4,cursor:appShiftsLoaded?"pointer":"not-allowed"}}>🖌 Paint Month</button>
             </div>
             {!appShiftsLoaded && (
@@ -9964,33 +9981,55 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 ⚠ {APP_SHIFTS_NOT_LOADED}
               </div>
             )}
-            {/* Collapsible list of assigned shifts — collapsed by default to reduce clutter */}
-            {Object.keys(appShifts).length > 0 && (
+            {/* Collapsible list of assigned shifts — collapsed by default to reduce clutter. Past shifts wait behind
+                "Show completed shifts", as the vacation list's do, and each date reads as the range field writes it
+                ("Thu Nov 5"; UX audit 2026-11-01, QW15: every past shift sat on top, as "2026-10-12"). Nothing is
+                deleted: the switch only shows them. Each row's ✕ is finger-sized and named. */}
+            {Object.keys(appShifts).length > 0 && (() => {
+              const todayAp = fmt(new Date());
+              const allAp = Object.entries(appShifts).sort(([a],[b])=>a.localeCompare(b));
+              const pastAp = allAp.filter(([ds]) => ds < todayAp), soonAp = allAp.filter(([ds]) => ds >= todayAp);
+              const dayAp = (ds) => typeof rangeDayLabel === "function" ? rangeDayLabel(ds, todayAp) : `${ds} ${DAY_HDR[parse(ds).getDay()]}`;
+              return (
               <div style={{borderTop:"1px solid #e8ecf0",paddingTop:10}}>
-                <button onClick={()=>setAppShiftsListExpanded(p=>!p)}
-                  style={{background:"none",border:"none",cursor:"pointer",fontSize:12,color:"#5a6a78",display:"flex",alignItems:"center",gap:6,padding:"4px 0",fontFamily:font,fontWeight:600}}>
+                <button onClick={()=>setAppShiftsListExpanded(p=>!p)} aria-expanded={appShiftsListExpanded}
+                  style={{background:"none",border:"none",cursor:"pointer",fontSize:12,color:"#5a6a78",display:"flex",alignItems:"center",gap:6,padding:"4px 0",minHeight:44,fontFamily:font,fontWeight:600}}>
                   <span style={{fontSize:10,transition:"transform 0.15s",transform:appShiftsListExpanded?"rotate(90deg)":"rotate(0deg)",display:"inline-block"}}>▶</span>
-                  {appShiftsListExpanded ? "Hide" : "Show"} assigned shifts <span style={{fontWeight:400,color:"#8a94a0"}}>({Object.keys(appShifts).length})</span>
+                  {appShiftsListExpanded ? "Hide" : "Show"} assigned shifts <span style={{fontWeight:400,color:"#8a94a0"}}>({soonAp.length} upcoming)</span>
                 </button>
                 {appShiftsListExpanded && (
                   <div style={{marginTop:8}}>
-                    {Object.entries(appShifts).sort(([a],[b])=>a.localeCompare(b)).map(([ds,aid])=>{
-                      const dow = parse(ds).getDay();
+                    {pastAp.length > 0 && (
+                      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8,padding:"6px 10px",background:"#f8f9fb",border:"1px solid #e0e4ea",borderRadius:6,fontSize:11}}>
+                        <label style={{display:"flex",alignItems:"center",gap:6,cursor:"pointer",color:"#5a6a78"}}>
+                          <input type="checkbox" checked={showPastAppShifts} onChange={e=>setShowPastAppShifts(e.target.checked)} style={{margin:0}}/>
+                          <span>Show completed shifts</span>
+                        </label>
+                        <span style={{color:"#8a94a0",fontFamily:mono}}>
+                          ({showPastAppShifts ? "showing all" : `${pastAp.length} past hidden`})
+                        </span>
+                      </div>
+                    )}
+                    {soonAp.length === 0 && !showPastAppShifts && (
+                      <div style={{padding:"8px 0",fontSize:12,color:dk?"#9aa0b8":"#5a6a78",fontStyle:"italic"}}>No upcoming APP shifts.</div>
+                    )}
+                    {(showPastAppShifts ? allAp : soonAp).map(([ds,aid])=>{
+                      const dow = parse(ds).getDay(), done = ds < todayAp;
                       const timeLabel = (dow === 0 || dow === 6) ? "7a–7a" : "5p–7a";
                       return (
-                      <div key={ds} style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}>
-                        <span style={{fontFamily:mono,fontSize:12,color:"#5a6a78"}}>{ds}</span>
-                        <span style={{fontSize:11,color:"#5a6a78"}}>{DAY_HDR[parse(ds).getDay()]}</span>
+                      <div key={ds} style={{display:"flex",alignItems:"center",gap:8}}>
+                        <span style={{fontSize:12,minWidth:104,color:done?(dk?"#9aa0b8":"#5a6a78"):(dk?"#c8d2dc":"#3a4a58"),textDecoration:done?"line-through":"none"}}>{dayAp(ds)}{done && <span style={SR_TEXT}> (completed)</span>}</span>
                         <AppBadge id={aid}/>
-                        <span style={{fontSize:10,color:"#7a8a98"}}>{timeLabel}</span>
-                        <button onClick={()=>rmAppShift(ds)} style={{background:"none",border:"none",color:"#904040",cursor:"pointer",fontSize:11}}>✕</button>
+                        <span style={{fontSize:10,color:dk?"#9aa0b8":"#5a6a78"}}>{timeLabel}</span>
+                        <button aria-label={`Remove ${nameOf(aid)}'s APP call ${dayAp(ds)}`} onClick={()=>rmAppShift(ds)} style={{background:"none",border:"none",color:"#904040",cursor:"pointer",fontSize:14,minWidth:44,minHeight:44,padding:0,fontFamily:font}}>✕</button>
                       </div>
                       );
                     })}
                   </div>
                 )}
               </div>
-            )}
+              );
+            })()}
           </div>
 
           {/* APP Days Off — display-only weekday-off tracking (paper-calendar
@@ -10138,7 +10177,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               <div key={m} style={{display:"flex",alignItems:"center",gap:8,marginBottom:5}}>
                 <span style={{fontFamily:mono,fontSize:12,color:"#5a6a78",textDecoration:ended?"line-through":"none"}} title={ended?"This week has ended":undefined}>Wk of {m}{ended && <span style={SR_TEXT}> (ended)</span>}</span>
                 <span style={css.backupBanner}>⚡ BACKUP — Fierce Primary</span>
-                <button onClick={()=>askUnmark("backup", m)} aria-label={`Remove the Backup mark from the week of ${m}`} style={{background:"none",border:"none",color:"#904040",cursor:"pointer",fontSize:12}}>✕</button>
+                <button onClick={()=>askUnmark("backup", m)} aria-label={`Remove the Backup mark from the week of ${m}`} style={{background:"none",border:"none",color:"#904040",cursor:"pointer",fontSize:14,minWidth:44,minHeight:44,padding:0}}>✕</button>
               </div>
               );
               return <>{pastMarksToggle("backup", past.length)}{showPastMarks.backup && past.map(m => row(m, true))}{upcoming.map(m => row(m, false))}</>; })()}
@@ -10158,7 +10197,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 <div key={m} style={{display:"flex",alignItems:"center",gap:8,marginBottom:5}}>
                   <span style={{fontFamily:mono,fontSize:12,color:"#5a6a78",textDecoration:ended?"line-through":"none"}} title={ended?"This week has ended":undefined}>Wk of {m}{ended && <span style={SR_TEXT}> (ended)</span>}</span>
                   <span style={{fontSize:11,color:"#1a6fa8",background:"#e8f0fc",border:"1px solid #a8c8e0",borderRadius:6,padding:"3px 8px",fontWeight:600}}>🛡 Fierce Backup</span>
-                  <button onClick={()=>askUnmark("fierce", m)} aria-label={`Remove the Fierce Backup mark from the week of ${m}`} style={{background:"none",border:"none",color:"#904040",cursor:"pointer",fontSize:12}}>✕</button>
+                  <button onClick={()=>askUnmark("fierce", m)} aria-label={`Remove the Fierce Backup mark from the week of ${m}`} style={{background:"none",border:"none",color:"#904040",cursor:"pointer",fontSize:14,minWidth:44,minHeight:44,padding:0}}>✕</button>
                 </div>
                 );
                 return <>{pastMarksToggle("fierce", past.length)}{showPastMarks.fierce && past.map(m => row(m, true))}{upcoming.map(m => row(m, false))}</>; })()}
