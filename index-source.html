@@ -7755,8 +7755,8 @@ function CallSchedule() {
     sendEmailNotif("schedule_changed", emailPayload, allTargets);
     // Saved, and who was told (UX audit 2026-11-01, QW16): the editor closed with nothing said, though the people
     // whose shifts changed had just been sent a push and an e-mail. They are named in the order of the changes.
-    const told = [...new Set(changes.flatMap(c => [c.oldId, c.newId]).filter(Boolean))].map(nameOf);
-    showToast(`Saved — ${told.length > 1 ? told.slice(0, -1).join(", ") + " and " + told[told.length - 1] : told[0]} ${told.length > 1 ? "were" : "was"} notified`, "success");
+    const notified = [...new Set(changes.flatMap(c => [c.oldId, c.newId]).filter(Boolean))].map(nameOf);
+    showToast(`Saved — ${notified.length > 1 ? notified.slice(0, -1).join(", ") + " and " + notified[notified.length - 1] : notified[0]} ${notified.length > 1 ? "were" : "was"} notified`, "success");
 
     setEditWeekModal(null);
     if (openAfter) {
