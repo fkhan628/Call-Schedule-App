@@ -16774,10 +16774,11 @@ console.log("\nAZ. Mine works for an APP");
 // 👁 Preview Schedule's result opened below the bottom of a phone's screen (its top at y=798 of 844 at 390 px), with
 // nothing pointing to it. JSX can't run here (no Babel in CI): the handlers and the effect are sliced and EXECUTED.
 //   DC1 the REAL doGenerateAndNotify → the REAL notifyPublished → the REAL generateAndPublishDone: published and the
-//       notice saved → the same notice and e-mail as before, byte for byte, then ONE toast "✓ Published <period> —
-//       everyone was notified." and, for a scheduler still on the Generate tab, the Calendar on the period's first month
-//       with its heading scrolled into view; the notice not saved → "✓ Published <period>." only; moved on to another
-//       tab during the search → the toast only; not published, or the session gone → nothing at all
+//       notice saved → DF5's notice (the period named, its week the first day) and the e-mail as before, then ONE
+//       toast "✓ Published <period> — everyone was notified." and, for a scheduler still on the Generate tab, the
+//       Calendar on the period's first month with its heading scrolled into view; the notice not saved → "✓ Published
+//       <period>." only; moved on to another tab during the search → the toast only; not published, or the session
+//       gone → nothing at all
 //   DC2 the REAL preview effect: on the Generate tab a preview whose top is near the bottom of the screen or below it
 //       is scrolled into view 60 ms after it appears; one in view (a Re-roll or 🔍 Search more tapped at it, a
 //       scheduler reading further down) is not moved; another tab or no preview → no timer; the cleanup clears it
@@ -16852,14 +16853,15 @@ await (async () => {
     } catch (ex) { rec.threw = String(ex).slice(0, 160); }
     return rec;
   };
-  const NOTICE_DC = J(["notice", "schedule_published", "Schedule Published", "A new call schedule has been generated. Check the Schedule or Calendar tab.", {}, null, 3]);
+  // (changed ON PURPOSE 2026-11-02, integration: the notice is DF5's — it names the period and its week is the period's first day)
+  const NOTICE_DC = J(["notice", "schedule_published", "Schedule Published", `Call schedule published for ${PT} — tap to see your shifts.`, { week: FEB[0] }, null, 3]);
   const EMAIL_DC = J(["e-mail", "schedule_published", { period: PT }, null, 3]);
   const dc1 = { told: await gpRun(), unsaved: await gpRun({ saved: false }), movedOn: await gpRun({ tab: "stats" }), noHeading: await gpRun({ noHeading: true }),
     signOutGen: await gpRun({ moveDuringGen: true }), signOutNotice: await gpRun({ moveDuringNotice: true }) };
   for (const k of ["review", "refused", "busy", "not-published", "cancelled", "undone", "no-snapshot", "moved"]) dc1[k] = await gpRun({ outcome: k });
   const HEAD = J([['the row of [data-cal-month="1"]', { behavior: "smooth", block: "start" }]]);
   // (a success toast shows its own ✓ — helpers.js toastText; the rendered check found "✓ ✓ Published …")
-  check("DC1 (QW10) the REAL Generate & Publish, published and its notice saved: the same notice and e-mail as before, byte for byte, then ONE success toast \"Published Feb 22 – May 30, 2027 — everyone was notified.\" (shown with its ✓) and — still on the Generate tab — the Calendar on the period's first month (February 2027), its month row (◀ month ▶ Today) scrolled into view 60 ms later (smooth, start); no banner (it told everyone itself)",
+  check("DC1 (QW10) the REAL Generate & Publish, published and its notice saved: DF5's notice (\"Call schedule published for Feb 22 – May 30, 2027 — tap to see your shifts.\", its week Feb 22) and the e-mail as before, byte for byte, then ONE success toast \"Published Feb 22 – May 30, 2027 — everyone was notified.\" (shown with its ✓) and — still on the Generate tab — the Calendar on the period's first month (February 2027), its month row (◀ month ▶ Today) scrolled into view 60 ms later (smooth, start); no banner (it told everyone itself)",
     PT === "Feb 22 – May 30, 2027" && !dc1.told.threw && J(dc1.told.log) === J([NOTICE_DC, EMAIL_DC, "toast success: Published Feb 22 – May 30, 2027 — everyone was notified.", "month 1", "year 2027", "view calendar"])
       && J(dc1.told.timers) === J([60]) && J(dc1.told.scrolled) === HEAD, J({ PT, told: dc1.told }));
   check("DC1 (QW10) …the notice NOT saved: \"Published Feb 22 – May 30, 2027.\" — never \"everyone was notified\" (addNotification has said what failed) — and the Calendar opens all the same; a scheduler who moved on to another tab during the search gets the toast and stays there (no month, no tab switch, no scroll); no heading in the page → no throw",
