@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.11.02b";
+    var APP_VERSION = "2026.11.02c";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -131,7 +131,7 @@ const CAL_FILTER_DEFAULTS = Object.freeze({
 });
 const CAL_SILVIS_STORE_KEY = "dsg-cal-silvis";
 function CallSchedule() {
-  var _sMap$callNow$sid, _aMap$appNow$aid, _sMap$mineViewId, _find, _surgeons$find17;
+  var _sMap$callNow$sid, _aMap$appNow$aid, _sMap$mineViewId, _find, _surgeons$find18;
   const isPublicMode = useMemo(() => {
     try {
       const params = new URLSearchParams(window.location.search);
@@ -3839,6 +3839,7 @@ function CallSchedule() {
       tapH = dbAuthHeaders();
     const live = () => sessionEpochRef.current === ep;
     try {
+      var _surgeons$find10;
       const revokeRes = await fetch(`${SUPABASE_URL}/rest/v1/vacation_requests?id=eq.${req.id}&status=eq.approved`, {
         method: "PATCH",
         headers: _objectSpread(_objectSpread({}, tapH), {}, {
@@ -3877,14 +3878,31 @@ function CallSchedule() {
       showToast(`Revoked — ${req.surgeon_name}'s ${kindLabel}, ${typeof mineRangeLabel === "function" ? mineRangeLabel(req.start_date, req.end_date, fmt(new Date())) : `${req.start_date} to ${req.end_date}`}.`, "success");
       toRemove(req.surgeon_id, isNoCall ? "nocall" : "vacation", req.start_date, req.end_date);
       const revokeTargets = [...new Set([req.surgeon_id, ...schedulerAdminIds].filter(Boolean))];
-      await addNotification("vacation_revoked", isNoCall ? "No-Call Revoked" : "Vacation Revoked", `${req.surgeon_name}'s ${kindLabel} ${req.start_date} → ${req.end_date} was revoked`, {
+      const revokedBy = (userProfile === null || userProfile === void 0 ? void 0 : userProfile.display_name) || ((_surgeons$find10 = surgeons.find(s => s.id === mySurgeon)) === null || _surgeons$find10 === void 0 ? void 0 : _surgeons$find10.name) || "";
+      const said = typeof requestNoticeText === "function" ? requestNoticeText("revoked", req, {
+        by: revokedBy
+      }) : "";
+      const revokeMsg = /\brevoked\b/.test(said) ? said : `${req.surgeon_name}'s ${kindLabel} ${req.start_date} → ${req.end_date} was revoked`;
+      await addNotification("vacation_revoked", isNoCall ? "No-Call Revoked" : "Vacation Revoked", revokeMsg, {
         surgeon_id: req.surgeon_id
+      }, revokeTargets, ep);
+      if (!live()) return;
+      sendEmailNotif("vacation_revoked", {
+        surgeon_name: req.surgeon_name,
+        surgeon_id: req.surgeon_id,
+        start_date: req.start_date,
+        end_date: req.end_date,
+        request_type: req.request_type,
+        dates: typeof requestDates === "function" ? requestDates(req.start_date, req.end_date) : undefined,
+        revoked_by: revokedBy || undefined,
+        detail: revokeMsg,
+        message: revokeMsg
       }, revokeTargets, ep);
     } catch (e) {
       console.error("Revoke error:", e);
       if (live()) showToast("Couldn't revoke the vacation — check your connection and try again.", "error");
     }
-  }, [addNotification, schedulerAdminIds]);
+  }, [addNotification, sendEmailNotif, schedulerAdminIds, userProfile, surgeons, mySurgeon]);
   const clearReviewedRequests = useCallback(async () => {
     if (!confirm("Clear all reviewed (approved/denied) requests? Pending requests will be kept.")) return;
     const ep = sessionEpochRef.current;
@@ -4111,9 +4129,9 @@ function CallSchedule() {
   useEffect(() => {
     if (!oneSignalReady || !mySurgeon || !window.OneSignal) return;
     try {
-      var _surgeons$find10;
+      var _surgeons$find11;
       window.OneSignal.User.addTag("surgeon_id", mySurgeon);
-      const surgeonName = ((_surgeons$find10 = surgeons.find(s => s.id === mySurgeon)) === null || _surgeons$find10 === void 0 ? void 0 : _surgeons$find10.name) || mySurgeon;
+      const surgeonName = ((_surgeons$find11 = surgeons.find(s => s.id === mySurgeon)) === null || _surgeons$find11 === void 0 ? void 0 : _surgeons$find11.name) || mySurgeon;
       window.OneSignal.User.addTag("surgeon_name", surgeonName);
     } catch (e) {
       console.error("OneSignal tag error:", e);
@@ -6380,8 +6398,8 @@ function CallSchedule() {
     const DAYNAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
     const startOf = {};
     ids.forEach(id => {
-      var _surgeons$find11, _INIT_SURGEONS$find;
-      const rosterStart = (_surgeons$find11 = surgeons.find(s => s.id === id)) === null || _surgeons$find11 === void 0 ? void 0 : _surgeons$find11.start;
+      var _surgeons$find12, _INIT_SURGEONS$find;
+      const rosterStart = (_surgeons$find12 = surgeons.find(s => s.id === id)) === null || _surgeons$find12 === void 0 ? void 0 : _surgeons$find12.start;
       startOf[id] = rosterStart || ((_INIT_SURGEONS$find = INIT_SURGEONS.find(s => s.id === id)) === null || _INIT_SURGEONS$find === void 0 ? void 0 : _INIT_SURGEONS$find.start) || null;
     });
     const lifetimeCt = {};
@@ -6620,18 +6638,18 @@ function CallSchedule() {
     const arr = holidayAssignments[String(year)] || [];
     const targetHol = arr[holidayIdx];
     if (targetHol) {
-      var _surgeons$find12;
+      var _surgeons$find13;
       const sameGroup = arr.filter((h, i) => i !== holidayIdx && h.type === targetHol.type);
       const usedInGroup = new Set();
       sameGroup.forEach(h => {
         usedInGroup.add(h.surgeonA);
         usedInGroup.add(h.surgeonB);
       });
-      const fakSwap = (_surgeons$find12 = surgeons.find(s => (s.name || "").toUpperCase() === "FAK")) === null || _surgeons$find12 === void 0 ? void 0 : _surgeons$find12.id;
+      const fakSwap = (_surgeons$find13 = surgeons.find(s => (s.name || "").toUpperCase() === "FAK")) === null || _surgeons$find13 === void 0 ? void 0 : _surgeons$find13.id;
       if (usedInGroup.has(newSurgeonId) && newSurgeonId !== fakSwap) {
-        var _surgeons$find13;
+        var _surgeons$find14;
         const conflictHol = sameGroup.find(h => h.surgeonA === newSurgeonId || h.surgeonB === newSurgeonId);
-        const surgeonName = ((_surgeons$find13 = surgeons.find(s => s.id === newSurgeonId)) === null || _surgeons$find13 === void 0 ? void 0 : _surgeons$find13.name) || newSurgeonId;
+        const surgeonName = ((_surgeons$find14 = surgeons.find(s => s.id === newSurgeonId)) === null || _surgeons$find14 === void 0 ? void 0 : _surgeons$find14.name) || newSurgeonId;
         if (!confirm(`⚠️ ${surgeonName} is already assigned to ${conflictHol === null || conflictHol === void 0 ? void 0 : conflictHol.name} (${targetHol.type} group).\n\nEach partner takes at most one ${targetHol.type} holiday a year. Assign anyway?`)) return;
       }
       if (newSurgeonId && newSurgeonId === fakSwap && targetHol.name !== "Christmas Day" && !confirm(`${nameOf(newSurgeonId)}'s holidays are Christmas Eve + Christmas Day (his major and his minor). Put him on ${targetHol.name} too?`)) return;
@@ -8363,8 +8381,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   }, [warnShown, showPhoneHidden, showDismissedWarnings]);
   const warnLineText = x => (x.week && x.week !== "feed" ? x.week + " · " : "") + x.message;
   const warnActor = () => {
-    var _surgeons$find14;
-    return (userProfile === null || userProfile === void 0 ? void 0 : userProfile.display_name) || ((_surgeons$find14 = surgeons.find(s => s.id === (userProfile === null || userProfile === void 0 ? void 0 : userProfile.person_id))) === null || _surgeons$find14 === void 0 ? void 0 : _surgeons$find14.name) || "a scheduler";
+    var _surgeons$find15;
+    return (userProfile === null || userProfile === void 0 ? void 0 : userProfile.display_name) || ((_surgeons$find15 = surgeons.find(s => s.id === (userProfile === null || userProfile === void 0 ? void 0 : userProfile.person_id))) === null || _surgeons$find15 === void 0 ? void 0 : _surgeons$find15.name) || "a scheduler";
   };
   const dismissWarning = x => {
     if (!canWriteBlob || !x || !x.key || x.dismissable === false) return;
@@ -12284,18 +12302,18 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         marginBottom: 6,
         marginTop: 14
       }
-    }, "📌 Minor Holidays"), minors.map((h, i) => renderCard(h, assignments.indexOf(h))), (_surgeons$find15 => {
+    }, "📌 Minor Holidays"), minors.map((h, i) => renderCard(h, assignments.indexOf(h))), (_surgeons$find16 => {
       const rc = holidayRotationCheck({
         assignments,
         prior: holidayAssignments[String(holidayYear - 1)] || [],
         surgeons,
         year: holidayYear,
-        fakId: (_surgeons$find15 = surgeons.find(s => (s.name || "").toUpperCase() === "FAK")) === null || _surgeons$find15 === void 0 ? void 0 : _surgeons$find15.id,
+        fakId: (_surgeons$find16 = surgeons.find(s => (s.name || "").toUpperCase() === "FAK")) === null || _surgeons$find16 === void 0 ? void 0 : _surgeons$find16.id,
         preset: typeof HOLIDAY_PRESETS !== "undefined" && !!HOLIDAY_PRESETS[String(holidayYear)]
       });
       const nm = id => {
-        var _surgeons$find16;
-        return ((_surgeons$find16 = surgeons.find(s => s.id === id)) === null || _surgeons$find16 === void 0 ? void 0 : _surgeons$find16.name) || id;
+        var _surgeons$find17;
+        return ((_surgeons$find17 = surgeons.find(s => s.id === id)) === null || _surgeons$find17 === void 0 ? void 0 : _surgeons$find17.name) || id;
       };
       return React.createElement("div", {
         style: {
@@ -19741,7 +19759,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       color: "#6030a0",
       padding: "6px 0"
     }
-  }, ((_surgeons$find17 = surgeons.find(s => s.id === mySurgeon)) === null || _surgeons$find17 === void 0 ? void 0 : _surgeons$find17.name) || "—")), React.createElement("div", null, React.createElement("label", {
+  }, ((_surgeons$find18 = surgeons.find(s => s.id === mySurgeon)) === null || _surgeons$find18 === void 0 ? void 0 : _surgeons$find18.name) || "—")), React.createElement("div", null, React.createElement("label", {
     style: {
       fontSize: 10,
       color: "#7a8a98",
