@@ -1342,12 +1342,16 @@ function requestDates(start, end) {
   const s = rangeSummary(start, end);
   return s ? s.slice(s.indexOf(", ") + 2) : `${start || ""} → ${end || ""}`;
 }
-// A time-off request's notice (the bell's; the push says the same). req: the
-// request ({ surgeon_name, start_date, end_date, request_type }); a no-call
-// request says "no-call day" for one day, "no-call days" for several.
+// A time-off request's notice (the bell's; the push says the same, and so
+// does the revoke's e-mail). req: the request ({ surgeon_name, start_date,
+// end_date, request_type }); a no-call request says "no-call day" for one
+// day, "no-call days" for several.
 //   ("submitted", req)        → "RPC requested vacation Mon Dec 7 – Fri Dec 11"
 //   ("approved", req)         → "KJH's vacation Mon Dec 14 – Fri Dec 18 was approved"
 //   ("denied", req, { note }) → "ARW's vacation Mon Jan 4 – Tue Jan 5 was denied: Too many out"
+//   ("revoked", req, { by })  → "MCC's approved vacation Mon Oct 26 – Fri Oct 30 was revoked by FAK"
+//                                (no by: no "by …"; nothing about the schedule — a revoke puts nobody on call,
+//                                and its time off can outlive it: review of QW5, 2026-11-02)
 function requestNoticeText(what, req, o) {
   const one = !!req.start_date && req.start_date === req.end_date;
   const noCall = req.request_type === "nocall";
@@ -1358,6 +1362,7 @@ function requestNoticeText(what, req, o) {
   if (what === "submitted") return `${name} requested ${noCall && one ? "a no-call day" : noun} ${dates}`;
   if (what === "approved") return `${name}'s ${noun} ${dates} ${was} approved`;
   if (what === "denied") return `${name}'s ${noun} ${dates} ${was} denied${o && o.note ? ": " + o.note : ""}`;
+  if (what === "revoked") return `${name}'s approved ${noun} ${dates} ${was} revoked${o && o.by ? " by " + o.by : ""}`;
   return `${name}'s ${noun} ${dates}`;
 }
 // The first day a period's label names, read back (periodLabel writes it):
