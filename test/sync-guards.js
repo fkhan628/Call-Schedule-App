@@ -20539,8 +20539,9 @@ await (async () => {
       oldLacks && badOld.length === 0, J(badOld.map((k) => [k, gotOld && shape(gotOld[k])])).slice(0, 1500));
     // the toasts are not this change's (QW18's): the same with and without the composers
     const toastsSame = !!got && !!gotOld && Object.keys(NOW).every((k) => J(got[k].toasts) === J(gotOld[k].toasts) && got[k].toasts.length === 1);
-    check("DF4 …the success toasts are untouched (the same with and without the composers — \"Approved — RPC's vacation, 2099-03-02 to 2099-03-06.\")",
-      toastsSame && got.aprVac.toasts[0] === "success: Approved — RPC's vacation, 2099-03-02 to 2099-03-06.", J(got && Object.fromEntries(Object.keys(NOW).map((k) => [k, got[k].toasts]))));
+    // (changed ON PURPOSE 2026-11-02, integration: the toasts say their dates in Mine's style — QW18, DB3 — with or without these composers)
+    check("DF4 …the success toasts are untouched by these composers (the same with and without them — QW18's \"Approved — RPC's vacation, Mon 3/2/2099 → Fri 3/6/2099.\")",
+      toastsSame && got.aprVac.toasts[0] === "success: Approved — RPC's vacation, Mon 3/2/2099 → Fri 3/6/2099.", J(got && Object.fromEntries(Object.keys(NOW).map((k) => [k, got[k].toasts]))));
   }
 
   // DF5 — the REAL notifyPublished, its link, the deep-link effect and the bell
