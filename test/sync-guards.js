@@ -17585,7 +17585,7 @@ console.log("\nBB. Setup time-off deletes ask first; backup pickers snap to Mond
 // Owner, 2026-11-02: "Sunday's actually KJH 7 A to 5PM". On Sun 11/8 KJH (s4, the weekend surgeon: Fri night and the
 // Sunday 24h) covers 7a–5p and DJA (s1) 5p–Mon 7a; the week carries handoffs { "2026-11-08": { from: "s4", to: "s1",
 // at: "17:00" } }, which helpers.js reads (handoffOn; weekHolders' days[6].handoff — the core). Mine's role builder
-// shows both halves. KJH keeps his Weekend role and its Sunday (the chip reads the days held, and he holds part of
+// shows both halves. KJH keeps their Weekend role and its Sunday (the chip reads the days held, and they hold part of
 // that one; Find Swap as before — a trade moves the whole slot); its detail ends the Sunday at 5p and names DJA. DJA
 // gets a dated role for the Sunday, "Weekend — from 5p", the weekend's icon and colour: no chip, no Find Swap (it is
 // not a tradable unit), listed through its date, and on the Next call card through the roles ("from 5p" is in its
@@ -17594,9 +17594,9 @@ console.log("\nBB. Setup time-off deletes ask first; backup pickers snap to Mond
 // builder (sliced, as X3 / AU2 / CF do, and run with their five params: a new component-scope name would throw), the
 // REAL card builder and its lines (CF's slices), the REAL mineUpcoming and roleDateLabel, on the live week 2026-11-02
 // (dayCall s4, Sat 11/7 overridden to s1; nights s7 s2 s3 s5; the weekend s4) with and without its handoff:
-//   CZ3a KJH: his service week as before; the Weekend role keeps Fri 11/6 + Sun 11/8 (its chip), with the detail
+//   CZ3a KJH: their service week as before; the Weekend role keeps Fri 11/6 + Sun 11/8 (its chip), with the detail
 //        "Fri 5p–Sat 7a & Sun 7a–5p · Sun 11/8 5p–Mon 7a: DJA"
-//   CZ3b DJA: his Service Day Sat 11/7 as before, then "Weekend — from 5p" dated Sun 11/8, "Sun 11/8 · 5p–Mon 7a ·
+//   CZ3b DJA: their Service Day Sat 11/7 as before, then "Weekend — from 5p" dated Sun 11/8, "Sun 11/8 · 5p–Mon 7a ·
 //        from KJH" (🌗, #7a6030): no shift key, no chip
 //   CZ3c without the handoff the week builds exactly as before (6670c5e's builder, frozen); with it only KJH's weekend
 //        detail and DJA's new role differ; a record that hands nothing builds exactly as none; an OFF surgeon who
@@ -17604,7 +17604,7 @@ console.log("\nBB. Setup time-off deletes ask first; backup pickers snap to Mond
 //   CZ3d My Shifts (the REAL mineUpcoming; a row's state as in CL): DJA's Sunday is a dated row through 11/8 (no Find
 //        Swap, no in-progress tag; the page's own row-date code gives it no chip), gone 11/9; KJH's weekend offers Find
 //        Swap through Fri 11/6, is in progress Sat and Sun, gone Mon — at every time exactly as without the handoff
-//   CZ3e the Next call card: on 11/1 DJA reads his Service Day, then "Weekend — from 5p" on Sun 11/8 (the later rows
+//   CZ3e the Next call card: on 11/1 DJA reads their Service Day, then "Weekend — from 5p" on Sun 11/8 (the later rows
 //        print the type, not the detail); on 11/8 it is on top, "today", with its detail; KJH's card as without it
 //   CZ3f CL2 with handoff weeks: every role of every surgeon is listed in My Shifts exactly while it is on the card,
 //        every day 10/25–11/29 at 00:00, 06:59, 07:00, 12:00, 16:59, 17:00 and 23:59
@@ -17662,14 +17662,14 @@ await (async () => {
   // CZ3a — KJH, the weekend surgeon
   const kjhR = rolesOf(SPLIT, "s4"), kjh = kjhR.map(line), kjhWknd = kjhR.find((r) => r.shiftKey === "wknd") || null;
   const kjhChip = kjhWknd ? chipFn("2026-11-02", kjhWknd) : null;
-  check("CZ3a KJH (the weekend surgeon) with the handoff: his service week as before (Sat 11/7 is DJA's); his Weekend role keeps Fri 11/6 and Sun 11/8 — he holds part of that Sunday, so the chip still reads \"Fri 11/6 + Sun 11/8\" — and its detail reads \"Fri 5p–Sat 7a & Sun 7a–5p · Sun 11/8 5p–Mon 7a: DJA\"",
+  check("CZ3a KJH (the weekend surgeon) with the handoff: their service week as before (Sat 11/7 is DJA's); their Weekend role keeps Fri 11/6 and Sun 11/8 — they hold part of that Sunday, so the chip still reads \"Fri 11/6 + Sun 11/8\" — and its detail reads \"Fri 5p–Sat 7a & Sun 7a–5p · Sun 11/8 5p–Mon 7a: DJA\"",
     J(kjh) === J(["🏥 | Service Week (incl. Sat) | M–F 7a–5p + Sat 7a–Sun 7a · Sat 11/7 covered by DJA | #1a6fa8 | dayCall | - | 2026-11-02,2026-11-03,2026-11-04,2026-11-05,2026-11-06",
       "🌗 | Weekend | Fri 5p–Sat 7a & Sun 7a–5p · Sun 11/8 5p–Mon 7a: DJA | #7a6030 | wknd | - | 2026-11-06,2026-11-08"]) && kjhChip === "Fri 11/6 + Sun 11/8",
     J({ kjh, kjhChip }));
 
   // CZ3b — DJA, who takes the Sunday at 5p
   const djaR = rolesOf(SPLIT, "s1"), dja = djaR.map(line), djaTake = djaR.find((r) => r.date === "2026-11-08") || null;
-  check("CZ3b DJA (the taker): his Service Day Sat 11/7 as before, then ONE dated role for Sun 11/8 — \"Weekend — from 5p\", \"Sun 11/8 · 5p–Mon 7a · from KJH\", the weekend's 🌗 and colour; no shift key (no Find Swap, no in-progress tag), no held days and no chip (its detail leads with the date, as every dated role's)",
+  check("CZ3b DJA (the taker): their Service Day Sat 11/7 as before, then ONE dated role for Sun 11/8 — \"Weekend — from 5p\", \"Sun 11/8 · 5p–Mon 7a · from KJH\", the weekend's 🌗 and colour; no shift key (no Find Swap, no in-progress tag), no held days and no chip (its detail leads with the date, as every dated role's)",
     J(dja) === J(["🏥 | Service Day | Sat 11/7 · 7a–7a | #1a6fa8 | - | 2026-11-07 | ", "🌗 | Weekend — from 5p | Sun 11/8 · 5p–Mon 7a · from KJH | #7a6030 | - | 2026-11-08 | "])
       && !!djaTake && djaTake.shiftKey === null && !("held" in djaTake) && chipFn("2026-11-02", djaTake) === null,
     J(dja));
@@ -17693,14 +17693,14 @@ await (async () => {
   const restSame = ["MCC", "RPC", "REH", "FAK", "ARW"].every((n) => J(split[n]) === J(plain[n]));
   const kjhSame = J(split.KJH) !== J(plain.KJH) && J(split.KJH.map((w) => Object.assign({}, w, { roles: w.roles.map((r) => r.replace(KJH_NOW, KJH_BEFORE)) }))) === J(plain.KJH);
   const djaSame = J(split.DJA.map((w) => Object.assign({}, w, { roles: w.roles.slice(0, -1) }))) === J(plain.DJA);
-  check("CZ3c without its handoff the week builds exactly as before — each surgeon's roles as 6670c5e's builder gave them (frozen); with it, MCC, RPC, REH, FAK and ARW are identical (week fields too), KJH's differ only in his weekend's detail and DJA's only by the one role",
+  check("CZ3c without its handoff the week builds exactly as before — each surgeon's roles as 6670c5e's builder gave them (frozen); with it, MCC, RPC, REH, FAK and ARW are identical (week fields too), KJH's differ only in their weekend's detail and DJA's only by the one role",
     J(plainRoles) === J(BEFORE) && restSame && kjhSame && djaSame, J({ plainRoles, restSame, kjhSame, djaSame }).slice(0, 700));
   const at17 = (o) => ({ "2026-11-08": Object.assign({ from: "s4", to: "s1", at: "17:00" }, o) });
   const INERT = { fromTraded: at17({ from: "s2" }), at7a: at17({ at: "07:00" }), halfHour: at17({ at: "17:30" }), at24: at17({ at: "24:00" }), word: at17({ at: "5p" }),
     toSelf: at17({ to: "s4" }), noTo: at17({ to: undefined }), saturday: { "2026-11-07": { from: "s4", to: "s1", at: "17:00" } }, none: {} };
   const inertBad = Object.keys(INERT).filter((k) => J(every(weekOf(INERT[k]))) !== J(plain));
   const noFrom = J(every(weekOf({ "2026-11-08": { to: "s1", at: "17:00" } }))) === J(split);
-  check(`CZ3c a record that hands nothing builds exactly as no record, for every surgeon (${Object.keys(INERT).length} kinds: its from traded away, 07:00, 17:30, 24:00, "5p", to the weekend surgeon himself, no to, dated the Saturday, an empty map); one with no from hands the weekend surgeon's Sunday, exactly as from s4`,
+  check(`CZ3c a record that hands nothing builds exactly as no record, for every surgeon (${Object.keys(INERT).length} kinds: its from traded away, 07:00, 17:30, 24:00, "5p", to the weekend surgeon (a self-handoff), no to, dated the Saturday, an empty map); one with no from hands the weekend surgeon's Sunday, exactly as from s4`,
     inertBad.length === 0 && noFrom, J({ inertBad, noFrom }));
   const offNo = rolesOf(weekOf(null, { dayCallOverrides: {}, off: "s1" }), "s1").map((r) => r.type), offHo = rolesOf(weekOf(HO, { dayCallOverrides: {}, off: "s1" }), "s1").map((r) => r.type);
   check("CZ3c an OFF surgeon who takes the Sunday is not also told \"No call this week\" (a dated role's rule, as a holiday 24h's): OFF without the handoff, only \"Weekend — from 5p\" with it",
@@ -17784,14 +17784,14 @@ await (async () => {
   const rnd = () => { seed = (seed + 0x6D2B79F5) | 0; let t = Math.imul(seed ^ (seed >>> 15), 1 | seed); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
   const pick = (a) => a[Math.floor(rnd() * a.length)];
   const maybe = (p) => (rnd() < p ? pick(IDS) : null);
-  const KINDS = ["hands", "hands", "hands", "no from", "from traded", "to himself", "bad hour", "the Saturday"];
+  const KINDS = ["hands", "hands", "hands", "no from", "from traded", "to self", "bad hour", "the Saturday"];
   for (let k = 0; k < 300; k++) {
     const m = fmtD(addDs(P("2030-01-07"), 7 * k)), days = [0, 1, 2, 3, 4, 5, 6].map((i) => fmtD(addDs(P(m), i)));
     const wk = { dayCall: maybe(0.9), off: maybe(0.5), isBackup: rnd() < 0.15, isFierceBackup: rnd() < 0.1, nights: { mon: maybe(0.85), tue: maybe(0.85), wed: maybe(0.85), thu: maybe(0.85), wknd: maybe(0.92) } };
     if (rnd() < 0.3) wk.dayCallOverrides = { [pick(days.slice(0, 6))]: pick(IDS) };
     if (rnd() < 0.3) wk.holidayCoverage = { [pick([days[0], days[4], days[4], days[5], days[6]])]: { surgeonId: pick(IDS), type: pick(["major", "minor", "swap"]), name: "Test 24h", holiday: "Test Day" } };
     const W = wk.nights.wknd, kind = pick(KINDS), to = pick(IDS.filter((x) => x !== W)), hour = 8 + Math.floor(rnd() * 16), at = hh(hour);
-    const rec = kind === "no from" ? { to, at } : kind === "from traded" ? { from: pick(IDS.filter((x) => x !== W)), to, at } : kind === "to himself" ? { from: W, to: W, at }
+    const rec = kind === "no from" ? { to, at } : kind === "from traded" ? { from: pick(IDS.filter((x) => x !== W)), to, at } : kind === "to self" ? { from: W, to: W, at }
       : kind === "bad hour" ? { from: W, to, at: pick(["07:00", "06:00", "00:00", "17:30", "24:00", "5p", ""]) } : { from: W, to, at };
     WITHOUT[m] = wk; WITH[m] = Object.assign({}, wk, { handoffs: { [kind === "the Saturday" ? days[5] : days[6]]: rec } });
     RULE[m] = (kind === "hands" || kind === "no from") && W && !(wk.holidayCoverage || {})[days[6]] ? { sun: days[6], from: W, to, hour } : null;
@@ -18048,7 +18048,7 @@ await (async () => {
   const withHo = schedWith(wkWith({ handoffs: HOZ }));
   const pa = press(calBtn, { printStartYear: 2026, printStartMonth: 10, printNumMonths: 1, schedule: withHo, vacations: VAC, surgeons: SURGZ, apps: APPSZ, appShifts: APPSH, fierceBackupSet: FBK });
   const docA = pa.docs[0] || "", oldA = printOld(ins(withHo)), weekA = [2, 3, 4, 5, 6, 7, 8].map((d) => nov(docA, d));
-  check("CZ4a the live week WITH the handoff, from the Calendar's 🖨 button (its real handler: one window, written once and closed, no alert): Sun 11/8 reads \"KJH→DJA 5p\" (KJH until 5p, then DJA; main printed \"KJH\") and Sat 11/7 \"DJA\" (his override — main printed KJH); Mon–Fri as before (KJH / ARW … KJH / KJH); the APP line stays; the document is main's but for those two cells, byte for byte",
+  check("CZ4a the live week WITH the handoff, from the Calendar's 🖨 button (its real handler: one window, written once and closed, no alert): Sun 11/8 reads \"KJH→DJA 5p\" (KJH until 5p, then DJA; main printed \"KJH\") and Sat 11/7 \"DJA\" (the override — main printed KJH); Mon–Fri as before (KJH / ARW … KJH / KJH); the APP line stays; the document is main's but for those two cells, byte for byte",
     J(weekA) === J(["KJH / ARW", "KJH / MCC", "KJH / RPC", "KJH / REH", "KJH / KJH", "DJA", "KJH→DJA 5p"]) && ranClean(pa)
       && docA.includes('<div class="day-num">8</div><div class="shift">KJH→DJA 5p</div><div class="app-shift">SJ</div></div>')
       && nov(oldA, 7) === "KJH" && nov(oldA, 8) === "KJH" && swapCell(swapCell(docA, 8, "KJH→DJA 5p", "KJH"), 7, "DJA", "KJH") === oldA,
