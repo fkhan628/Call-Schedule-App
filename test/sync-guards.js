@@ -8462,11 +8462,15 @@ console.log("\nCZ2. Sunday handoff: the calendar and On Call Today");
   //   QW1 the service Saturday is a Svc row (main: Wknd) — so main's own todayCall, given the row, already says
   //       dayCall —, its chip says "Service Week · Sat 7a–Sun 7a", its text line "Service Week (Sat 7a–Sun 7a)"
   //   QW2 a weekday's APP chip says "APP tonight 5p–7a" (main: "APP 5p–7a")
+  //   QW9 the text says the hours — "☀️ Service Week (7a–5p)" (Sat "(Sat 7a–Sun 7a)"), "🌗 Weekend (5p–Sat 7a)" on a
+  //       Friday and "(7a–Mon 7a)" on a Sunday — and links the read-only view, ".../Call-Schedule-App/?public=1"
   const dowDA = (ds) => { const [y, m, d] = ds.split("-").map(Number); return new Date(y, m - 1, d).getDay(); };
   const daCalZ = (cal) => Object.fromEntries(Object.entries(cal || {}).map(([ds, rows]) => [ds, (rows || []).map((e) => (/^(B-)?Wknd$/.test(e.type) && e.note === "Sat 7a–7a" ? Object.assign({}, e, { type: e.type.replace("Wknd", "Svc") }) : e))]));
   const daMsgZ = (msg, ds) => String(msg).split("\n").map((l) => {
-    const sat = dowDA(ds) === 6, sv = /^🏥 Service Week: (.*)$/.exec(l);
-    return sv && sat ? `🏥 Service Week (Sat 7a–Sun 7a): ${sv[1]}` : l;
+    const dw = dowDA(ds), sv = /^🏥 Service Week: (.*)$/.exec(l), wk = /^🌗 Weekend: (.*)$/.exec(l);
+    if (sv) return `☀️ Service Week (${dw === 6 ? "Sat 7a–Sun 7a" : "7a–5p"}): ${sv[1]}`;
+    if (wk && (dw === 5 || dw === 0)) return `🌗 Weekend (${dw === 5 ? "5p–Sat 7a" : "7a–Mon 7a"}): ${wk[1]}`;
+    return l === "📋 Full schedule: https://fkhan628.github.io/Call-Schedule-App/" ? "📋 Full schedule: https://fkhan628.github.io/Call-Schedule-App/?public=1" : l;
   }).join("\n");
   const daChipsZ = (tree, ds) => {
     const t = JSON.parse(JSON.stringify(tree)), sat = dowDA(ds) === 6, wkday = dowDA(ds) >= 1 && dowDA(ds) <= 5;
@@ -8604,7 +8608,7 @@ console.log("\nCZ2. Sunday handoff: the calendar and On Call Today");
     compareZ("the 11/2 week", PLAIN, APPZ);
     INERT.forEach(([l, r]) => compareZ(`11/2 + ${l}`, weekZ({ handoffs: r }), APPZ));
     compareZ("11/2 + a covered Sunday", weekZ({ handoffs: HOZ, holidayCoverage: COVZ }), APPZ);
-    check(`CZ2b no handoff → main's, byte for byte (main's code at 226bd08, frozen) apart from DA's rewrites (the service Saturday's Svc row, its chip and text line; a weekday's "APP tonight" chip): calData on the 46 live weeks, 520 random weeks (${randRec.length} with a record weekHolders leaves inert) and the 11/2 week alone and with each inert record or a covered Sunday; and on every one of their ${sameZ.dates} dates the cell's chips under seven filter settings, todayCall + hasCallToday + the shared text, and the banner's chip row`,
+    check(`CZ2b no handoff → main's, byte for byte (main's code at 226bd08, frozen) apart from DA's rewrites (the service Saturday's Svc row, its chip and text line; a weekday's "APP tonight" chip; the text's hours and ?public=1 link): calData on the 46 live weeks, 520 random weeks (${randRec.length} with a record weekHolders leaves inert) and the 11/2 week alone and with each inert record or a covered Sunday; and on every one of their ${sameZ.dates} dates the cell's chips under seven filter settings, todayCall + hasCallToday + the shared text, and the banner's chip row`,
       Object.keys(LIVEZ).length === 46 && randRec.length >= 100 && randInert && sameZ.scheds === 3 + INERT.length + 1 && sameZ.bad.length === 0 && sameZ.dates >= 3500,
       JZ({ scheds: sameZ.scheds, dates: sameZ.dates, randRec: randRec.length, randInert, bad: sameZ.bad.slice(0, 3) }));
 
@@ -8647,12 +8651,15 @@ console.log("\nCZ2. Sunday handoff: the calendar and On Call Today");
     const tS = todayZ(KN, cSA[SUN], SUN), tP = todayZ(KN, cPA[SUN], SUN), tO = todayZ(KO, cPA[SUN], SUN), tB = todayZ(KN, calZ(KN, BK, APPZ)[SUN], SUN);
     check("CZ2d todayCall on Sun 11/8 (the real memo): every field as before — weekend stays KJH, the weekend surgeon (DJA's \"to\" row no longer overwrites it) — plus weekendHandoff { to: \"DJA\", at: \"5p\" }, only then; hasCallToday true; without the handoff main's todayCall exactly (no weekendHandoff key — never a null one: AO1 compares JSON)",
       JZ(tS.todayCall) === JZ({ dayCall: null, night: null, weekend: "KJH", app: "MA", fierce: false, fierceBkp: false, holiday: null, weekendHandoff: { to: "DJA", at: "5p" } }) && tS.hasCallToday === true
-        && JZ(tP) === JZ(tO) && JZ(tP.todayCall) === JZ({ dayCall: null, night: null, weekend: "KJH", app: "MA", fierce: false, fierceBkp: false, holiday: null }),
+        && JZ(tP.todayCall) === JZ(tO.todayCall) && tP.hasCallToday === tO.hasCallToday && tP.msg === daMsgZ(tO.msg, SUN) // (the text through DA's rewrite — ON PURPOSE 2026-11-02)
+        && JZ(tP.todayCall) === JZ({ dayCall: null, night: null, weekend: "KJH", app: "MA", fierce: false, fierceBkp: false, holiday: null }),
       JZ({ split: tS.todayCall, plain: tP.todayCall }));
-    const linesZ = (r) => String(r && r.msg).split("\n"), LINK = "📋 Full schedule: https://fkhan628.github.io/Call-Schedule-App/";
-    check("CZ2d the shared text on Sun 11/8 (the real buildTonightMsg): \"🌗 Weekend (7a–5p): KJH\" then \"🌗 Weekend (5p–Mon 7a): DJA\" where main has one \"🌗 Weekend: KJH\" (as without the handoff, still); the APP line and the link as before; a backup week the same two lines; it reads no callNow (AY5)",
+    // (changed ON PURPOSE 2026-11-02, section DA / QW9: the link is the read-only view, ?public=1, and the plain Sunday's
+    // line says its hours, "🌗 Weekend (7a–Mon 7a): KJH")
+    const linesZ = (r) => String(r && r.msg).split("\n"), LINK = "📋 Full schedule: https://fkhan628.github.io/Call-Schedule-App/?public=1";
+    check("CZ2d the shared text on Sun 11/8 (the real buildTonightMsg): \"🌗 Weekend (7a–5p): KJH\" then \"🌗 Weekend (5p–Mon 7a): DJA\" where the plain Sunday has one \"🌗 Weekend (7a–Mon 7a): KJH\" (main's \"🌗 Weekend: KJH\" with DA's hours); the APP line and the link (DA's) as without the handoff; a backup week the same two lines; it reads no callNow (AY5)",
       JZ(linesZ(tS)) === JZ(["🏥 DSG Call — Sunday 11/8", "", "🌗 Weekend (7a–5p): KJH", "🌗 Weekend (5p–Mon 7a): DJA", "👩‍⚕️ APP (7a–7a): MA", "", LINK])
-        && JZ(linesZ(tP)) === JZ(["🏥 DSG Call — Sunday 11/8", "", "🌗 Weekend: KJH", "👩‍⚕️ APP (7a–7a): MA", "", LINK]) && tP.msg === tO.msg
+        && JZ(linesZ(tP)) === JZ(["🏥 DSG Call — Sunday 11/8", "", "🌗 Weekend (7a–Mon 7a): KJH", "👩‍⚕️ APP (7a–7a): MA", "", LINK]) && tP.msg === daMsgZ(tO.msg, SUN)
         && linesZ(tB).includes("🌗 Weekend (7a–5p): KJH") && linesZ(tB).includes("🌗 Weekend (5p–Mon 7a): DJA") && !String(NEW.buildTonightMsg).includes("callNow"),
       JZ({ split: linesZ(tS), plain: linesZ(tP) }));
 
@@ -8690,7 +8697,8 @@ console.log("\nCZ2. Sunday handoff: the calendar and On Call Today");
         const cS = K.cal(SPLIT, APPZ);
         if (JZ(cS) !== JZ(daCalZ(cPA))) fallBad.push(`${label}: calData ${JZ(cS[SUN])}`); // (main's, with DA's rewrite — ON PURPOSE 2026-11-02)
         const tt = todayZ(K, cS[SUN], SUN);
-        if (JZ(tt) !== JZ(tO)) fallBad.push(`${label}: todayCall / the text ${JZ(tt.todayCall)}`);
+        // (the text through DA's rewrite — ON PURPOSE 2026-11-02)
+        if (JZ(tt.todayCall) !== JZ(tO.todayCall) || tt.hasCallToday !== tO.hasCallToday || tt.msg !== daMsgZ(tO.msg, SUN)) fallBad.push(`${label}: todayCall / the text ${JZ(tt.todayCall)}`);
         if (JZ(cellsZ(K, cS[SUN])) !== JZ(cellsZ(KO, cPA[SUN]))) fallBad.push(`${label}: the cell`);
         if (JZ(chipsZ(K, tt.todayCall, SUN)) !== JZ(rowO)) fallBad.push(`${label}: the banner`);
         // a split row met by a cell with no hourLabel still renders (its stored hour), never a throw
@@ -10074,8 +10082,9 @@ console.log("\nAO. On Call Today banner on a covered holiday");
   check("AO2 the share message on Thanksgiving leads with \"🦃 Thanksgiving 24h (7a–7a): KJH\" (first line after the header), keeps the APP line, and no longer says \"No call assignments\"",
     lines(tg)[2] === "🦃 Thanksgiving 24h (7a–7a): KJH" && lines(tg).some((l) => l.startsWith("👩‍⚕️ APP (") && l.endsWith("): APP1"))
     && !String(tg && tg.msg).includes("No call assignments found for today."), J(lines(tg)));
-  check("AO2 control: the Wed 11/25 message is unchanged (no holiday line; service, then night)",
-    !lines(wed).some((l) => l.includes("24h (7a–7a)")) && lines(wed)[2] === "🏥 Service Week: DJA" && lines(wed)[3] === "🌙 Night (5p–7a): KJH", J(lines(wed)));
+  // (changed ON PURPOSE 2026-11-02, section DA / QW9: the service line says its hours, "☀️ Service Week (7a–5p): DJA")
+  check("AO2 control: the Wed 11/25 message has no holiday line; service (with its hours), then night",
+    !lines(wed).some((l) => l.includes("24h (7a–7a)")) && lines(wed)[2] === "☀️ Service Week (7a–5p): DJA" && lines(wed)[3] === "🌙 Night (5p–7a): KJH", J(lines(wed)));
   check("AO2 an unassigned holiday reads \"Unassigned\" (and is not \"No call assignments\")",
     lines(sat)[2] === "📅 Test Friday 24h (7a–7a): Unassigned" && !String(sat && sat.msg).includes("No call assignments found for today."), J(lines(sat)));
   check("AO2 exactly one holiday line in buildTonightMsg", count("if (todayCall.holiday) msg +=") === 1, `×${count("if (todayCall.holiday) msg +=")}`);
@@ -18298,7 +18307,7 @@ await (async () => {
   }
 })().catch(ex => check("CC harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
 
-// ─── DA. On Call Today and the calendar say what each shift is: the service Saturday, last night's APP (2026-11-02) ───
+// ─── DA. On Call Today and the calendar say what each shift is: the service Saturday, last night's APP, Share today's call (2026-11-02) ───
 // The UX audit's quick wins (2026-11-01; owner 2026-11-02: "work through your list in a safe and expeditious manner"):
 //   QW1 a service week runs Mon–Sat (owner rule 2026-10-20), yet the calendar drew its Saturday as a "W" under the
 //       Weekends switch, and On Call Today and its shared text said "Weekend: <name>" — the weekend surgeon (Fri night
@@ -18307,6 +18316,9 @@ await (async () => {
 //   QW2 between midnight and 7a the card dropped the APP whose overnight runs to 7a, and named tonight's (who starts
 //       at 5p) as if on now. Before 7a it now says "👩‍⚕️ APP now: <name>, until 7a" under the "On call now" line
 //       (helpers.js appOnCallNow, Central hours), and a weekday's APP chip reads "APP tonight 5p–7a".
+//   QW9 "📤 Send Notification" notified nobody (it shares or copies the text), its link opened a sign-in page for the
+//       ER or the front desk, and the text gave no hours. It is "📤 Share today's call" now, 44px tall; the link is the
+//       read-only view, ?public=1 (the lead's decision Q3); every line says its hours ("☀️ Service Week (7a–5p): REH").
 // The real code, sliced and run with stubs; the JSX through CJ's h() compiler (copied here, as is, as CZ2 has it):
 //   DA1 QW1, on the week of 11/2 (KJH's service week, DJA covering Sat 11/7) and the live weeks: calData's Saturday is
 //       one Svc / B-Svc row, "Sat 7a–7a", naming weekHolders' sat; the cell draws "S DJA" in the service ink, the
@@ -18317,6 +18329,10 @@ await (async () => {
 //       Sat / Sun's 7a → 7a), every change of answer on a new window key (the card re-renders), pure, never a throw;
 //       the component's two real lines at a pinned clock (F3's nights) and with an older helpers.js; the line
 //       rendered, in the banner's head, ungated; today's weekday APP chip "APP tonight 5p–7a"
+//   DA3 QW9: the whole text, word for word, on every day of the week of 11/2, a handed-off Sunday, a backup week,
+//       Thanksgiving and an empty day; its link is one the app's own isPublicMode reads as the public view; the button
+//       rendered (label, 44px, not on ?public=1, no "Send Notification" left); the real shareTonightMsg behind it
+//       shares or copies exactly that text and sends nothing
 //   DA4 the blast radius, against main's code (frozen: test/fixtures/calendar-today-main-226bd08.txt, CZ2b's): on
 //       every date of the 46 live weeks and the week of 11/2 (plain and backup), the calendar's rows, the cell's chips
 //       (seven filter settings), todayCall, the banner's chips and the shared text differ from main's ONLY where the
@@ -18493,8 +18509,8 @@ await (async () => {
       && JD(kidsD(rowSat).map(partsD)) === JD([["☀️", "Service Week · Sat 7a–Sun 7a", "DJA"], ["👩‍⚕️", "APP 7a–7a", "MA"]])
       && JD(kidsD(rowFri).map(partsD).slice(0, 2)) === JD([["☀️", "Service Week", "KJH"], ["🌗", "Weekend", "KJH"]]),
     JD({ today: tSat.todayCall, sat: kidsD(rowSat).map(partsD), fri: kidsD(rowFri).map(partsD) }));
-  check("DA1 QW1 the shared text on Sat 11/7 (the real buildTonightMsg): \"🏥 Service Week (Sat 7a–Sun 7a): DJA\" then the APP — no \"🌗 Weekend\" line (main's said \"🌗 Weekend: DJA\"); a weekday's service line has no Saturday hours",
-    linesD(tSat)[2] === "🏥 Service Week (Sat 7a–Sun 7a): DJA" && linesD(tSat)[3] === "👩‍⚕️ APP (7a–7a): MA" && !linesD(tSat).some((l) => /Weekend/.test(l)) && !linesD(tFri).some((l) => /Sat 7a–Sun 7a/.test(l)),
+  check("DA1 QW1 the shared text on Sat 11/7 (the real buildTonightMsg): \"☀️ Service Week (Sat 7a–Sun 7a): DJA\" then the APP — no \"🌗 Weekend\" line (main's said \"🌗 Weekend: DJA\"); a weekday's service line has no Saturday hours",
+    linesD(tSat)[2] === "☀️ Service Week (Sat 7a–Sun 7a): DJA" && linesD(tSat)[3] === "👩‍⚕️ APP (7a–7a): MA" && !linesD(tSat).some((l) => /Weekend/.test(l)) && !linesD(tFri).some((l) => /Sat 7a–Sun 7a/.test(l)),
     JD({ sat: linesD(tSat), fri: linesD(tFri) }));
   check("DA1 QW1 the legend says what W is now, the weekend surgeon's Friday night and Sunday — \"W Weekend (Fri night, Sun)\", once; S is still \"S Service Wk\" (AX6's literal), as is the Show bar's S switch",
     count('<span><span style={{color:"#908050",fontWeight:700}}>W</span> Weekend (Fri night, Sun)</span>') === 1 && count('<span><span style={{color:"#3080a8",fontWeight:700}}>S</span> Service Wk</span>') === 1
@@ -18584,6 +18600,62 @@ await (async () => {
       && JD(appChip(SAT)) === JD([["👩‍⚕️", "APP 7a–7a", "MA"]]) && JD(appChip(SUN)) === JD([["👩‍⚕️", "APP 7a–7a", "MS"]]),
     JD({ fri: appChip(FRI), thu: appChip("2026-11-05"), sat: appChip(SAT), sun: appChip(SUN) }));
 
+  // DA3 — QW9: "Share today's call" — the text with its hours, the read-only link, the button
+  const LINKD = "📋 Full schedule: https://fkhan628.github.io/Call-Schedule-App/?public=1";
+  const textOfD = (S, apps, ds) => linesD(todayD(KD, (calD(KD, S, apps)[ds] || []), ds));
+  const HOD = { "2026-11-08": { from: "s4", to: "s1", at: "17:00" } };
+  const TGD = { "2026-11-23": { dayCall: "s1", nights: { mon: "s2", tue: "s3", wed: "s2", thu: "s5", wknd: "s7" }, holidayCoverage: { "2026-11-26": { surgeonId: "s4", role: "holiday_24h", hours: "7a–7a", name: "Thanksgiving 24h", type: "major", holiday: "Thanksgiving" } } } };
+  const WANT3 = [
+    ["Mon 11/2", weekD(), "2026-11-02", ["🏥 DSG Call — Monday 11/2", "", "☀️ Service Week (7a–5p): KJH", "🌙 Night (5p–7a): ARW", "👩‍⚕️ APP (5p–7a): SJ", "", LINKD]],
+    ["Tue 11/3", weekD(), "2026-11-03", ["🏥 DSG Call — Tuesday 11/3", "", "☀️ Service Week (7a–5p): KJH", "🌙 Night (5p–7a): MCC", "", LINKD]],
+    ["Thu 11/5", weekD(), "2026-11-05", ["🏥 DSG Call — Thursday 11/5", "", "☀️ Service Week (7a–5p): KJH", "🌙 Night (5p–7a): REH", "👩‍⚕️ APP (5p–7a): MA", "", LINKD]],
+    ["Fri 11/6", weekD(), FRI, ["🏥 DSG Call — Friday 11/6", "", "☀️ Service Week (7a–5p): KJH", "🌗 Weekend (5p–Sat 7a): KJH", "👩‍⚕️ APP (5p–7a): SJ", "", LINKD]],
+    ["Sat 11/7", weekD(), SAT, ["🏥 DSG Call — Saturday 11/7", "", "☀️ Service Week (Sat 7a–Sun 7a): DJA", "👩‍⚕️ APP (7a–7a): MA", "", LINKD]],
+    ["Sun 11/8", weekD(), SUN, ["🏥 DSG Call — Sunday 11/8", "", "🌗 Weekend (7a–Mon 7a): KJH", "👩‍⚕️ APP (7a–7a): MS", "", LINKD]],
+    ["Sun 11/8, handed off at 5p", weekD({ handoffs: HOD }), SUN, ["🏥 DSG Call — Sunday 11/8", "", "🌗 Weekend (7a–5p): KJH", "🌗 Weekend (5p–Mon 7a): DJA", "👩‍⚕️ APP (7a–7a): MS", "", LINKD]],
+    ["Fri 11/6 of a backup week", weekD({ isBackup: true }), FRI, ["🏥 DSG Call — Friday 11/6", "", "☀️ Service Week (7a–5p): KJH", "🌗 Weekend (5p–Sat 7a): KJH", "👩‍⚕️ APP (5p–7a): SJ", "⚡ Fierce Primary Week", "", LINKD]],
+    ["Thanksgiving Thu 11/26", TGD, "2026-11-26", ["🏥 DSG Call — Thursday 11/26", "", "🦃 Thanksgiving 24h (7a–7a): KJH", "👩‍⚕️ APP (5p–7a): MA", "", LINKD]],
+    ["Wed 11/11, nothing published", weekD(), "2026-11-11", ["🏥 DSG Call — Wednesday 11/11", "", "No call assignments found for today.", "", LINKD]],
+  ];
+  const bad3 = WANT3.map(([label, S, ds, want]) => { const got = textOfD(S, Object.assign({}, APPD, { "2026-11-26": "a1" }), ds); return JD(got) === JD(want) ? null : `${label}: ${JD(got)}`; }).filter(Boolean);
+  check("DA3 QW9 the shared text (the real buildTonightMsg) says every shift's hours, as the day sheet does: \"☀️ Service Week (7a–5p)\" Mon–Fri and \"(Sat 7a–Sun 7a)\" on the service Saturday, \"🌙 Night (5p–7a)\", \"🌗 Weekend (5p–Sat 7a)\" on a Friday and \"(7a–Mon 7a)\" on a Sunday, a handed-off Sunday's two halves, \"👩‍⚕️ APP (5p–7a)\" / \"(7a–7a)\", a holiday's \"24h (7a–7a)\" — the whole text, word for word, on every day of the week of 11/2, a handed-off Sunday, a backup week, Thanksgiving and a day with nothing published",
+    bad3.length === 0, bad3.slice(0, 2).join(" | "));
+  // the link opens the read-only view: the app's own isPublicMode / isOrView, run on its query
+  const pmBody = cutD("  const isPublicMode = useMemo(() => {", "\n  }, []);"), orBody = cutD("  const isOrView = useMemo(() => {", "\n  }, []);");
+  const viewOf = (body, href) => { try { return vm.runInContext(`(function (window, URLSearchParams) { return (() => {${body}\n  })(); })`, sandbox)({ location: new URL(href) }, URLSearchParams); } catch (ex) { return threwD(ex); } };
+  const href = (LINKD.match(/https:\S+$/) || [""])[0];
+  check("DA3 QW9 the text's link is the read-only public view (the lead's decision Q3): every text above ends \"📋 Full schedule: https://fkhan628.github.io/Call-Schedule-App/?public=1\"; the app's own isPublicMode, run on that address, is true (no sign-in) and isOrView false (not the OR board); the bare address — the old link, \"Sign in to your account\" for the ER or the front desk — is false",
+    WANT3.every(([, S, ds]) => textOfD(S, APPD, ds).slice(-1)[0] === LINKD) && !!pmBody && !!orBody && viewOf(pmBody, href) === true && viewOf(orBody, href) === false
+      && viewOf(pmBody, "https://fkhan628.github.io/Call-Schedule-App/") === false && count("https://fkhan628.github.io/Call-Schedule-App/`") === 0,
+    JD({ href, pm: pmBody && viewOf(pmBody, href), or: orBody && viewOf(orBody, href) }));
+  // the button, rendered (its heading row), and the real shareTonightMsg behind it
+  const hdRow = mkD(() => cutD('<div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10,flexWrap:"wrap",gap:8}}>', "\n              </div>", true) + "\n              </div>");
+  const hdRun = hdRow ? mkD(() => vm.runInContext(`(function (env) { const { h, isPublicMode, shareTonightMsg, copied, css, todayDow } = env; const Date = env.Date; return ${jsxD(stripD(hdRow))}; })`, sandbox, { filename: "da-heading.js" })) : null;
+  const cssD = mkD(() => vm.runInContext(fs.readFileSync(path.join(ROOT, "app-styles.js"), "utf8") + "\n;css", vm.createContext({})));
+  const shareStub = () => {};
+  const hdAt = (over) => { onDayD(SAT); try { return hdRun(Object.assign({ h: hD, isPublicMode: false, shareTonightMsg: shareStub, copied: false, css: cssD, todayDow: 6, Date: DateD }, over || {})); } catch (ex) { return { tag: "threw", props: {}, kids: [threwD(ex)] }; } };
+  const btnOf = (t) => allD(t).find((n) => n.tag === "button") || null;
+  const bt = hdRun && cssD ? btnOf(hdAt()) : null, btC = hdRun && cssD ? btnOf(hdAt({ copied: true })) : null, btP = hdRun && cssD ? btnOf(hdAt({ isPublicMode: true })) : "x";
+  const bs = bt && bt.props.style ? bt.props.style : {};
+  check("DA3 QW9 the button (its heading row, rendered): \"📤 Share today's call\" — it shares or copies the text, it notifies nobody, so no \"Send Notification\" anywhere in the app — tapping it runs shareTonightMsg; finger-sized (minHeight 44, was ~29) with 13px type (was 12), the primary button's colours; \"✓ Copied!\" after a copy; not on the public view",
+    !!bt && textD(bt) === "📤 Share today's call" && bt.props.onClick === shareStub && bs.minHeight >= 44 && bs.fontSize === 13 && bs.background === cssD.btn(true).background && bs.color === "#ffffff"
+      && !!btC && textD(btC) === "✓ Copied!" && btP === null && count("Send Notification") === 0 && count("📤 Share today's call") === 1 && textD(hdAt()).startsWith("📋 On Call Today — Sat 11/7"),
+    JD({ text: bt && textD(bt), style: bs, copied: btC && textD(btC), onPublic: btP && textD(btP) }));
+  const shBody = cutD("  const shareTonightMsg = async () => {", "\n  };");
+  const shRun = shBody ? mkD(() => vm.runInContext(`(function (env) { const { buildTonightMsg, navigator, setCopied, showToast, setTimeout, console } = env;\n  return async () => {${shBody}\n  }; })`, sandbox, { filename: "da-share.js" })) : null;
+  const shareRun = async (nav) => {
+    const log = { shared: [], copied: [], setCopied: [], toasts: [] };
+    const n = nav === "share" ? { share: async (o) => { log.shared.push(o); } } : nav === "dismiss" ? { share: async () => { throw new Error("AbortError"); }, clipboard: { writeText: async (t) => { log.copied.push(t); } } } : { clipboard: { writeText: async (t) => { log.copied.push(t); } } };
+    const quiet = { debug: (...a) => log.toasts.push("debug: " + String(a[0]).slice(0, 40)), error: (...a) => log.toasts.push("error: " + String(a[0]).slice(0, 40)), log() {} };
+    try { await shRun({ buildTonightMsg: () => "TEXT " + LINKD, navigator: n, setCopied: (v) => log.setCopied.push(v), showToast: (m) => log.toasts.push(m), setTimeout: () => 0, console: quiet })(); } catch (ex) { log.err = threwD(ex); }
+    return log;
+  };
+  const shS = shRun ? await shareRun("share") : null, shC = shRun ? await shareRun("copy") : null, shD = shRun ? await shareRun("dismiss") : null;
+  check("DA3 QW9 behind the button, the real shareTonightMsg: with the phone's share sheet it shares exactly the built text (the ?public=1 link in it); without one it copies that text and shows \"✓ Copied!\"; a dismissed share sheet falls back to the copy — no push, no e-mail, no write",
+    !!shS && JD(shS.shared) === JD([{ text: "TEXT " + LINKD }]) && shS.copied.length === 0 && !!shC && JD(shC.copied) === JD(["TEXT " + LINKD]) && JD(shC.setCopied) === "[true]"
+      && !!shD && JD(shD.copied) === JD(["TEXT " + LINKD]) && !/fetch\(|sendEmailNotif|addNotification|send-push/.test(shBody || "x"),
+    JD({ share: shS, copy: shC, dismissed: shD }));
+
   // DA4 — the blast radius, against main's frozen code: today's and main's pieces, each on its own rows
   const APPL = {};
   Object.keys(LIVED).forEach((m, k) => { APPL[H.fmt(H.addD(H.parse(m), k % 7))] = ["a1", "a2", "a3"][k % 3]; });
@@ -18598,7 +18670,7 @@ await (async () => {
       blast.dates++;
       const key = `${label} ${ds}`, a = cNew[ds] || [], b = cMain[ds] || [], sat = svcSats.has(ds), wkday = dowD(ds) >= 1 && dowD(ds) <= 5;
       // what each item changes on this date
-      if (sat) ["rows", "cell", "today", "chips", "text"].forEach((k) => noteD(blast.want, k, key));
+      if (sat) ["rows", "cell", "today", "chips"].forEach((k) => noteD(blast.want, k, key));
       if (wkday && b.some((e) => e.type === "APP" && aMapD[e.appId])) noteD(blast.want, "chips", key); // QW2: "APP tonight 5p–7a"
       // the rows: main's, with the service Saturday's Wknd row a Svc row (QW1)
       const wantRows = b.map((e) => (sat && /^(B-)?Wknd$/.test(e.type) && e.note === "Sat 7a–7a" ? Object.assign({}, e, { type: e.type.replace("Wknd", "Svc") }) : e));
@@ -18615,18 +18687,26 @@ await (async () => {
       const wantChips = pB.map(([e, l, n]) => (sat && l === "Weekend" ? ["☀️", "Service Week · Sat 7a–Sun 7a", n] : wkday && l === "APP 5p–7a" ? [e, "APP tonight 5p–7a", n] : [e, l, n]));
       if (JD(chipsD(KD, tA.todayCall, ds)) !== JD(chipsD(KM, tB.todayCall, ds))) noteD(blast.diff, "chips", key);
       if (JD(pA) !== JD(wantChips)) blast.bad.push(`${key}: chips ${JD(pA)} vs main ${JD(pB)}`);
-      // the text, line by line: main's, with the service Saturday's line (QW1)
-      const lA = linesD(tA), lB = linesD(tB);
-      const wantText = lB.map((l) => { const w = /^🌗 Weekend: (.*)$/.exec(l); return sat && w ? `🏥 Service Week (Sat 7a–Sun 7a): ${w[1]}` : l; });
-      if (lA.join("\n") !== lB.join("\n")) noteD(blast.diff, "text", key);
+      // the text, line by line: main's, with the service Saturday's line (QW1), every service and weekend line's hours and
+      // the read-only link (QW9) — so the text differs on every date (the link), and only in those lines
+      const lA = linesD(tA), lB = linesD(tB), dw = dowD(ds);
+      const wantText = lB.map((l) => {
+        const w = /^🌗 Weekend: (.*)$/.exec(l), s = /^🏥 Service Week: (.*)$/.exec(l);
+        if (sat && w) return `☀️ Service Week (Sat 7a–Sun 7a): ${w[1]}`;
+        if (s) return `☀️ Service Week (7a–5p): ${s[1]}`;
+        if (w && (dw === 5 || dw === 0)) return `🌗 Weekend (${dw === 5 ? "5p–Sat 7a" : "7a–Mon 7a"}): ${w[1]}`;
+        return l === "📋 Full schedule: https://fkhan628.github.io/Call-Schedule-App/" ? `${l}?public=1` : l;
+      });
+      noteD(blast.want, "textAny", key);
+      if (lA.join("\n") !== lB.join("\n")) noteD(blast.diff, "textAny", key);
       if (lA.join("\n") !== wantText.join("\n")) blast.bad.push(`${key}: text ${JD(lA)} vs main ${JD(lB)}`);
     }
   };
   radiusD("live", LIVED, APPL);
   radiusD("11/2", weekD(), APPD);
   radiusD("11/2 backup", weekD({ isBackup: true }), APPD);
-  const KINDS = ["rows", "cell", "today", "chips", "text"], setD = (o, k) => JD((o[k] || []).slice().sort());
-  check(`DA4 the blast radius, against main's frozen code (CZ2b's fixture), each on its own rows: on all ${blast.dates} dates of the 46 live weeks and the week of 11/2 (plain and backup), today's calendar rows, cell chips (seven filter settings), todayCall, banner chips and shared text differ from main's ONLY on the ${(blast.want.rows || []).length} service Saturdays — the row's type Wknd → Svc, the cell main's own given that row ("W" → "S"), todayCall weekend → dayCall, the Weekend chip → "Service Week · Sat 7a–Sun 7a", "🌗 Weekend: X" → "🏥 Service Week (Sat 7a–Sun 7a): X" — and in a weekday's APP chip, "APP 5p–7a" → "APP tonight 5p–7a" (${(blast.want.chips || []).length - (blast.want.rows || []).length} dates); every other date is main's, byte for byte`,
+  const KINDS = ["rows", "cell", "today", "chips", "textAny"], setD = (o, k) => JD((o[k] || []).slice().sort());
+  check(`DA4 the blast radius, against main's frozen code (CZ2b's fixture), each on its own rows: on all ${blast.dates} dates of the 46 live weeks and the week of 11/2 (plain and backup), today's calendar rows, cell chips (seven filter settings), todayCall and banner chips differ from main's ONLY on the ${(blast.want.rows || []).length} service Saturdays — the row's type Wknd → Svc, the cell main's own given that row ("W" → "S"), todayCall weekend → dayCall, the Weekend chip → "Service Week · Sat 7a–Sun 7a" — and in a weekday's APP chip, "APP 5p–7a" → "APP tonight 5p–7a" (${(blast.want.chips || []).length - (blast.want.rows || []).length} dates); the shared text differs on every date, ONLY in these lines: "🏥 Service Week: X" → "☀️ Service Week (7a–5p): X" (a service Saturday's "🌗 Weekend: X" → "☀️ Service Week (Sat 7a–Sun 7a): X"), a Friday's / Sunday's "🌗 Weekend: X" → "(5p–Sat 7a)" / "(7a–Mon 7a)", and the link + "?public=1"; everything else is main's, byte for byte`,
     blast.bad.length === 0 && blast.dates >= 300 && (blast.want.rows || []).length >= 30 && (blast.want.chips || []).length > (blast.want.rows || []).length + 20 && KINDS.every((k) => setD(blast.diff, k) === setD(blast.want, k)),
     JD({ dates: blast.dates, want: Object.fromEntries(KINDS.map((k) => [k, (blast.want[k] || []).length])), diff: Object.fromEntries(KINDS.map((k) => [k, (blast.diff[k] || []).length])), bad: blast.bad.slice(0, 3) }));
 })().catch(ex => check("DA harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
