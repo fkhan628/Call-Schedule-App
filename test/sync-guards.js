@@ -20565,7 +20565,8 @@ await (async () => {
     const lineAfter = (hay, a) => { const i = hay.indexOf(a); if (i === -1) return null; const j = hay.indexOf("\n", i); return hay.slice(i + a.length, j === -1 ? undefined : j).replace(/\s+$/, ""); };
     const tmSrc = (() => { const i = panel.indexOf("const tabMap = "); const j = i < 0 ? -1 : panel.indexOf(";", i); return i < 0 || j < 0 ? null : panel.slice(i + "const tabMap = ".length, j); })();
     const tabMap = tmSrc ? run("", "return (" + tmSrc + ");", []) : null;
-    const jwSrc = lineAfter(panel, "const jumpWeek = "), rowLine = lineAfter(panel, "<div key={n.id} onClick={");
+    // (changed ON PURPOSE 2026-11-02, integration: a notice that opens something is a real <button> now — QW8, DB1, as AN3 reads it)
+    const jwSrc = lineAfter(panel, "const jumpWeek = "), rowLine = lineAfter(panel, '<button key={n.id} type="button" aria-label={notifLabel} onClick={');
     const rowSrc = rowLine ? rowLine.replace(/\}$/, "") : null;
     const bellTap = (n) => {
       const targetTab = tabMap && tabMap[n.type] || null;
