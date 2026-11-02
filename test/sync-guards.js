@@ -5715,8 +5715,9 @@ await (async () => {
         onP.chips.length === 1 && onP.chips[0] === "🚑 Silvis P · FAK" && !onP.generic.includes("N FAK") && !onP.generic.some(x => /FAK/.test(x)), JSON.stringify(onP));
       check("R3 switch OFF → zero Silvis chips, and still no FAK entry that day", offP.chips.length === 0 && !offP.generic.some(x => /FAK/.test(x)), JSON.stringify(offP));
       const onB = render("2026-10-10", true);
-      check("R3 Silvis BACKUP Sat 10/10 → his REAL Davenport chip 'W FAK' + a muted '🚑 Silvis B · FAK'; never an N chip",
-        onB.generic.includes("W FAK") && onB.chips.length === 1 && onB.chips[0] === "🚑 Silvis B · FAK" && !onB.generic.includes("N FAK"), JSON.stringify(onB));
+      // (changed ON PURPOSE 2026-11-02, section DA / QW1: the service Saturday draws "S", the service week's, not "W")
+      check("R3 Silvis BACKUP Sat 10/10 → FAK's REAL Davenport chip 'S FAK' (the service Saturday) + a muted '🚑 Silvis B · FAK'; never an N chip",
+        onB.generic.includes("S FAK") && onB.chips.length === 1 && onB.chips[0] === "🚑 Silvis B · FAK" && !onB.generic.includes("N FAK"), JSON.stringify(onB));
       const other = render("2026-10-17", true);
       check("R3 a day where ANOTHER Silvis code is primary/backup never renders (FAK's days only)", other.chips.length === 0, JSON.stringify(other));
       const pChip = R.sfCellChip(days, "2026-10-24", FAK, { on: true, fakName: "FAK", ruleOn: true });
@@ -8456,6 +8457,21 @@ console.log("\nCZ2. Sunday handoff: the calendar and On Call Today");
     chips: mkZ(() => vm.runInContext(`(function (env) { const { h, todayCall } = env; const Date = env.Date; return ${jsxZ(stripZ(P.bannerChips))}; })`, ctx, { filename: "cz2-banner.js" })),
   });
   const KN = kitZ(sandbox, NEW), KO = kitZ(sandbox, OLD);
+  // (changed ON PURPOSE 2026-11-02, section DA — the UX quick wins change these pieces for every week, handoff or not:
+  // main's output is compared after exactly these rewrites, and everything else still byte for byte)
+  //   QW1 the service Saturday is a Svc row (main: Wknd) — so main's own todayCall, given the row, already says
+  //       dayCall —, its chip says "Service Week · Sat 7a–Sun 7a", its text line "Service Week (Sat 7a–Sun 7a)"
+  const dowDA = (ds) => { const [y, m, d] = ds.split("-").map(Number); return new Date(y, m - 1, d).getDay(); };
+  const daCalZ = (cal) => Object.fromEntries(Object.entries(cal || {}).map(([ds, rows]) => [ds, (rows || []).map((e) => (/^(B-)?Wknd$/.test(e.type) && e.note === "Sat 7a–7a" ? Object.assign({}, e, { type: e.type.replace("Wknd", "Svc") }) : e))]));
+  const daMsgZ = (msg, ds) => String(msg).split("\n").map((l) => {
+    const sat = dowDA(ds) === 6, sv = /^🏥 Service Week: (.*)$/.exec(l);
+    return sv && sat ? `🏥 Service Week (Sat 7a–Sun 7a): ${sv[1]}` : l;
+  }).join("\n");
+  const daChipsZ = (tree, ds) => {
+    const t = JSON.parse(JSON.stringify(tree)), sat = dowDA(ds) === 6;
+    const walk = (n) => { if (n && typeof n === "object" && Array.isArray(n.kids)) { n.kids = n.kids.map((k) => (sat && k === "Service Week" ? "Service Week · Sat 7a–Sun 7a" : k)); n.kids.forEach(walk); } };
+    walk(t); return t;
+  };
   const kitOk = (k) => !!(k.cal && k.cells && k.today && k.chips);
   const kitMap = (k) => JZ(Object.fromEntries(Object.entries(k).map(([n, f]) => [n, !!f])));
   if (!kitOk(KN) || !kitOk(KO) || Object.keys(OLD).length !== 5) check("CZ2 main's five pieces (the fixture) and today's — calData, the cell's chips, todayCall + hasCallToday + buildTonightMsg, the banner's chip row — are found once each and compile standalone", false, `today ${kitMap(KN)} main ${kitMap(KO)} pieces ${JZ(Object.keys(OLD))}`);
@@ -8505,7 +8521,7 @@ console.log("\nCZ2. Sunday handoff: the calendar and On Call Today");
     };
 
     // CZ2a — calData: the two rows, from weekHolders
-    const c11 = calZ(KN, SPLIT), cP = calZ(KO, PLAIN);
+    const c11 = calZ(KN, SPLIT), cP = daCalZ(calZ(KO, PLAIN)); // (main's, with DA's QW1 rewrite — ON PURPOSE 2026-11-02)
     const ci = nsrcZ.indexOf("  const calData = useMemo(() => {"), da = ci < 0 ? -1 : nsrcZ.indexOf("const d={};", ci), db = da < 0 ? -1 : nsrcZ.indexOf("// APP shifts", da);
     const calX1 = da > 0 && db > da ? mkZ(() => vm.runInContext(`(function (schedule) { ${nsrcZ.slice(da, db)}\n return d; })`, sandbox, { filename: "cz2-x1-slice.js" })) : null;
     const x1Rows = calX1 ? mkZ(() => calX1(SPLIT)[SUN]) : null;
@@ -8567,6 +8583,8 @@ console.log("\nCZ2. Sunday handoff: the calendar and On Call Today");
       let cN = null, cO = null;
       try { cN = KN.cal(sched, apps); cO = KO.cal(sched, apps); } catch (ex) { sameZ.bad.push(`${label}: calData threw ${String(ex).slice(0, 80)}`); return; }
       sameZ.scheds++;
+      // (main's side through DA's rewrites — ON PURPOSE 2026-11-02, see daCalZ / daMsgZ / daChipsZ above)
+      cO = daCalZ(cO);
       if (JZ(cN) !== JZ(cO)) { const ds = [...new Set([...Object.keys(cN), ...Object.keys(cO)])].find((x) => JZ(cN[x]) !== JZ(cO[x])); sameZ.bad.push(`${label}: calData ${ds} ${JZ(cN[ds])} vs main ${JZ(cO[ds])}`); return; }
       for (const ds of Object.keys(cN).sort()) {
         try {
@@ -8574,8 +8592,8 @@ console.log("\nCZ2. Sunday handoff: the calendar and On Call Today");
           const f = FILTERS.find((F) => JZ(cellsZ(KN, entries, F)) !== JZ(cellsZ(KO, entries, F)));
           if (f) { sameZ.bad.push(`${label} ${ds}: the cell's chips (${JZ(f)})`); continue; }
           const tN = todayZ(KN, entries, ds), tO = todayZ(KO, entries, ds);
-          if (JZ(tN) !== JZ(tO)) { sameZ.bad.push(`${label} ${ds}: todayCall / the text ${JZ(tN.todayCall)}`); continue; }
-          if (JZ(chipsZ(KN, tN.todayCall, ds)) !== JZ(chipsZ(KO, tO.todayCall, ds))) { sameZ.bad.push(`${label} ${ds}: the banner's chips`); continue; }
+          if (JZ(tN.todayCall) !== JZ(tO.todayCall) || tN.hasCallToday !== tO.hasCallToday || tN.msg !== daMsgZ(tO.msg, ds)) { sameZ.bad.push(`${label} ${ds}: todayCall / the text ${JZ(tN.todayCall)} ${JZ(tN.msg)}`); continue; }
+          if (JZ(chipsZ(KN, tN.todayCall, ds)) !== JZ(daChipsZ(chipsZ(KO, tO.todayCall, ds), ds))) { sameZ.bad.push(`${label} ${ds}: the banner's chips`); continue; }
           sameZ.dates++;
         } catch (ex) { sameZ.bad.push(`${label} ${ds}: threw ${String(ex).slice(0, 80)}`); }
       }
@@ -8585,7 +8603,7 @@ console.log("\nCZ2. Sunday handoff: the calendar and On Call Today");
     compareZ("the 11/2 week", PLAIN, APPZ);
     INERT.forEach(([l, r]) => compareZ(`11/2 + ${l}`, weekZ({ handoffs: r }), APPZ));
     compareZ("11/2 + a covered Sunday", weekZ({ handoffs: HOZ, holidayCoverage: COVZ }), APPZ);
-    check(`CZ2b no handoff → main's, byte for byte (main's code at 226bd08, frozen): calData on the 46 live weeks, 520 random weeks (${randRec.length} with a record weekHolders leaves inert) and the 11/2 week alone and with each inert record or a covered Sunday; and on every one of their ${sameZ.dates} dates the cell's chips under seven filter settings, todayCall + hasCallToday + the shared text, and the banner's chip row`,
+    check(`CZ2b no handoff → main's, byte for byte (main's code at 226bd08, frozen) apart from DA's rewrites (the service Saturday's Svc row, its chip and text line): calData on the 46 live weeks, 520 random weeks (${randRec.length} with a record weekHolders leaves inert) and the 11/2 week alone and with each inert record or a covered Sunday; and on every one of their ${sameZ.dates} dates the cell's chips under seven filter settings, todayCall + hasCallToday + the shared text, and the banner's chip row`,
       Object.keys(LIVEZ).length === 46 && randRec.length >= 100 && randInert && sameZ.scheds === 3 + INERT.length + 1 && sameZ.bad.length === 0 && sameZ.dates >= 3500,
       JZ({ scheds: sameZ.scheds, dates: sameZ.dates, randRec: randRec.length, randInert, bad: sameZ.bad.slice(0, 3) }));
 
@@ -8669,7 +8687,7 @@ console.log("\nCZ2. Sunday handoff: the calendar and On Call Today");
       try {
         if (!kitOk(K)) { fallBad.push(`${label}: ${kitMap(K)}`); continue; }
         const cS = K.cal(SPLIT, APPZ);
-        if (JZ(cS) !== JZ(cPA)) fallBad.push(`${label}: calData ${JZ(cS[SUN])}`);
+        if (JZ(cS) !== JZ(daCalZ(cPA))) fallBad.push(`${label}: calData ${JZ(cS[SUN])}`); // (main's, with DA's rewrite — ON PURPOSE 2026-11-02)
         const tt = todayZ(K, cS[SUN], SUN);
         if (JZ(tt) !== JZ(tO)) fallBad.push(`${label}: todayCall / the text ${JZ(tt.todayCall)}`);
         if (JZ(cellsZ(K, cS[SUN])) !== JZ(cellsZ(KO, cPA[SUN]))) fallBad.push(`${label}: the cell`);
@@ -10114,7 +10132,8 @@ console.log("\nAO. On Call Today banner on a covered holiday");
     const out = {};
     Object.entries(calRun(sched)).forEach(([ds, list]) => list.forEach((e) => {
       const t = String(e.type).replace(/^B-/, "");
-      const slot = t === "Svc" ? "svc" : t === "Ngt" ? "night" : t === "Holiday" ? "cover"
+      // (changed ON PURPOSE 2026-11-02, section DA / QW1: the service Saturday is a Svc row with its "Sat 7a–7a" note, was Wknd)
+      const slot = t === "Svc" ? (e.note === "Sat 7a–7a" ? "sat" : "svc") : t === "Ngt" ? "night" : t === "Holiday" ? "cover"
         : t === "Wknd" ? (e.note === "Sat 7a–7a" ? "sat" : e.note === "5p–7a" ? "wkndFri" : e.note === "7a–7a" ? "wkndSun" : "wknd?") : null;
       if (slot) (out[ds] = out[ds] || []).push(`${slot}:${e.surgeon || ""}`);
     }));
@@ -13573,7 +13592,8 @@ console.log("\nAX. calendar day sheet + 👤 Me filter");
   const BSLOTS = ["svc", "sat", "night", "wkndFri", "wkndSun"];
   const calKeys = (cal, ds) => (cal[ds] || []).map((e) => {
     const t = String(e.type).replace(/^B-/, ""), B = /^B-/.test(e.type) ? "B" : "";
-    if (t === "Svc") return `svc:${e.surgeon}:${B}`;
+    // (changed ON PURPOSE 2026-11-02, section DA / QW1: the service Saturday is a Svc row with its "Sat 7a–7a" note, was Wknd)
+    if (t === "Svc") return `${e.note === "Sat 7a–7a" ? "sat" : "svc"}:${e.surgeon}:${B}`;
     if (t === "Ngt") return `night:${e.surgeon}:${B}`;
     if (t === "Wknd") return `${e.note === "Sat 7a–7a" ? "sat" : e.note === "5p–7a" ? "wkndFri" : e.note === "7a–7a" ? "wkndSun" : "wknd?"}:${e.surgeon}:${B}`;
     if (t === "Holiday") return `cover:${e.surgeon || ""}:`;
@@ -14468,12 +14488,13 @@ console.log("\nAY. On Call Today: an \"On call now\" line");
   try { cal = c0 > 0 && c1 > c0 ? vm.runInContext("(function (schedule, appShifts) {" + src.slice(c0 + CD.length, c1) + "\n})", sandbox, { filename: "on-call-now-caldata.js" })(SCHED, {}) : null; } catch (ex) { cal = null; }
   // The calendar's rows for a date, read the way the banner's chips read them: a Holiday row holds the date;
   // else by day the Svc row (weekday daytime), the Ngt row (Mon–Thu evening), the "5p–7a" Wknd row (Fri
-  // evening), and the one Wknd row on Sat (the service Saturday) and Sun (the weekend's Sunday).
+  // evening), the Svc row on Sat (the service Saturday) and the one Wknd row on Sun (the weekend's Sunday).
+  // (Saturday changed ON PURPOSE 2026-11-02, section DA / QW1: the service Saturday is a Svc row, was Wknd.)
   const calHolder = (rows, dow, evening) => {
     const of = (t) => rows.filter((e) => e.type === t || e.type === "B-" + t);
     const hol = rows.find((e) => e.type === "Holiday");
     if (hol) return hol.surgeon || null;
-    const r = dow >= 1 && dow <= 5 && !evening ? of("Svc")[0] : dow >= 1 && dow <= 4 ? of("Ngt")[0] : dow === 5 ? of("Wknd").find((e) => e.note === "5p–7a") : of("Wknd")[0];
+    const r = dow >= 1 && dow <= 5 && !evening ? of("Svc")[0] : dow >= 1 && dow <= 4 ? of("Ngt")[0] : dow === 5 ? of("Wknd").find((e) => e.note === "5p–7a") : dow === 6 ? of("Svc")[0] : of("Wknd")[0];
     return r ? r.surgeon || null : null;
   };
   const calBad = [];
@@ -18274,6 +18295,246 @@ await (async () => {
       JSON.stringify({ label: setupBtn && setupBtn[1], bar: sched }));
   }
 })().catch(ex => check("CC harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
+
+// ─── DA. On Call Today and the calendar say what each shift is: the service Saturday (2026-11-02) ───
+// The UX audit's quick wins (2026-11-01; owner 2026-11-02: "work through your list in a safe and expeditious manner"):
+//   QW1 a service week runs Mon–Sat (owner rule 2026-10-20), yet the calendar drew its Saturday as a "W" under the
+//       Weekends switch, and On Call Today and its shared text said "Weekend: <name>" — the weekend surgeon (Fri night
+//       and Sun) is someone else, so a caller planning for Sunday could pick the wrong one. The Saturday is a Svc row
+//       now: "S" in the service colour under Service Wk, "Service Week · Sat 7a–Sun 7a" on the card and in the text.
+// The real code, sliced and run with stubs; the JSX through CJ's h() compiler (copied here, as is, as CZ2 has it):
+//   DA1 QW1, on the week of 11/2 (KJH's service week, DJA covering Sat 11/7) and the live weeks: calData's Saturday is
+//       one Svc / B-Svc row, "Sat 7a–7a", naming weekHolders' sat; the cell draws "S DJA" in the service ink, the
+//       Service Wk switch hides it and Weekends doesn't; Fri night and Sun stay "W"; the Generate preview draws "S"
+//       too; On Call Today names DJA the day's Service Week, "Sat 7a–Sun 7a", with no Weekend chip; the text says so;
+//       the legend's W is the weekend's Friday night and Sunday
+//   DA4 the blast radius, against main's code (frozen: test/fixtures/calendar-today-main-226bd08.txt, CZ2b's): on
+//       every date of the 46 live weeks and the week of 11/2 (plain and backup), the calendar's rows, the cell's chips
+//       (seven filter settings), todayCall, the banner's chips and the shared text differ from main's ONLY where the
+//       items above say, and only so — every other date is main's, byte for byte
+//   the section runs inside its own catch (a throw fails one named check, never the run)
+console.log("\nDA. On Call Today and the calendar say what each shift is");
+await (async () => {
+  const nsrcDA = src.replace(/\r\n/g, "\n"), JD = JSON.stringify, cloneD = (o) => JSON.parse(JSON.stringify(o));
+  const mkD = (fn) => { try { return fn(); } catch (ex) { return null; } };
+  const cutD = (a, b, fromA) => { const i = nsrcDA.indexOf(a); if (i < 0 || nsrcDA.indexOf(a, i + 1) !== -1) return null; const j = nsrcDA.indexOf(b, i + a.length); return j < 0 ? null : nsrcDA.slice(fromA ? i : i + a.length, j); };
+  // main's five pieces (frozen — CZ2's fixture) and today's, cut at the same anchors
+  const FIXD = fs.readFileSync(path.join(ROOT, "test", "fixtures", "calendar-today-main-226bd08.txt"), "utf8").replace(/\r\n/g, "\n");
+  const OLDD = {};
+  { const p = FIXD.split(/\n?\/\/@@ (\w+) — [^\n]*\n/); for (let k = 1; k + 1 < p.length; k += 2) OLDD[p[k]] = p[k + 1]; }
+  const NEWD = {
+    calData: cutD("  const calData = useMemo(() => {", "\n  }, [schedule, appShifts]);"),
+    cellChips: mkD(() => cutD("{entries.filter(e=>{", "\n                  })}", true).slice(1) + "\n                  })"),
+    todayCall: cutD("  const todayCall = useMemo(() => {", "\n  }, [todayEntries, sMap, aMap]);"),
+    buildTonightMsg: cutD("  const buildTonightMsg = () => {", "\n  };"),
+    bannerChips: mkD(() => cutD('<div style={{display:"flex",gap:10,flexWrap:"wrap"}}>', "\n              </div>", true) + "\n              </div>"),
+  };
+  // the Generate preview's own rows (pCalData) and its chips
+  const prevRows = cutD("            const pCalData = {};", "            // Vacation entries", true);
+  const prevChips = mkD(() => cutD('{entries.filter(e=>e.type!=="APP").map((e,j)=>{', "\n                          })}", true).slice(1) + "\n                          })");
+  // JSX → h() calls: CJ's compiler, as is (fragments <>…</> as tag "#frag"); comment lines are dropped first
+  const jsxD = (code) => {
+    const q = (x) => JSON.stringify(x);
+    const skipStr = (k) => { const ch = code[k]; for (let m = k + 1; m < code.length; m++) { if (code[m] === "\\") { m++; continue; } if (code[m] === ch) return m; } return code.length; };
+    const close = (j) => {
+      let depth = 0;
+      for (let k = j; k < code.length; k++) {
+        const ch = code[k];
+        if (ch === '"' || ch === "'") { k = skipStr(k); continue; }
+        if (ch === "`") { for (k = k + 1; k < code.length && code[k] !== "`"; k++) { if (code[k] === "\\") k++; else if (code[k] === "$" && code[k + 1] === "{") k = close(k + 1); } continue; }
+        if (ch === "{") depth++; else if (ch === "}" && --depth === 0) return k;
+      }
+      throw new Error("unbalanced { at " + j);
+    };
+    const opens = (k) => code[k] === "<" && (/[A-Za-z]/.test(code[k + 1] || "") || code[k + 1] === ">");
+    const el = (k) => {
+      let j = k + 1, tag = "#frag";
+      if (code[j] !== ">") { tag = /^[A-Za-z][\w.]*/.exec(code.slice(j))[0]; j += tag.length; }
+      const props = [], kids = [];
+      for (;;) {
+        while (/\s/.test(code[j])) j++;
+        if (code[j] === "/" && code[j + 1] === ">") return [`h(${q(tag)}, {${props.join(", ")}})`, j + 2];
+        if (code[j] === ">") { j++; break; }
+        const nm = (/^[\w-]+/.exec(code.slice(j)) || [""])[0];
+        if (!nm) throw new Error("attribute at " + j + ": " + code.slice(j, j + 30));
+        j += nm.length;
+        if (code[j] !== "=") { props.push(`${q(nm)}: true`); continue; }
+        j++;
+        if (code[j] === '"') { const e = skipStr(j); props.push(`${q(nm)}: ${code.slice(j, e + 1)}`); j = e + 1; }
+        else if (code[j] === "{") { const e = close(j); props.push(`${q(nm)}: (${jsxD(code.slice(j + 1, e))})`); j = e + 1; }
+        else throw new Error("attribute value at " + j);
+      }
+      let text = "";
+      const flush = () => {
+        if (!text) return;
+        const lines = text.split("\n");
+        const t = lines.length === 1 ? text : lines.map((l, i) => (i > 0 ? l.replace(/^\s+/, "") : l)).map((l, i, a) => (i < a.length - 1 ? l.replace(/\s+$/, "") : l)).filter((l) => l.length).join(" ");
+        if (t.length && !(lines.length > 1 && !t.trim())) kids.push(q(t));
+        text = "";
+      };
+      for (;;) {
+        if (j >= code.length) throw new Error("unclosed <" + tag + ">");
+        if (code.startsWith("</", j)) { flush(); j = code.indexOf(">", j) + 1; break; }
+        if (opens(j)) { flush(); const [js, e] = el(j); kids.push(js); j = e; continue; }
+        if (code[j] === "{") { flush(); const e = close(j); const inner = code.slice(j + 1, e); if (inner.replace(/\/\*[\s\S]*?\*\//g, "").trim()) kids.push(`(${jsxD(inner)})`); j = e + 1; continue; }
+        text += code[j]; j++;
+      }
+      return [`h(${q(tag)}, {${props.join(", ")}}${kids.length ? ", " + kids.join(", ") : ""})`, j];
+    };
+    let out = "";
+    for (let i = 0; i < code.length;) {
+      const ch = code[i];
+      if (ch === '"' || ch === "'") { const e = skipStr(i); out += code.slice(i, e + 1); i = e + 1; continue; }
+      if (ch === "`") { const e0 = i; let k = i + 1; for (; k < code.length && code[k] !== "`"; k++) { if (code[k] === "\\") k++; else if (code[k] === "$" && code[k + 1] === "{") k = close(k + 1); } out += code.slice(e0, k + 1); i = k + 1; continue; }
+      if (opens(i) && (/^\s*$/.test(out) || /[(?:,&|>{[=]$/.test(out.replace(/\s+$/, "")))) { const [js, e] = el(i); out += js; i = e; continue; }
+      out += ch; i++;
+    }
+    return out;
+  };
+  const stripD = (s) => s.replace(/^\s*\/\/[^\n]*$/gm, "").replace(/\{\/\*[\s\S]*?\*\/\}/g, "");
+  const hD = (tag, props, ...kids) => ({ tag, props: props || {}, kids: kids.flat(Infinity).filter((k) => k !== null && k !== undefined && k !== false && k !== true && k !== "") });
+  const allD = (n, out = []) => { if (n && typeof n === "object") { out.push(n); n.kids.forEach((k) => allD(k, out)); } return out; };
+  const textD = (n) => (n == null ? "" : typeof n !== "object" ? String(n) : n.kids.map(textD).join(""));
+  // The pieces compiled in the sandbox (the app's modules): calData; the cell's chips (its env as the cell has it);
+  // todayCall + hasCallToday + buildTonightMsg (AO's way, with holidayEmoji and a pinned Date); the banner's chip row
+  const HED = nsrcDA.match(/\n  (const holidayEmoji = \(label\) => \{[\s\S]*?\n  \};)\n/), HCTD = nsrcDA.match(/\n  (const hasCallToday = [^\n]*;)\n/);
+  const kitD = (P) => ({
+    cal: mkD(() => vm.runInContext(`(function (schedule, appShifts) { return (() => {${P.calData}\n  })(); })`, sandbox, { filename: "da-caldata.js" })),
+    cells: mkD(() => vm.runInContext(`(function (env) { const { h, entries, calFilters, sf, calDeptFilter, sMap } = env; return ${jsxD(stripD(P.cellChips))}; })`, sandbox, { filename: "da-cell.js" })),
+    today: mkD(() => vm.runInContext(`(function (env) { const { todayEntries, sMap, aMap } = env; const Date = env.Date;\n  ${HED[1]}\n  const todayCall = (() => {${P.todayCall}\n  })();\n  ${HCTD[1]}\n`
+      + `  const buildTonightMsg = () => {${P.buildTonightMsg}\n  };\n  return { todayCall: JSON.parse(JSON.stringify(todayCall)), hasCallToday: !!hasCallToday, msg: buildTonightMsg() }; })`, sandbox, { filename: "da-today.js" })),
+    chips: mkD(() => vm.runInContext(`(function (env) { const { h, todayCall } = env; const Date = env.Date; return ${jsxD(stripD(P.bannerChips))}; })`, sandbox, { filename: "da-banner.js" })),
+  });
+  const KD = kitD(NEWD), KM = kitD(OLDD);
+  const prevRun = prevRows ? mkD(() => vm.runInContext(`(function (previewSchedule, appShifts) { ${prevRows}\n return pCalData; })`, sandbox, { filename: "da-preview.js" })) : null;
+  const prevChipRun = prevChips ? mkD(() => vm.runInContext(`(function (env) { const { h, entries, sMap } = env; return ${jsxD(stripD(prevChips))}; })`, sandbox, { filename: "da-preview-chip.js" })) : null;
+  const okD = (k) => !!(k.cal && k.cells && k.today && k.chips);
+  const whD = vm.runInContext('typeof weekHolders === "function" ? weekHolders : null', sandbox);
+  if (!okD(KD) || !okD(KM) || Object.keys(OLDD).length !== 5 || !prevRun || !prevChipRun || !whD) {
+    check("DA the pieces — calData, the cell's chips, todayCall + hasCallToday + buildTonightMsg, the banner's chip row (today's and main's), the Generate preview's rows and chips — are found once each and compile standalone", false,
+      JD({ today: Object.fromEntries(Object.entries(KD).map(([n, f]) => [n, !!f])), main: Object.fromEntries(Object.entries(KM).map(([n, f]) => [n, !!f])), preview: [!!prevRun, !!prevChipRun], weekHolders: !!whD }));
+    return;
+  }
+  const H = vm.runInContext("({ fmt, parse, addD })", sandbox);
+  const SD = ["DJA", "MCC", "RPC", "KJH", "REH", "FAK", "ARW"].map((name, i) => ({ id: "s" + (i + 1), name, idx: i }));
+  const sMapD = Object.fromEntries(SD.map((s) => [s.id, s]));
+  const aMapD = { a1: { id: "a1", name: "MA", idx: 0 }, a2: { id: "a2", name: "SJ", idx: 1 }, a3: { id: "a3", name: "MS", idx: 2 } };
+  // The live week of 11/2 (as CZ2 has it, without the handoff): KJH's service week and weekend; DJA covers Sat 11/7
+  const WKD = { dayCall: "s4", dayCallOverrides: { "2026-11-07": "s1" }, nights: { mon: "s7", tue: "s2", wed: "s3", thu: "s5", wknd: "s4" }, isBackup: false, isFierceBackup: false };
+  const weekD = (over) => ({ "2026-11-02": Object.assign(cloneD(WKD), cloneD(over || {})) });
+  const APPD = { "2026-11-02": "a2", "2026-11-05": "a1", "2026-11-06": "a2", "2026-11-07": "a1", "2026-11-08": "a3" };
+  const FRI = "2026-11-06", SAT = "2026-11-07", SUN = "2026-11-08";
+  const DEFD = { svc: true, night: true, wknd: true, app: true, fierce: true, vac: true, appOff: true, silvis: false };
+  const offD = (k) => ({ calFilters: Object.assign({}, DEFD, { [k]: false }) });
+  // a pinned "now" for the slices' new Date(): that local day at noon (or the hour given)
+  const clockD = { ms: 0 };
+  const DateD = vm.runInContext("(function (clock) { return class extends Date { constructor(...a) { if (a.length) super(...a); else super(clock.ms); } }; })", sandbox)(clockD);
+  const onDayD = (ds, hh) => { const [y, m, d] = ds.split("-").map(Number); clockD.ms = new Date(y, m - 1, d, hh == null ? 12 : hh).getTime(); };
+  const dowD = (ds) => H.parse(ds).getDay();
+  // Each run of a piece: a throw comes back as a value that fails the checks below (never a crash of the whole run)
+  const threwD = (ex) => "threw: " + String(ex).slice(0, 120);
+  const calD = (K, S, apps) => { try { return K.cal(S, apps || {}); } catch (ex) { return { threw: threwD(ex) }; } };
+  const cellsD = (K, entries, over) => { try { return K.cells(Object.assign({ h: hD, entries: entries || [], sMap: sMapD, calFilters: DEFD, sf: "", calDeptFilter: "" }, over || {})); } catch (ex) { return [{ tag: "threw", props: { style: {} }, kids: [threwD(ex)] }]; } };
+  const todayD = (K, entries, ds) => { onDayD(ds); try { return K.today({ todayEntries: entries || [], sMap: sMapD, aMap: aMapD, Date: DateD }); } catch (ex) { return { todayCall: {}, hasCallToday: null, msg: threwD(ex) }; } };
+  const chipsD = (K, todayCall, ds) => { onDayD(ds); try { return K.chips({ h: hD, todayCall, Date: DateD }); } catch (ex) { return { tag: "threw", props: {}, kids: [threwD(ex)] }; } };
+  const kidsD = (n) => (n && typeof n === "object" && n.kids) || [];
+  // a banner chip's [emoji, label, name]
+  const partsD = (c) => { const inner = kidsD(kidsD(c)[1]); return [textD(kidsD(c)[0]), textD(inner[0]), textD(inner[1])]; };
+  const linesD = (r) => String(r && r.msg).split("\n");
+  const svcSatD = (sid, bk) => ({ type: (bk ? "B-" : "") + "Svc", surgeon: sid, cls: bk ? "backup" : "primary", note: "Sat 7a–7a" });
+
+  // DA1 — QW1: the service Saturday is the service week's
+  const c = calD(KD, weekD(), APPD), cB = calD(KD, weekD({ isBackup: true }));
+  const cH = calD(KD, weekD({ holidayCoverage: { [SAT]: { surgeonId: "s6", role: "holiday_24h", hours: "7a–7a", name: "Sat 24h", type: "major", holiday: "Test Saturday" } } }));
+  const cN = calD(KD, weekD({ dayCall: null, dayCallOverrides: {} }));
+  check("DA1 QW1 calData (the real memo) on Sat 11/7 of KJH's service week, DJA covering the Saturday: ONE Svc row — {type \"Svc\", surgeon DJA (the override), cls \"primary\", note \"Sat 7a–7a\"}, where main had a Wknd row — then the APP; a backup week's is \"B-Svc\" (then the Fierce row); a covered Saturday has only its Holiday row; no dayCall → no Saturday row; Fri 11/6 keeps the service day and the weekend's \"5p–7a\" Wknd leg, Sun 11/8 the \"7a–7a\" Wknd row",
+    JD(c[SAT]) === JD([svcSatD("s1"), { type: "APP", appId: "a1", cls: "app" }]) && JD(cB[SAT]) === JD([svcSatD("s1", true), { type: "Fierce", surgeon: null, cls: "fierce" }])
+      && JD((cH[SAT] || []).map((e) => e.type)) === JD(["Holiday"]) && cN[SAT] === undefined
+      && JD(c[FRI]) === JD([{ type: "Svc", surgeon: "s4", cls: "primary" }, { type: "Wknd", surgeon: "s4", cls: "primary", note: "5p–7a" }, { type: "APP", appId: "a2", cls: "app" }])
+      && JD(c[SUN]) === JD([{ type: "Wknd", surgeon: "s4", cls: "primary", note: "7a–7a" }, { type: "APP", appId: "a3", cls: "app" }]),
+    JD({ sat: c[SAT], backup: cB[SAT], covered: cH[SAT], noDayCall: cN[SAT], fri: c[FRI], sun: c[SUN] }));
+  const LIVED = JSON.parse(fs.readFileSync(path.join(ROOT, "test", "fixtures", "schedule-weeks-live-2026-10-02.json"), "utf8"));
+  const cL = calD(KD, LIVED), satBad = [];
+  let sats = 0;
+  for (const [m, w] of Object.entries(LIVED)) {
+    const day = whD(m, w).days[5], rows = cL[day.ds] || [], svc = rows.filter((e) => /^(B-)?Svc$/.test(e.type));
+    if (rows.some((e) => /Wknd$/.test(e.type))) satBad.push(`${day.ds}: a Wknd row`);
+    if (day.sat) { sats++; if (JD(svc) !== JD([svcSatD(day.sat, !!w.isBackup)])) satBad.push(`${day.ds}: ${JD(svc)} vs sat ${day.sat}`); }
+    else if (svc.length) satBad.push(`${day.ds}: a Svc row and no service Saturday`);
+  }
+  check(`DA1 QW1 every Saturday of the 46 live weeks (the real memo): no Wknd row; each of the ${sats} service Saturdays is ONE Svc / B-Svc row naming weekHolders' sat (the override where there is one), note "Sat 7a–7a"; every type stays one the cell knows (O4's list)`,
+    Object.keys(LIVED).length === 46 && sats >= 30 && satBad.length === 0 && Array.isArray(Object.values(cL)[0]) && Object.values(cL).flat().every((e) => /^(B-)?(Svc|Wknd|Ngt)$|^(Fierce|FierceBkp|Holiday|APP)$/.test(e.type)),
+    JD({ sats, satBad: satBad.slice(0, 3) }));
+  const satCell = cellsD(KD, c[SAT]);
+  const inkD = (t) => { const s = allD(t).find((n) => n.tag === "span" && n.props.style && n.props.style.fontWeight === 700 && /^[SNW]$/.test(textD(n))); return s ? s.props.style.color : null; };
+  const visD = (rows, over) => cellsD(KD, rows, over).map(textD);
+  check("DA1 QW1 the month cell on Sat 11/7 (the real predicate and chip, rendered): \"S DJA\" — the service letter in the service ink #3080a8, on the service chip's #f8f9fb / #d0dce8, as Mon–Fri — where main drew \"W DJA\"; the Service Wk switch off hides it and Weekends off leaves it; Fri 11/6 is still \"S KJH\" + \"W KJH\" and Sun 11/8 \"W KJH\"; 👤 Me as DJA → \"S DJA\", highlighted; a backup week → \"BS DJA\"",
+    JD(satCell.map(textD)) === JD(["S DJA"]) && inkD(satCell[0]) === "#3080a8" && !!satCell[0] && satCell[0].props.style.background === "#f8f9fb" && /#d0dce8/.test(String(satCell[0].props.style.border))
+      && JD(visD(c[SAT], offD("svc"))) === "[]" && JD(visD(c[SAT], offD("wknd"))) === JD(["S DJA"]) && JD(visD(c[FRI])) === JD(["S KJH", "W KJH"]) && JD(visD(c[SUN])) === JD(["W KJH"])
+      && JD(visD(c[SAT], { sf: "s1" })) === JD(["S DJA"]) && cellsD(KD, c[SAT], { sf: "s1" })[0].props.style.background === "#e0f0ff" && JD(visD(cB[SAT])) === JD(["BS DJA"]),
+    JD({ sat: satCell.map(textD), ink: inkD(satCell[0]), svcOff: visD(c[SAT], offD("svc")), wkndOff: visD(c[SAT], offD("wknd")), fri: visD(c[FRI]), sun: visD(c[SUN]), backup: visD(cB[SAT]) }));
+  const pv = mkD(() => prevRun(weekD(), {})) || {}, pvChips = (rows) => { try { return prevChipRun({ h: hD, entries: rows || [], sMap: sMapD }).map(textD); } catch (ex) { return [threwD(ex)]; } };
+  check("DA1 QW1 the Generate preview (its own rows, pCalData, and its chips — the real code): Sat 11/7 is the same Svc row, drawn \"S DJA\"; Fri 11/6 \"S KJH\" + \"W KJH\", Sun 11/8 \"W KJH\" — the scheduler's preview and the Calendar agree",
+    JD(pv[SAT]) === JD([svcSatD("s1")]) && JD(pvChips(pv[SAT])) === JD(["S DJA"]) && JD(pvChips(pv[FRI])) === JD(["S KJH", "W KJH"]) && JD(pvChips(pv[SUN])) === JD(["W KJH"]),
+    JD({ rows: pv[SAT], sat: pvChips(pv[SAT]), fri: pvChips(pv[FRI]), sun: pvChips(pv[SUN]) }));
+  const tSat = todayD(KD, c[SAT], SAT), tFri = todayD(KD, c[FRI], FRI);
+  const rowSat = chipsD(KD, tSat.todayCall, SAT), rowFri = chipsD(KD, tFri.todayCall, FRI);
+  check("DA1 QW1 On Call Today on Sat 11/7 (the real todayCall and chip row): DJA is the day's Service Week — todayCall.dayCall, weekend null — on the ☀️ chip \"Service Week · Sat 7a–Sun 7a\", and there is no Weekend chip; on Fri 11/6 the chip still says \"Service Week\" (KJH) and KJH's Weekend chip follows",
+    JD(tSat.todayCall) === JD({ dayCall: "DJA", night: null, weekend: null, app: "MA", fierce: false, fierceBkp: false, holiday: null }) && tSat.hasCallToday === true
+      && JD(kidsD(rowSat).map(partsD)) === JD([["☀️", "Service Week · Sat 7a–Sun 7a", "DJA"], ["👩‍⚕️", "APP 7a–7a", "MA"]])
+      && JD(kidsD(rowFri).map(partsD).slice(0, 2)) === JD([["☀️", "Service Week", "KJH"], ["🌗", "Weekend", "KJH"]]),
+    JD({ today: tSat.todayCall, sat: kidsD(rowSat).map(partsD), fri: kidsD(rowFri).map(partsD) }));
+  check("DA1 QW1 the shared text on Sat 11/7 (the real buildTonightMsg): \"🏥 Service Week (Sat 7a–Sun 7a): DJA\" then the APP — no \"🌗 Weekend\" line (main's said \"🌗 Weekend: DJA\"); a weekday's service line has no Saturday hours",
+    linesD(tSat)[2] === "🏥 Service Week (Sat 7a–Sun 7a): DJA" && linesD(tSat)[3] === "👩‍⚕️ APP (7a–7a): MA" && !linesD(tSat).some((l) => /Weekend/.test(l)) && !linesD(tFri).some((l) => /Sat 7a–Sun 7a/.test(l)),
+    JD({ sat: linesD(tSat), fri: linesD(tFri) }));
+  check("DA1 QW1 the legend says what W is now, the weekend surgeon's Friday night and Sunday — \"W Weekend (Fri night, Sun)\", once; S is still \"S Service Wk\" (AX6's literal), as is the Show bar's S switch",
+    count('<span><span style={{color:"#908050",fontWeight:700}}>W</span> Weekend (Fri night, Sun)</span>') === 1 && count('<span><span style={{color:"#3080a8",fontWeight:700}}>S</span> Service Wk</span>') === 1
+      && count('{key:"svc",label:"Service Wk",color:"#3080a8",icon:"S"},') === 1 && count("</span> Weekend</span>") === 0);
+
+  // DA4 — the blast radius, against main's frozen code: today's and main's pieces, each on its own rows
+  const APPL = {};
+  Object.keys(LIVED).forEach((m, k) => { APPL[H.fmt(H.addD(H.parse(m), k % 7))] = ["a1", "a2", "a3"][k % 3]; });
+  const FILTD = [{}, offD("wknd"), offD("night"), offD("svc"), { sf: "s4" }, { sf: "s1" }, { calDeptFilter: "CBH" }];
+  const blast = { dates: 0, diff: {}, want: {}, bad: [] };
+  const noteD = (set, kind, key) => { (set[kind] = set[kind] || []).push(key); };
+  const radiusD = (label, S, apps) => {
+    const cNew = calD(KD, S, apps), cMain = calD(KM, S, apps);
+    if (cNew.threw || cMain.threw) { blast.bad.push(`${label}: calData ${cNew.threw || cMain.threw}`); return; }
+    const svcSats = new Set(Object.entries(S).map(([m, w]) => whD(m, w).days[5]).filter((d) => d.sat).map((d) => d.ds));
+    for (const ds of [...new Set([...Object.keys(cNew), ...Object.keys(cMain)])].sort()) {
+      blast.dates++;
+      const key = `${label} ${ds}`, a = cNew[ds] || [], b = cMain[ds] || [], sat = svcSats.has(ds);
+      // what each item changes on this date
+      if (sat) ["rows", "cell", "today", "chips", "text"].forEach((k) => noteD(blast.want, k, key));
+      // the rows: main's, with the service Saturday's Wknd row a Svc row (QW1)
+      const wantRows = b.map((e) => (sat && /^(B-)?Wknd$/.test(e.type) && e.note === "Sat 7a–7a" ? Object.assign({}, e, { type: e.type.replace("Wknd", "Svc") }) : e));
+      if (JD(a) !== JD(b)) noteD(blast.diff, "rows", key);
+      if (JD(a) !== JD(wantRows)) blast.bad.push(`${key}: rows ${JD(a)} vs main ${JD(b)}`);
+      if (FILTD.some((F) => JD(cellsD(KD, a, F)) !== JD(cellsD(KM, b, F)))) noteD(blast.diff, "cell", key);
+      if (sat && FILTD.some((F) => JD(cellsD(KD, a, F)) !== JD(cellsD(KM, wantRows, F)))) blast.bad.push(`${key}: the cell is not main's own cell given the Svc row`);
+      const tA = todayD(KD, a, ds), tB = todayD(KM, b, ds);
+      if (JD(tA.todayCall) !== JD(tB.todayCall) || tA.hasCallToday !== tB.hasCallToday) noteD(blast.diff, "today", key);
+      if (sat && JD(tA.todayCall) !== JD(Object.assign({}, tB.todayCall, { dayCall: tB.todayCall.weekend, weekend: null }))) blast.bad.push(`${key}: todayCall ${JD(tA.todayCall)} vs main ${JD(tB.todayCall)}`);
+      const pA = kidsD(chipsD(KD, tA.todayCall, ds)).map(partsD), pB = kidsD(chipsD(KM, tB.todayCall, ds)).map(partsD);
+      // the chips: main's, with the service Saturday's Weekend chip the Service Week one (QW1)
+      const wantChips = pB.map(([e, l, n]) => (sat && l === "Weekend" ? ["☀️", "Service Week · Sat 7a–Sun 7a", n] : [e, l, n]));
+      if (JD(chipsD(KD, tA.todayCall, ds)) !== JD(chipsD(KM, tB.todayCall, ds))) noteD(blast.diff, "chips", key);
+      if (JD(pA) !== JD(wantChips)) blast.bad.push(`${key}: chips ${JD(pA)} vs main ${JD(pB)}`);
+      // the text, line by line: main's, with the service Saturday's line (QW1)
+      const lA = linesD(tA), lB = linesD(tB);
+      const wantText = lB.map((l) => { const w = /^🌗 Weekend: (.*)$/.exec(l); return sat && w ? `🏥 Service Week (Sat 7a–Sun 7a): ${w[1]}` : l; });
+      if (lA.join("\n") !== lB.join("\n")) noteD(blast.diff, "text", key);
+      if (lA.join("\n") !== wantText.join("\n")) blast.bad.push(`${key}: text ${JD(lA)} vs main ${JD(lB)}`);
+    }
+  };
+  radiusD("live", LIVED, APPL);
+  radiusD("11/2", weekD(), APPD);
+  radiusD("11/2 backup", weekD({ isBackup: true }), APPD);
+  const KINDS = ["rows", "cell", "today", "chips", "text"], setD = (o, k) => JD((o[k] || []).slice().sort());
+  check(`DA4 the blast radius, against main's frozen code (CZ2b's fixture), each on its own rows: on all ${blast.dates} dates of the 46 live weeks and the week of 11/2 (plain and backup), today's calendar rows, cell chips (seven filter settings), todayCall, banner chips and shared text differ from main's ONLY on the ${(blast.want.rows || []).length} service Saturdays — the row's type Wknd → Svc, the cell main's own given that row ("W" → "S"), todayCall weekend → dayCall, the Weekend chip → "Service Week · Sat 7a–Sun 7a", "🌗 Weekend: X" → "🏥 Service Week (Sat 7a–Sun 7a): X" — every other date is main's, byte for byte`,
+    blast.bad.length === 0 && blast.dates >= 300 && (blast.want.rows || []).length >= 30 && KINDS.every((k) => setD(blast.diff, k) === setD(blast.want, k)),
+    JD({ dates: blast.dates, want: Object.fromEntries(KINDS.map((k) => [k, (blast.want[k] || []).length])), diff: Object.fromEntries(KINDS.map((k) => [k, (blast.diff[k] || []).length])), bad: blast.bad.slice(0, 3) }));
+})().catch(ex => check("DA harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
 
 // ─── AK. The calendar's Today button (owner 2026-10-14) ───
 console.log("\nAK. calendar Today button");

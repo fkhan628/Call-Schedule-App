@@ -8529,7 +8529,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           d[ds]=[...(d[ds]||[]),{type:pfx+"Svc",surgeon:(wk.dayCallOverrides&&wk.dayCallOverrides[ds])||wk.dayCall,cls}];
         }
         const sat=fmt(addD(mon,5));
-        if(!holCov[sat]) d[sat]=[...(d[sat]||[]),{type:pfx+"Wknd",surgeon:(wk.dayCallOverrides&&wk.dayCallOverrides[sat])||wk.dayCall,cls,note:"Sat 7a–7a"}];
+        // The service Saturday is the service week's own 24h day (owner rule 2026-10-20: a service week runs Mon–Sat), so
+        // it is a Svc row: an "S" in the service colour under the Service Wk switch, and On Call Today's Service Week. It
+        // was a "W", which read as the weekend surgeon's (UX audit 2026-11-01, QW1). The note keeps it apart from 7a–5p.
+        if(!holCov[sat]) d[sat]=[...(d[sat]||[]),{type:pfx+"Svc",surgeon:(wk.dayCallOverrides&&wk.dayCallOverrides[sat])||wk.dayCall,cls,note:"Sat 7a–7a"}];
       }
       NIGHT_KEYS.forEach((sk,i)=>{
         const sid=wk.nights?.[sk]; if(!sid) return;
@@ -8700,7 +8703,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     const appTimeLabel = (dow === 0 || dow === 6) ? "7a–7a" : "5p–7a";
     let msg = `🏥 DSG Call — ${dayName} ${mo}/${dy}\n\n`;
     if (todayCall.holiday) msg += `${todayCall.holiday.emoji} ${todayCall.holiday.label} 24h (7a–7a): ${todayCall.holiday.who || "Unassigned"}\n`;
-    if (todayCall.dayCall) msg += `🏥 Service Week: ${todayCall.dayCall}\n`;
+    // the service Saturday is the service week's 24h day (QW1), said with its hours: it never reads as the weekend
+    if (todayCall.dayCall) msg += `🏥 Service Week${dow === 6 ? " (Sat 7a–Sun 7a)" : ""}: ${todayCall.dayCall}\n`;
     if (todayCall.night) msg += `🌙 Night (5p–7a): ${todayCall.night}\n`;
     // A handed-off Sunday: its two halves (todayCall.weekendHandoff)
     if (todayCall.weekend && todayCall.weekendHandoff) msg += `🌗 Weekend (7a–${todayCall.weekendHandoff.at}): ${todayCall.weekend}\n🌗 Weekend (${todayCall.weekendHandoff.at}–Mon 7a): ${todayCall.weekendHandoff.to || "?"}\n`;
@@ -10251,7 +10255,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   pCalData[ds]=[...(pCalData[ds]||[]),{type:pfx+"Svc",surgeon:(wk.dayCallOverrides&&wk.dayCallOverrides[ds])||wk.dayCall,cls}];
                 }
                 const sat=fmt(addD(mon,5));
-                if(!holCov[sat]) pCalData[sat]=[...(pCalData[sat]||[]),{type:pfx+"Wknd",surgeon:(wk.dayCallOverrides&&wk.dayCallOverrides[sat])||wk.dayCall,cls,note:"Sat 7a–7a"}];
+                // the service Saturday is service, an "S", as on the Calendar (QW1)
+                if(!holCov[sat]) pCalData[sat]=[...(pCalData[sat]||[]),{type:pfx+"Svc",surgeon:(wk.dayCallOverrides&&wk.dayCallOverrides[sat])||wk.dayCall,cls,note:"Sat 7a–7a"}];
               }
               NIGHT_KEYS.forEach((sk,i)=>{
                 const sid=wk.nights?.[sk]; if(!sid) return;
@@ -10813,7 +10818,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                   <div style={{display:"flex",alignItems:"center",gap:6,padding:"6px 12px",background:"#f0f8ff",borderRadius:8,border:"1px solid #c0d8f0"}}>
                     <span style={{fontSize:16}}>☀️</span>
                     <div>
-                      <div style={{fontSize:10,color:"#1a6fa8",fontWeight:600,textTransform:"uppercase",letterSpacing:0.5}}>Service Week</div>
+                      {/* a Saturday's is the service week's 24h day, with its hours (QW1) — never the WEEKEND chip */}
+                      <div style={{fontSize:10,color:"#1a6fa8",fontWeight:600,textTransform:"uppercase",letterSpacing:0.5}}>{new Date().getDay() === 6 ? "Service Week · Sat 7a–Sun 7a" : "Service Week"}</div>
                       <div style={{fontSize:15,fontWeight:700,color:"#1a2a3a"}}>{todayCall.dayCall}</div>
                     </div>
                   </div>
@@ -11507,7 +11513,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           <div style={{marginTop:10,display:"flex",gap:12,fontSize:10,color:"#8a94a0",flexWrap:"wrap"}}>
             <span><span style={{color:"#3080a8",fontWeight:700}}>S</span> Service Wk</span>
             <span><span style={{color:"#6030a0",fontWeight:700}}>N</span> Night</span>
-            <span><span style={{color:"#908050",fontWeight:700}}>W</span> Weekend</span>
+            {/* the service Saturday is an S now (QW1): W is the weekend surgeon's Friday night and Sunday */}
+            <span><span style={{color:"#908050",fontWeight:700}}>W</span> Weekend (Fri night, Sun)</span>
             <span><span style={{color:"#c08050",fontWeight:700}}>A</span> APP</span>
             <span><span style={{color:"#8a6a10",fontWeight:700}}>B</span> Backup</span>
             <span><span style={{color:"#8a6a10"}}>⚡</span> Fierce Primary</span>
