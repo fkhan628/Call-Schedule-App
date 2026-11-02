@@ -1621,7 +1621,9 @@ console.log("\nBD. Generate: one period label, the period's seam, holidays with 
   // the component's one line for it since the review fixes, run for real from the Mondays the memo made)
   // (review fix 2026-10-20, on purpose: notifyPublished also takes down a pending Accept & Publish banner — it reads
   // justPublished / notifiedRef and calls setJustPublished; no banner is up here, CD7 runs that)
-  const mkDgn = dgnSrc && npSrcBD && mk(`(function (env) { const { sessionEpochRef, doGenerate, addNotification, sendEmailNotif, MO, startMonth, endMoIdx, startYear, mondays, periodText, justPublished, notifiedRef, setJustPublished } = env;\n${npSrcBD}\n  };\n${dgnSrc}\n  };\n return doGenerateAndNotify; })`, sandbox, "bd-dgn.js");
+  // (2026-11-02, on purpose — DC: once its notice went, doGenerateAndNotify hands the period to generateAndPublishDone, the
+  // toast and the Calendar; a no-op here, DC1 runs the real one)
+  const mkDgn = dgnSrc && npSrcBD && mk(`(function (env) { const { sessionEpochRef, doGenerate, addNotification, sendEmailNotif, MO, startMonth, endMoIdx, startYear, mondays, periodText, justPublished, notifiedRef, setJustPublished, generateAndPublishDone } = env;\n${npSrcBD}\n  };\n${dgnSrc}\n  };\n return doGenerateAndNotify; })`, sandbox, "bd-dgn.js");
   const ptNew = periodTextIn(sandbox);
   const publishRun = async (settings) => {
     if (!runMemo || !runEnd || !mkDgn || !ptNew) return null;
@@ -1629,7 +1631,7 @@ console.log("\nBD. Generate: one period label, the period's seam, holidays with 
       const mondays = runMemo(settings), { endMoIdx } = runEnd({ mondays, startMonth: settings.startMonth });
       const sent = [];
       await mkDgn({ sessionEpochRef: { current: 0 }, doGenerate: async () => "published", MO: H.MO, startMonth: settings.startMonth, endMoIdx, startYear: settings.startYear, mondays, periodText: ptNew(mondays),
-        justPublished: null, notifiedRef: { current: null }, setJustPublished: () => {},
+        justPublished: null, notifiedRef: { current: null }, setJustPublished: () => {}, generateAndPublishDone: () => {},
         addNotification: async (type, title, msg) => { sent.push(["notice", type, msg]); },
         sendEmailNotif: (type, data, targets) => { sent.push(["e-mail", type, J(data), targets]); } })();
       return { first: H.fmt(mondays[0]), n: mondays.length, sent };
@@ -8840,11 +8842,12 @@ console.log("\nBC. Generate & Publish asks once; Billing opens on the newest mon
   // (mondays, periodText: the e-mail's period is taken from the Generate Mondays since BD — UX audit 2026-10-19 — through the component's one line, periodText, since its review fixes)
   // (review fix 2026-10-20, on purpose: notifyPublished also takes down a pending Accept & Publish banner — justPublished,
   // notifiedRef, setJustPublished; none is up here, CD7 runs that)
-  try { mkDgn = dgBody && npBody ? vm.runInContext(`(function (env) { const { sessionEpochRef, doGenerate, addNotification, sendEmailNotif, MO, startMonth, endMoIdx, startYear, mondays, periodText, justPublished, notifiedRef, setJustPublished } = env;\n${npBody}\n  };\n${dgBody}\n  };\n return doGenerateAndNotify; })`, sandbox, { filename: "bc-dgn.js" }) : null; } catch (ex) { mkDgn = null; }
+  // (2026-11-02, on purpose — DC: + generateAndPublishDone, the toast and the Calendar once the notice went; a no-op here)
+  try { mkDgn = dgBody && npBody ? vm.runInContext(`(function (env) { const { sessionEpochRef, doGenerate, addNotification, sendEmailNotif, MO, startMonth, endMoIdx, startYear, mondays, periodText, justPublished, notifiedRef, setJustPublished, generateAndPublishDone } = env;\n${npBody}\n  };\n${dgBody}\n  };\n return doGenerateAndNotify; })`, sandbox, { filename: "bc-dgn.js" }) : null; } catch (ex) { mkDgn = null; }
   const dgn = async (result) => {
     const log = [];
     await mkDgn({ sessionEpochRef: { current: 0 }, doGenerate: async () => result, MO: ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"], startMonth: 10, endMoIdx: 1, startYear: 2026, mondays: NOV.map(H.parse), periodText: "Nov 16, 2026 – Feb 21, 2027",
-      justPublished: null, notifiedRef: { current: null }, setJustPublished: () => {},
+      justPublished: null, notifiedRef: { current: null }, setJustPublished: () => {}, generateAndPublishDone: () => {},
       addNotification: async (type, title, msg, data, targets) => { log.push(`notice ${type} to ${targets === null ? "everyone" : JSON.stringify(targets)}`); },
       sendEmailNotif: (type, data, targets) => { log.push(`e-mail ${type} to ${targets === null ? "everyone" : JSON.stringify(targets)}`); } })();
     return log;
@@ -12849,7 +12852,8 @@ await (async () => {
     !!dgBody && dgBody.includes("return genFinishRef.current(result, preview, clickSig, pendingLocks, genEpoch, via);") && fgPass
       && count('label: `${pubMs.length} weeks, ${pubPeriod}, ${via || "Generate & Publish"}`,') === 1
       && count('const inPreview = view === "generate" ? "in the preview below" : "in the preview on the Generate tab";') === 1 && (fgBody.match(/\$\{inPreview\}/g) || []).length === 2 && count("in the preview below") === 1
-      && /\n {14}<div data-gen-preview="1" style=\{\{\.\.\.css\.card,marginTop:14,[^\n]*\n[^\n]*\n {18}<div style=\{css\.cardT\}>👁 Schedule Preview/.test(nsrcCH) && count('data-gen-preview="1"') === 2,
+      // (2026-11-02, on purpose — DC: 3, a preview that is ready is also brought into view on the Generate tab — DC2)
+      && /\n {14}<div data-gen-preview="1" style=\{\{\.\.\.css\.card,marginTop:14,[^\n]*\n[^\n]*\n {18}<div style=\{css\.cardT\}>👁 Schedule Preview/.test(nsrcCH) && count('data-gen-preview="1"') === 3,
     J({ dg: !!dgBody, fgPass, inPreview: count("in the preview below") }));
   const old = await regen({ periodText: PT_OLD }, rgMkOld);
   check("CH4 with an OLD cached helpers.js (no periodLabel — OLD_SB) the banner names the component's own fallback, the plain dates \"2026-11-16 – 2026-11-29\", never a throw (doRegenerate calls no helper of its own)",
@@ -13158,7 +13162,8 @@ await (async () => {
       && J(cd3.again) === J(cd3.one.concat(["banner null", NOTICE(0), EMAIL(P1, 0), TOAST])), J(cd3));
   check("CD3 (review fix 2026-10-20 — PH-8) the banner unmounts with the focus in it, so the tap moves the focus to the Calendar's month heading ([data-cal-month=\"1\"], tabIndex -1 — focusable, not in the tab order) once it is gone (a 0 ms timer); no banner → no move",
     !!cd3 && !cd3.threw && J(cd3.oneFocus) === J(['[data-cal-month="1"]']) && J(cd3.oneTimers) === J([0]) && cd3.noneFocus.length === 0
-      && count('<span tabIndex={-1} data-cal-month="1" style={{fontSize:15,fontWeight:700,color:"#2c5a80",minWidth:170,textAlign:"center"}}>{MO[calMonth]} {calYear}</span>') === 1 && count('data-cal-month="1"') === 2,
+      // (2026-11-02, on purpose — DC: 3, Generate & Publish's end brings the same heading into view — generateAndPublishDone)
+      && count('<span tabIndex={-1} data-cal-month="1" style={{fontSize:15,fontWeight:700,color:"#2c5a80",minWidth:170,textAlign:"center"}}>{MO[calMonth]} {calYear}</span>') === 1 && count('data-cal-month="1"') === 3,
     cd3 ? J({ focus: cd3.oneFocus, timers: cd3.oneTimers, none: cd3.noneFocus }) : "not run");
   check("CD3 nothing to send (no banner) → nothing at all; the notice not saved → no \"Everyone has been notified.\" (addNotification says what failed)",
     !!cd3 && !cd3.threw && cd3.none.length === 0 && J(cd3.unsaved) === J(["banner null", NOTICE(0), EMAIL(P1, 0)]), J(cd3));
@@ -13167,11 +13172,13 @@ await (async () => {
 
   // CD4 — Generate & Publish, through the one sender
   const dgnBody = afterCD("  const doGenerateAndNotify = async () => {", "\n  };\n");
-  const dgnMk = fnCD("sessionEpochRef, doGenerate, periodText, notifyPublished", dgnBody === null ? null : "async () => {" + dgnBody + "\n  }");
+  // (2026-11-02, on purpose — DC: once its notice went, it hands the period to generateAndPublishDone, the toast and the
+  // Calendar; a no-op here, DC1 runs the real one)
+  const dgnMk = fnCD("sessionEpochRef, doGenerate, periodText, notifyPublished, generateAndPublishDone", dgnBody === null ? null : "async () => {" + dgnBody + "\n  }");
   const PT = "Nov 16, 2026 – Feb 21, 2027";
   const gp = async (result, move) => {
     const w = world();
-    try { await dgnMk({ sessionEpochRef: w.ep, periodText: PT, notifyPublished: w.np, doGenerate: async () => { if (move) w.ep.current++; return result; } })(); } catch (ex) { return ["threw " + String(ex).slice(0, 120)]; }
+    try { await dgnMk({ sessionEpochRef: w.ep, periodText: PT, notifyPublished: w.np, generateAndPublishDone: () => {}, doGenerate: async () => { if (move) w.ep.current++; return result; } })(); } catch (ex) { return ["threw " + String(ex).slice(0, 120)]; }
     return w.log;
   };
   const cd4 = dgnMk && npMk ? { published: await gp("published"), moved: await gp("published", true), review: await gp("review"), refused: await gp("refused"), busy: await gp("busy"), notPub: await gp("not-published"), cancelled: await gp("cancelled"), undone: await gp("undone") } : null;
@@ -13218,7 +13225,7 @@ await (async () => {
         const setJP = (v) => { if (!Object.is(v, state)) { state = v; log.push("banner " + J(v)); } };
         const jp = o.noBanner ? null : (await accept({ epRef: w.ep })).jp[0] || null;
         state = jp;
-        await dgnMk({ sessionEpochRef: w.ep, periodText: P1, notifyPublished: w.npWith(jp, notified, setJP), doGenerate: async () => { if (o.move) w.ep.current++; return result; } })();
+        await dgnMk({ sessionEpochRef: w.ep, periodText: P1, notifyPublished: w.npWith(jp, notified, setJP), generateAndPublishDone: () => {}, doGenerate: async () => { if (o.move) w.ep.current++; return result; } })();
         const afterGP = { up: state, marked: !!jp && notified.current === jp };
         log.push("—— the old screen's 📣 ——");
         await njMk({ justPublished: jp, notifiedRef: notified, setJustPublished: setJP, notifyPublished: w.npWith(jp, notified, setJP), sessionEpochRef: w.ep,
@@ -16698,6 +16705,115 @@ console.log("\nAZ. Mine works for an APP");
       guard, files, Object.assign({}, files, { "helpers.js": files["helpers.js"] + "\nconst _b = () => fetch(\"test/fixtures/period.json\");\n" }));
   }
 }
+
+// ─── DC. Publishing says what it did; ↻ Regenerate and ↩ Undo ask first and say what they undo (2026-11-02) ───
+// UX audit 2026-11-01 (the owner: "work through your list in a safe and expeditious manner").
+// QW10 — Generate & Publish rewrote the period and sent everyone a push and an e-mail, and the only sign was a brief
+// "Regenerated!" in the header, off the screen once the page was scrolled; the scheduler stayed on the Generate tab.
+// 👁 Preview Schedule's result opened below the bottom of a phone's screen (its top at y=798 of 844 at 390 px), with
+// nothing pointing to it. JSX can't run here (no Babel in CI): the handlers and the effect are sliced and EXECUTED.
+//   DC1 the REAL doGenerateAndNotify → the REAL notifyPublished → the REAL generateAndPublishDone: published and the
+//       notice saved → the same notice and e-mail as before, byte for byte, then ONE toast "✓ Published <period> —
+//       everyone was notified." and, for a scheduler still on the Generate tab, the Calendar on the period's first month
+//       with its heading scrolled into view; the notice not saved → "✓ Published <period>." only; moved on to another
+//       tab during the search → the toast only; not published, or the session gone → nothing at all
+//   DC2 the REAL preview effect: on the Generate tab a preview whose top is near the bottom of the screen or below it
+//       is scrolled into view 60 ms after it appears; one in view (a Re-roll or 🔍 Search more tapped at it, a
+//       scheduler reading further down) is not moved; another tab or no preview → no timer; the cleanup clears it
+//   DC3 the wiring: viewNowRef beside the view state; one call of generateAndPublishDone, after the notice's session
+//       check; the effect right after the Needs-your-OK reset, listing exactly [previewSchedule, showPreview]
+//   the section runs inside its own catch: a throw fails one named check, it never ends the run (as CD)
+console.log("\nDC. Publishing says what it did; Regenerate and Undo ask first");
+await (async () => {
+  const nsrcDC = src.replace(/\r\n/g, "\n"), J = JSON.stringify;
+  const countDC = (s) => nsrcDC.split(s).length - 1;
+  const afterDC = (start, end) => { const i = nsrcDC.indexOf(start); if (i < 0 || nsrcDC.indexOf(start, i + 1) !== -1) return null; const e = nsrcDC.indexOf(end, i + start.length); return e < 0 ? null : nsrcDC.slice(i + start.length, e); };
+  const fnDC = (names, code, ctx) => { if (code === null) return null; try { return vm.runInContext(`(function (env) { const { ${names} } = env; return (${code}); })`, ctx || sandbox, { filename: "dc-slice.js" }); } catch (ex) { return null; } };
+  const H = vm.runInContext("({ parse, fmt, addD })", sandbox);
+  const weeksFrom = (m, n) => Array.from({ length: n }, (_, i) => H.fmt(H.addD(H.parse(m), 7 * i)));
+  const FEB = weeksFrom("2027-02-22", 14), ptDC = periodTextIn(sandbox), PT = ptDC ? ptDC(FEB.map(H.parse)) : null;
+
+  // DC1 — Generate & Publish's end: the REAL doGenerateAndNotify over the REAL notifyPublished and generateAndPublishDone
+  const dgnB = afterDC("  const doGenerateAndNotify = async () => {", "\n  };\n");
+  const npB = afterDC("  const notifyPublished = async (ep, period) => {", "\n  };\n");
+  const gpdB = afterDC("  const generateAndPublishDone = (period, told) => {", "\n  };\n");
+  const GP_ENV = "sessionEpochRef, doGenerate, periodText, mondays, addNotification, sendEmailNotif, justPublished, notifiedRef, setJustPublished, showToast, viewNowRef, setCalMonth, setCalYear, setView, setTimeout, document";
+  const gpMk = fnDC(GP_ENV, dgnB === null || npB === null || gpdB === null ? null
+    : `(() => { const notifyPublished = async (ep, period) => {${npB}\n  };\n  const generateAndPublishDone = (period, told) => {${gpdB}\n  };\n  return async () => {${dgnB}\n  }; })()`);
+  // o.outcome: what doGenerate resolves; o.saved: the notice's insert; o.tab: the tab as last rendered when it ends;
+  // o.moveDuringGen / o.moveDuringNotice: a sign-out then (the session moves); o.noHeading: no month heading in the page.
+  // Timers run at once; a banner is logged only when one is RAISED (the sender's own setJustPublished(null) is no change).
+  const gpRun = async (o = {}) => {
+    const rec = { log: [], timers: [], scrolled: [] };
+    if (!gpMk) return { threw: "not extractable" };
+    const ep = { current: 3 };
+    try {
+      await gpMk({ sessionEpochRef: ep, periodText: PT, mondays: FEB.map(H.parse),
+        doGenerate: async () => { if (o.moveDuringGen) ep.current++; return "outcome" in o ? o.outcome : "published"; },
+        addNotification: async (...a) => { rec.log.push(J(["notice", ...a])); if (o.moveDuringNotice) ep.current++; return "saved" in o ? o.saved : true; },
+        sendEmailNotif: (...a) => { rec.log.push(J(["e-mail", ...a])); }, justPublished: null, notifiedRef: { current: null }, setJustPublished: (v) => { if (v !== null) rec.log.push("banner " + J(v)); },
+        showToast: (m, t) => rec.log.push("toast " + t + ": " + m), viewNowRef: { current: o.tab || "generate" },
+        setCalMonth: (v) => rec.log.push("month " + v), setCalYear: (v) => rec.log.push("year " + v), setView: (v) => rec.log.push("view " + v),
+        setTimeout: (fn, ms) => { rec.timers.push(ms); fn(); return 0; },
+        document: { querySelector: (sel) => (o.noHeading ? null : { parentElement: { scrollIntoView: (how) => rec.scrolled.push(["the row of " + sel, how]) } }) } })();
+    } catch (ex) { rec.threw = String(ex).slice(0, 160); }
+    return rec;
+  };
+  const NOTICE_DC = J(["notice", "schedule_published", "Schedule Published", "A new call schedule has been generated. Check the Schedule or Calendar tab.", {}, null, 3]);
+  const EMAIL_DC = J(["e-mail", "schedule_published", { period: PT }, null, 3]);
+  const dc1 = { told: await gpRun(), unsaved: await gpRun({ saved: false }), movedOn: await gpRun({ tab: "stats" }), noHeading: await gpRun({ noHeading: true }),
+    signOutGen: await gpRun({ moveDuringGen: true }), signOutNotice: await gpRun({ moveDuringNotice: true }) };
+  for (const k of ["review", "refused", "busy", "not-published", "cancelled", "undone", "no-snapshot", "moved"]) dc1[k] = await gpRun({ outcome: k });
+  const HEAD = J([['the row of [data-cal-month="1"]', { behavior: "smooth", block: "start" }]]);
+  // (a success toast shows its own ✓ — helpers.js toastText; the rendered check found "✓ ✓ Published …")
+  check("DC1 (QW10) the REAL Generate & Publish, published and its notice saved: the same notice and e-mail as before, byte for byte, then ONE success toast \"Published Feb 22 – May 30, 2027 — everyone was notified.\" (shown with its ✓) and — still on the Generate tab — the Calendar on the period's first month (February 2027), its month row (◀ month ▶ Today) scrolled into view 60 ms later (smooth, start); no banner (it told everyone itself)",
+    PT === "Feb 22 – May 30, 2027" && !dc1.told.threw && J(dc1.told.log) === J([NOTICE_DC, EMAIL_DC, "toast success: Published Feb 22 – May 30, 2027 — everyone was notified.", "month 1", "year 2027", "view calendar"])
+      && J(dc1.told.timers) === J([60]) && J(dc1.told.scrolled) === HEAD, J({ PT, told: dc1.told }));
+  check("DC1 (QW10) …the notice NOT saved: \"Published Feb 22 – May 30, 2027.\" — never \"everyone was notified\" (addNotification has said what failed) — and the Calendar opens all the same; a scheduler who moved on to another tab during the search gets the toast and stays there (no month, no tab switch, no scroll); no heading in the page → no throw",
+    !dc1.unsaved.threw && J(dc1.unsaved.log) === J([NOTICE_DC, EMAIL_DC, "toast success: Published Feb 22 – May 30, 2027.", "month 1", "year 2027", "view calendar"])
+      && !dc1.movedOn.threw && J(dc1.movedOn.log) === J([NOTICE_DC, EMAIL_DC, "toast success: Published Feb 22 – May 30, 2027 — everyone was notified."]) && dc1.movedOn.timers.length === 0
+      && !dc1.noHeading.threw && dc1.noHeading.scrolled.length === 0 && dc1.noHeading.log.includes("view calendar"), J({ unsaved: dc1.unsaved, movedOn: dc1.movedOn, noHeading: dc1.noHeading }));
+  check("DC1 (QW10) nothing at all when nothing was published for everyone to hear of — sent to the preview for review, refused, busy, not landed, cancelled, no snapshot, a week moved, ↩ Undone while it ran — or when the session went (during the search: nothing sent; during the notice: no e-mail, no toast, no Calendar)",
+    ["review", "refused", "busy", "not-published", "cancelled", "undone", "no-snapshot", "moved", "signOutGen"].every((k) => !dc1[k].threw && dc1[k].log.length === 0 && dc1[k].timers.length === 0)
+      && !dc1.signOutNotice.threw && J(dc1.signOutNotice.log) === J([NOTICE_DC]), J(Object.fromEntries(Object.entries(dc1).map(([k, r]) => [k, r.threw || r.log]))));
+
+  // DC2 — a ready preview, brought into view: the REAL effect
+  const EFF_A = "  useEffect(() => {\n    if (!showPreview || !previewSchedule || view !== \"generate\") return;", EFF_Z = "\n  }, [previewSchedule, showPreview]);";
+  const effB = afterDC(EFF_A, EFF_Z);
+  const effMk = fnDC("showPreview, previewSchedule, view, setTimeout, clearTimeout, document, window", effB === null ? null : "() => {\n    if (!showPreview || !previewSchedule || view !== \"generate\") return;" + effB + "\n  }");
+  // o.top: the preview card's top on an 844 px screen (null: no card in the page); the timer is run, then the cleanup
+  const effRun = (o = {}) => {
+    const rec = { timers: [], cleared: [], scrolled: [] };
+    if (!effMk) return { threw: "not extractable" };
+    try {
+      const card = o.top === null ? null : { getBoundingClientRect: () => ({ top: o.top === undefined ? 798 : o.top }), scrollIntoView: (how) => rec.scrolled.push(how) };
+      const cleanup = effMk({ showPreview: "shown" in o ? o.shown : true, previewSchedule: "preview" in o ? o.preview : { "2027-02-22": {} }, view: o.view || "generate",
+        setTimeout: (fn, ms) => { rec.timers.push(ms); rec.fn = fn; return 41; }, clearTimeout: (t) => rec.cleared.push(t),
+        document: { querySelector: (sel) => { rec.sel = sel; return card; } }, window: { innerHeight: 844 } })();
+      if (rec.fn) rec.fn();
+      if (typeof cleanup === "function") { cleanup(); rec.cleanup = true; }
+    } catch (ex) { rec.threw = String(ex).slice(0, 160); }
+    return rec;
+  };
+  const dc2 = { below: effRun(), farBelow: effRun({ top: 1900 }), edge: effRun({ top: 725 }), atEdge: effRun({ top: 724 }), inView: effRun({ top: 300 }), above: effRun({ top: -400 }),
+    noCard: effRun({ top: null }), calendar: effRun({ view: "calendar" }), stats: effRun({ view: "stats" }), hidden: effRun({ shown: false }), none: effRun({ preview: null }) };
+  const START = J([{ behavior: "smooth", block: "start" }]);
+  check("DC2 (QW10) the REAL effect: on the Generate tab a preview whose top is near the bottom of the screen or below it (798 of 844 — the audit's 390 px case; 1900; 725) is scrolled into view (smooth, start) 60 ms after it appears — [data-gen-preview=\"1\"], the card ↻ Regenerate scrolls to — and its cleanup clears that timer",
+    ["below", "farBelow", "edge"].every((k) => !dc2[k].threw && J(dc2[k].timers) === J([60]) && J(dc2[k].scrolled) === START && J(dc2[k].cleared) === J([41]))
+      && dc2.below.sel === '[data-gen-preview="1"]', J({ below: dc2.below, edge: dc2.edge }));
+  check("DC2 (QW10) …one already in view is NOT moved — a Re-roll or 🔍 Search more tapped at the preview (its top at 300), a scheduler reading further down (−400), the edge (724 = 844 − 120) — and no card in the page is no throw; on another tab, with no preview, or none shown, no timer at all",
+    ["atEdge", "inView", "above", "noCard"].every((k) => !dc2[k].threw && J(dc2[k].timers) === J([60]) && dc2[k].scrolled.length === 0)
+      && ["calendar", "stats", "hidden", "none"].every((k) => !dc2[k].threw && dc2[k].timers.length === 0 && !dc2[k].cleanup), J(dc2));
+
+  // DC3 — the wiring
+  const iView = nsrcDC.indexOf('  const [view, setView] = useState("calendar");'), iRef = nsrcDC.indexOf("  const viewNowRef = useRef(view); viewNowRef.current = view;");
+  const iAck = nsrcDC.indexOf("  useEffect(() => { setPreviewAck(false); }, [previewSchedule]);"), iEff = nsrcDC.indexOf(EFF_A);
+  check("DC3 (QW10) the wiring: the tab as last rendered (viewNowRef) is set every render right after the view state; doGenerateAndNotify calls generateAndPublishDone once — after the notice, behind its own session check — and nothing else does; the preview effect is the one right after the Needs-your-OK reset, listing exactly [previewSchedule, showPreview]",
+    countDC("  const viewNowRef = useRef(view); viewNowRef.current = view;") === 1 && iRef > iView && iRef - iView < 400
+      && !!dgnB && /\n    const told = await notifyPublished\(ep, period\);\n    if \(sessionEpochRef\.current !== ep\) return;\n    generateAndPublishDone\(period, told\);$/.test(dgnB)
+      && countDC("generateAndPublishDone(") === 1 && countDC(EFF_A) === 1 && iEff > iAck && iEff - iAck < 1200 && countDC(EFF_Z) === 1,
+    J({ iView, iRef, iAck, iEff, calls: countDC("generateAndPublishDone(") }));
+})().catch(ex => check("DC harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
 
 // ─── CA. Requests: only the requester or a scheduler edits or withdraws a request (owner decision 2026-10-20) ───
 // The owner (2026-10-20): "edit requests is only for schedulers" — a doctor edits or withdraws only their OWN request; a

@@ -221,6 +221,9 @@ function CallSchedule() {
   const appOffVisible = !isPublicMode || isOrView;
 
   const [view, setView] = useState("calendar");
+  // The tab as last rendered (UX audit 2026-11-01, QW10): Generate & Publish's end comes after its search's awaits,
+  // and opens the Calendar only for a scheduler still on the Generate tab (generateAndPublishDone).
+  const viewNowRef = useRef(view); viewNowRef.current = view;
 
   const [surgeons, setSurgeons] = useState(INIT_SURGEONS);
   const [apps, setApps] = useState(INIT_APPS);
@@ -656,6 +659,19 @@ function CallSchedule() {
   // Reset whenever a new preview is generated.
   const [previewAck, setPreviewAck] = useState(false);
   useEffect(() => { setPreviewAck(false); }, [previewSchedule]);
+  // A preview that is ready is brought into view (UX audit 2026-11-01, QW10): 👁 Preview Schedule's result (and Generate
+  // & Publish's, when it needs your OK) opened below the bottom of a phone's screen — at 390 px only its title showed —
+  // with nothing pointing to it. 60 ms after it appears on the Generate tab, and only while its top is near the bottom
+  // of the screen or below it: a Re-roll or 🔍 Search more tapped at the preview, or a scheduler reading further down,
+  // is not moved. (From the Calendar, ↻ Regenerate takes a scheduler who stayed to the preview itself — doRegenerate.)
+  useEffect(() => {
+    if (!showPreview || !previewSchedule || view !== "generate") return;
+    const t = setTimeout(() => {
+      const el = document.querySelector('[data-gen-preview="1"]');
+      if (el && el.scrollIntoView && el.getBoundingClientRect().top > (window.innerHeight || 0) - 120) el.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 60);
+    return () => clearTimeout(t);
+  }, [previewSchedule, showPreview]);
   const [previewCalMonth, setPreviewCalMonth] = useState(0); // index into preview months
 
   // Form states
@@ -4823,8 +4839,32 @@ function CallSchedule() {
     if (sessionEpochRef.current !== ep) return;
     // (The counts roll forward inside doGenerate's publish, at commit — net
     // of any weeks it replaced.) The notice, then the e-mail — the one
-    // sender Accept & Publish's banner uses too (2026-10-20).
-    await notifyPublished(ep, period);
+    // sender Accept & Publish's banner uses too (2026-10-20); then it says
+    // so, and opens the Calendar on it (generateAndPublishDone — QW10).
+    const told = await notifyPublished(ep, period);
+    if (sessionEpochRef.current !== ep) return;
+    generateAndPublishDone(period, told);
+  };
+
+  // ─── Generate & Publish, done: said, and shown on the Calendar ───
+  // (UX audit 2026-11-01, QW10) Its only sign was a brief "Regenerated!" in
+  // the header — off the screen once the page was scrolled — and the
+  // scheduler stayed on the Generate tab, though everyone had just been sent
+  // a push and an e-mail. Now a toast names the period published and says
+  // everyone was notified (only when the notice was saved — told; otherwise
+  // addNotification has said what failed), and a scheduler still on the
+  // Generate tab (viewNowRef: one who moved on during the search stays where
+  // they are) is taken to the period's first month on the Calendar, as
+  // ✓ Accept & Publish does — its month row (◀ month ▶ Today) brought into
+  // view, since the Calendar opens at the Generate tab's scroll. Called by
+  // doGenerateAndNotify in the tap's session, so mondays is the tap's: the
+  // Mondays it published. (A success toast shows its own ✓ — toastText.)
+  const generateAndPublishDone = (period, told) => {
+    showToast(told ? `Published ${period} — everyone was notified.` : `Published ${period}.`, "success");
+    const first = mondays[0];
+    if (!first || viewNowRef.current !== "generate") return;
+    setCalMonth(first.getMonth()); setCalYear(first.getFullYear()); setView("calendar");
+    setTimeout(() => { const h = document.querySelector('[data-cal-month="1"]'), row = h && (h.parentElement || h); if (row && row.scrollIntoView) row.scrollIntoView({ behavior: "smooth", block: "start" }); }, 60);
   };
 
   // ─── ↻ Regenerate (the Calendar's): the same one-tap Notify banner ───
