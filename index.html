@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.11.01b";
+    var APP_VERSION = "2026.11.01c";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -473,6 +473,61 @@ function CallSchedule() {
     preview: null,
     applied: null
   }));
+  const [showPastMarks, setShowPastMarks] = useState({
+    backup: false,
+    fierce: false
+  });
+  const marksListed = set => {
+    const all = [...set].sort(),
+      thisMon = mondayOfToday(),
+      upcoming = m => m >= thisMon;
+    return {
+      upcoming: all.filter(upcoming),
+      past: all.filter(m => !upcoming(m))
+    };
+  };
+  const SR_TEXT = {
+    position: "absolute",
+    width: 1,
+    height: 1,
+    padding: 0,
+    margin: -1,
+    overflow: "hidden",
+    clip: "rect(0 0 0 0)",
+    whiteSpace: "nowrap",
+    border: 0
+  };
+  const pastMarksToggle = (kind, n) => {
+    if (!n) return null;
+    const list = kind === "backup" ? "Backup" : "Fierce Backup";
+    return React.createElement("button", {
+      "data-past-marks": kind,
+      onClick: () => setShowPastMarks(p => _objectSpread(_objectSpread({}, p), {}, {
+        [kind]: !p[kind]
+      })),
+      "aria-expanded": showPastMarks[kind],
+      style: {
+        display: "block",
+        minHeight: 44,
+        background: "none",
+        border: "none",
+        padding: "0 2px",
+        color: "#1a6fa8",
+        fontSize: 12,
+        fontWeight: 600,
+        cursor: "pointer",
+        fontFamily: font,
+        textDecoration: "underline"
+      }
+    }, showPastMarks[kind] ? `Hide past ${list} weeks` : `Show ${n} past ${list} week${n === 1 ? "" : "s"}`);
+  };
+  useEffect(() => {
+    const ended = set => marksListed(set).past.length > 0;
+    setShowPastMarks(p => p.backup && !ended(backupMondaySet) || p.fierce && !ended(fierceBackupSet) ? {
+      backup: p.backup && ended(backupMondaySet),
+      fierce: p.fierce && ended(fierceBackupSet)
+    } : p);
+  }, [backupMondaySet, fierceBackupSet]);
   const [appDate, setAppDate] = useState(() => fmt(new Date()));
   const [appPerson, setAppPerson] = useState("");
   const [scanning, setScanning] = useState(false);
@@ -6859,6 +6914,9 @@ function CallSchedule() {
     if (!bkMonday) return;
     if (!schedEditable() || !marksEditable()) return;
     markWeek("backup", bkMonday, true);
+    if (bkMonday < mondayOfToday()) setShowPastMarks(p => _objectSpread(_objectSpread({}, p), {}, {
+      backup: true
+    }));
     setBkMonday(mondayOfToday());
   };
   const unmarkBackupWeek = m => {
@@ -6869,6 +6927,9 @@ function CallSchedule() {
     if (!bkMonday) return;
     if (!schedEditable() || !marksEditable()) return;
     markWeek("fierce", bkMonday, true);
+    if (bkMonday < mondayOfToday()) setShowPastMarks(p => _objectSpread(_objectSpread({}, p), {}, {
+      fierce: true
+    }));
     setBkMonday(mondayOfToday());
   };
   const unmarkFierceBackupWeek = m => {
@@ -6930,6 +6991,12 @@ function CallSchedule() {
     plan.backup.remove.forEach(m => markWeek("backup", m, false, "paste"));
     plan.fierce.add.forEach(m => markWeek("fierce", m, true, "paste"));
     plan.fierce.remove.forEach(m => markWeek("fierce", m, false, "paste"));
+    const thisMon = mondayOfToday(),
+      ended = o => o.add.some(m => m < thisMon);
+    if (ended(plan.backup) || ended(plan.fierce)) setShowPastMarks(p => ({
+      backup: p.backup || ended(plan.backup),
+      fierce: p.fierce || ended(plan.fierce)
+    }));
     setFiercePaste(p => Object.assign({}, p, {
       preview: null,
       applied: {
@@ -11121,32 +11188,44 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   })), React.createElement("button", {
     onClick: markBackupWeek,
     style: css.btn(true)
-  }, "+ Mark Backup")), [...backupMondaySet].sort().map(m => React.createElement("div", {
-    key: m,
-    style: {
-      display: "flex",
-      alignItems: "center",
-      gap: 8,
-      marginBottom: 5
-    }
-  }, React.createElement("span", {
-    style: {
-      fontFamily: mono,
-      fontSize: 12,
-      color: "#5a6a78"
-    }
-  }, "Wk of ", m), React.createElement("span", {
-    style: css.backupBanner
-  }, "⚡ BACKUP — Fierce Primary"), React.createElement("button", {
-    onClick: () => unmarkBackupWeek(m),
-    style: {
-      background: "none",
-      border: "none",
-      color: "#904040",
-      cursor: "pointer",
-      fontSize: 12
-    }
-  }, "✕"))), React.createElement("div", {
+  }, "+ Mark Backup")), (() => {
+    const {
+      upcoming,
+      past
+    } = marksListed(backupMondaySet);
+    const row = (m, ended) => React.createElement("div", {
+      key: m,
+      style: {
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        marginBottom: 5
+      }
+    }, React.createElement("span", {
+      style: {
+        fontFamily: mono,
+        fontSize: 12,
+        color: "#5a6a78",
+        textDecoration: ended ? "line-through" : "none"
+      },
+      title: ended ? "This week has ended" : undefined
+    }, "Wk of ", m, ended && React.createElement("span", {
+      style: SR_TEXT
+    }, " (ended)")), React.createElement("span", {
+      style: css.backupBanner
+    }, "⚡ BACKUP — Fierce Primary"), React.createElement("button", {
+      onClick: () => unmarkBackupWeek(m),
+      "aria-label": `Remove the Backup mark from the week of ${m}`,
+      style: {
+        background: "none",
+        border: "none",
+        color: "#904040",
+        cursor: "pointer",
+        fontSize: 12
+      }
+    }, "✕"));
+    return React.createElement(React.Fragment, null, pastMarksToggle("backup", past.length), showPastMarks.backup && past.map(m => row(m, true)), upcoming.map(m => row(m, false)));
+  })(), React.createElement("div", {
     style: {
       marginTop: 14,
       paddingTop: 14,
@@ -11196,40 +11275,52 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       padding: "7px 16px",
       fontSize: 12
     })
-  }, "+ Mark Fierce Backup")), [...fierceBackupSet].sort().map(m => React.createElement("div", {
-    key: m,
-    style: {
-      display: "flex",
-      alignItems: "center",
-      gap: 8,
-      marginBottom: 5
-    }
-  }, React.createElement("span", {
-    style: {
-      fontFamily: mono,
-      fontSize: 12,
-      color: "#5a6a78"
-    }
-  }, "Wk of ", m), React.createElement("span", {
-    style: {
-      fontSize: 11,
-      color: "#1a6fa8",
-      background: "#e8f0fc",
-      border: "1px solid #a8c8e0",
-      borderRadius: 6,
-      padding: "3px 8px",
-      fontWeight: 600
-    }
-  }, "🛡 Fierce Backup"), React.createElement("button", {
-    onClick: () => unmarkFierceBackupWeek(m),
-    style: {
-      background: "none",
-      border: "none",
-      color: "#904040",
-      cursor: "pointer",
-      fontSize: 12
-    }
-  }, "✕"))))), React.createElement("div", {
+  }, "+ Mark Fierce Backup")), (() => {
+    const {
+      upcoming,
+      past
+    } = marksListed(fierceBackupSet);
+    const row = (m, ended) => React.createElement("div", {
+      key: m,
+      style: {
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        marginBottom: 5
+      }
+    }, React.createElement("span", {
+      style: {
+        fontFamily: mono,
+        fontSize: 12,
+        color: "#5a6a78",
+        textDecoration: ended ? "line-through" : "none"
+      },
+      title: ended ? "This week has ended" : undefined
+    }, "Wk of ", m, ended && React.createElement("span", {
+      style: SR_TEXT
+    }, " (ended)")), React.createElement("span", {
+      style: {
+        fontSize: 11,
+        color: "#1a6fa8",
+        background: "#e8f0fc",
+        border: "1px solid #a8c8e0",
+        borderRadius: 6,
+        padding: "3px 8px",
+        fontWeight: 600
+      }
+    }, "🛡 Fierce Backup"), React.createElement("button", {
+      onClick: () => unmarkFierceBackupWeek(m),
+      "aria-label": `Remove the Fierce Backup mark from the week of ${m}`,
+      style: {
+        background: "none",
+        border: "none",
+        color: "#904040",
+        cursor: "pointer",
+        fontSize: 12
+      }
+    }, "✕"));
+    return React.createElement(React.Fragment, null, pastMarksToggle("fierce", past.length), showPastMarks.fierce && past.map(m => row(m, true)), upcoming.map(m => row(m, false)));
+  })())), React.createElement("div", {
     style: css.card,
     "data-setup-holidays": "1"
   }, React.createElement("div", {
