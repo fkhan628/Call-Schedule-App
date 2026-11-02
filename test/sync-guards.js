@@ -20456,12 +20456,14 @@ await (async () => {
 // revoked", no word on who or what it means — while approve and deny e-mail the person. It now e-mails too (type
 // vacation_revoked: send-notification v18, under each person's vacation e-mail switch), and the notice, the push and
 // the e-mail say the same sentence (requestNoticeText "revoked"):
-//   DF6 the REAL revokeApprovedVac: "MCC's approved vacation Mon Oct 26 – Fri Oct 30 was revoked by FAK — those days
+//   DF6 the REAL revokeApprovedVac: "MCC's approved vacation Mon Dec 14 – Fri Dec 18 was revoked by FAK — those days
 //       are back on the call schedule" (one day: "that day is back…"), then ONE e-mail to the notice's people with the
 //       dates in words, who revoked it, the sentence (detail) and — for a server before v18 — message; who: the
-//       profile's name, else the roster's, else none; a session change during the status write tells nothing, during
-//       the notice sends no e-mail; an old helpers.js: main's words, the e-mail still sent; its push still under the
-//       vacation push switch and opening Requests
+//       profile's name, else the roster's, else none; a session change during the status write or the time off's
+//       removal tells nothing, during the notice sends no e-mail; an old helpers.js: main's words, the e-mail still
+//       sent; its push still under the vacation push switch and opening Requests. The review of QW5: "back on the call schedule" only when it is
+//       true — the time off's removal landed (the REAL toRemove answers the REAL deleteTimeOff's { ok }) and a day is
+//       left; a helpers.js whose requestNoticeText lacks "revoked": the old words; today pinned (Mon Nov 2, 2026)
 //   the section runs inside its own catch (a throw fails one named check, never the run)
 console.log("\nDF. Notices say the day; the publish notice opens on its period; a revoked vacation is e-mailed (2026-11-02)");
 await (async () => {
@@ -20793,51 +20795,114 @@ await (async () => {
 
   // DF6 — the REAL revokeApprovedVac: its notice, push and (new) e-mail say the same words
   {
-    const RV_ENV = "sessionEpochRef, dbAuthHeaders, confirm, fetch, SUPABASE_URL, console, showToast, setBackRequest, setVacRequests, toRemove, schedulerAdminIds, addNotification, sendEmailNotif, userProfile, surgeons, mySurgeon";
+    // (changed ON PURPOSE 2026-11-02, the review of QW5: + Date — the toast's dates and the "back on the call schedule"
+    // rule read today, pinned here to Mon Nov 2, 2026: by the real clock the toast would have said the year from Jan 1, 2027
+    // and the check gone red; toRemove answers o.removed, as deleteTimeOff does, and is awaited)
+    const RV_ENV = "sessionEpochRef, dbAuthHeaders, confirm, fetch, SUPABASE_URL, console, showToast, setBackRequest, setVacRequests, toRemove, schedulerAdminIds, addNotification, sendEmailNotif, userProfile, surgeons, mySurgeon, Date";
     const rvCode = afterDF("  const revokeApprovedVac = useCallback(", ", [addNotification, sendEmailNotif, schedulerAdminIds, userProfile, surgeons, mySurgeon]);");
     const rvNew = fnDF(RV_ENV, rvCode, sandbox), rvOld = fnDF(RV_ENV, rvCode, OLD_DF);
-    // one tap, every step in order (o.cross: the session changes while the status write is out, or during the notice)
+    // a cached helpers.js that has requestNoticeText but not "revoked" (main's before this change answers without the verb)
+    const rvNoVerb = fnDF(RV_ENV + ", requestNoticeText", rvCode, sandbox);
+    const NOV2 = class extends Date { constructor(...a) { if (a.length) super(...a); else super(2026, 10, 2, 12, 0, 0); } };
+    // one tap, every step in order (o.cross: the session changes while the status write is out, or during the notice;
+    // o.removed: what the time off's removal answers — undefined, the blob mode's; o.env: anything else in place)
     const revokeRun = async (mk, req, o = {}) => {
       const ev = [], ep = { current: 0 };
       let sent = 0;
       try {
-        await mk({ sessionEpochRef: ep, dbAuthHeaders: () => ({ Authorization: "Bearer A" }), confirm: () => true, SUPABASE_URL: "https://x.test", console: quietDF,
+        await mk(Object.assign({ sessionEpochRef: ep, dbAuthHeaders: () => ({ Authorization: "Bearer A" }), confirm: () => true, SUPABASE_URL: "https://x.test", console: quietDF,
           fetch: async (url, init) => { ev.push("request " + ((init && init.method) || "GET")); if (o.cross === "status" && ++sent === 1) ep.current++; return { ok: true, status: 200, json: async () => [{ id: 7 }], text: async () => "" }; },
-          showToast: (m, t) => ev.push("toast " + (t || "info") + ": " + m), setBackRequest: async () => { ev.push("set back"); return true; }, setVacRequests: () => ev.push("list"), toRemove: () => ev.push("time off"),
+          showToast: (m, t) => ev.push("toast " + (t || "info") + ": " + m), setBackRequest: async () => { ev.push("set back"); return true; }, setVacRequests: () => ev.push("list"),
+          toRemove: async () => { ev.push("time off"); if (o.cross === "remove") ep.current++; return "removed" in o ? o.removed : { ok: true }; },
           schedulerAdminIds: ["s6"], addNotification: async (type, title, msg, data, to) => { ev.push(["notice", type, title, msg, data, to]); if (o.cross === "notice") ep.current++; },
           sendEmailNotif: (type, data, to) => ev.push(["e-mail", type, data, to]),
-          userProfile: "userProfile" in o ? o.userProfile : { display_name: "FAK" }, surgeons: SURG, mySurgeon: o.mySurgeon || "s6" })(Object.assign({}, req));
+          userProfile: "userProfile" in o ? o.userProfile : { display_name: "FAK" }, surgeons: SURG, mySurgeon: o.mySurgeon || "s6", Date: NOV2 }, o.env || {}))(Object.assign({}, req));
       } catch (ex) { ev.push("threw " + String(ex).slice(0, 160)); }
       return JSON.parse(J(ev)); // as it goes out: a field left undefined is not sent
     };
     const REQ = (s, e, t) => ({ id: 7, surgeon_id: "s2", surgeon_name: "MCC", start_date: s, end_date: e, request_type: t, reason: "", status: "approved", reviewed_at: "2026-10-01T08:00:00Z" });
-    const VAC = REQ("2026-10-26", "2026-10-30", "vacation"), ONE = REQ("2026-12-01", "2026-12-01", "nocall");
-    const MSG = "MCC's approved vacation Mon Oct 26 – Fri Oct 30 was revoked by FAK — those days are back on the call schedule";
+    const VAC = REQ("2026-12-14", "2026-12-18", "vacation"), ONE = REQ("2026-12-01", "2026-12-01", "nocall"), PAST = REQ("2026-10-26", "2026-10-30", "vacation");
+    const MSG = "MCC's approved vacation Mon Dec 14 – Fri Dec 18 was revoked by FAK — those days are back on the call schedule";
     const MSG1 = "MCC's approved no-call day Tue Dec 1 was revoked by FAK — that day is back on the call schedule";
     const steps = (toast, title, msg, req, extra) => ["request PATCH", "list", toast, "time off", ["notice", "vacation_revoked", title, msg, { surgeon_id: "s2" }, ["s2", "s6"]],
       ["e-mail", "vacation_revoked", Object.assign({ surgeon_name: "MCC", surgeon_id: "s2", start_date: req.start_date, end_date: req.end_date, request_type: req.request_type }, extra), ["s2", "s6"]]];
-    if (!rvNew || !rvOld) check("DF6 revokeApprovedVac is extractable (its deps list what it reads: sendEmailNotif, userProfile, surgeons, mySurgeon)", false, "anchors not found");
+    const msgOf = (r) => (r.find((e) => Array.isArray(e) && e[0] === "notice") || [])[3];
+    const mailOf = (r) => ((r.find((e) => Array.isArray(e) && e[0] === "e-mail") || [])[2]) || {};
+    if (!rvNew || !rvOld || !rvNoVerb) check("DF6 revokeApprovedVac is extractable (its deps list what it reads: sendEmailNotif, userProfile, surgeons, mySurgeon)", false, "anchors not found");
     else {
-      // (changed ON PURPOSE 2026-11-02, on main after #109: QW18 says the revoke's toast dates as Mine does — "Mon 10/26 →
-      // Fri 10/30", one day "Tue 12/1" — mineRangeLabel, which an old cached helpers.js has too; the rest is this commit's)
+      // (changed ON PURPOSE 2026-11-02, on main after #109: QW18 says the revoke's toast dates as Mine does — "Mon 12/14 →
+      // Fri 12/18", one day "Tue 12/1" — mineRangeLabel, which an old cached helpers.js has too; the rest is this commit's)
       const vac = await revokeRun(rvNew, VAC), one = await revokeRun(rvNew, ONE);
-      check("DF6 the REAL revokeApprovedVac: its notice (\"Vacation Revoked\" — the push says the same) reads \"MCC's approved vacation Mon Oct 26 – Fri Oct 30 was revoked by FAK — those days are back on the call schedule\" (one no-call day: \"…no-call day Tue Dec 1 was revoked by FAK — that day is back…\"), then ONE e-mail like approve's and deny's: vacation_revoked to the same people (the surgeon and the schedulers), with the dates in words, who revoked it and the notice's own sentence (detail; message for a server before v18) — after the toast, the time off and the notice",
-        J(vac) === J(steps("toast success: Revoked — MCC's vacation, Mon 10/26 → Fri 10/30.", "Vacation Revoked", MSG, VAC, { dates: "Mon Oct 26 – Fri Oct 30", revoked_by: "FAK", detail: MSG, message: MSG }))
+      check("DF6 the REAL revokeApprovedVac: its notice (\"Vacation Revoked\" — the push says the same) reads \"MCC's approved vacation Mon Dec 14 – Fri Dec 18 was revoked by FAK — those days are back on the call schedule\" (one no-call day: \"…no-call day Tue Dec 1 was revoked by FAK — that day is back…\"), then ONE e-mail like approve's and deny's: vacation_revoked to the same people (the surgeon and the schedulers), with the dates in words, who revoked it and the notice's own sentence (detail; message for a server before v18) — after the toast, the time off's removal (awaited) and the notice",
+        J(vac) === J(steps("toast success: Revoked — MCC's vacation, Mon 12/14 → Fri 12/18.", "Vacation Revoked", MSG, VAC, { dates: "Mon Dec 14 – Fri Dec 18", revoked_by: "FAK", detail: MSG, message: MSG }))
           && J(one) === J(steps("toast success: Revoked — MCC's no-call days, Tue 12/1.", "No-Call Revoked", MSG1, ONE, { dates: "Tue Dec 1", revoked_by: "FAK", detail: MSG1, message: MSG1 })),
         J({ vac, one }).slice(0, 1600));
+      // (added 2026-11-02, the review of QW5) the clause only when it is true; the wording's other branches; who revoked it
+      const past = await revokeRun(rvNew, PAST), failed = await revokeRun(rvNew, VAC, { removed: { ok: false } }), unanswered = await revokeRun(rvNew, VAC, { removed: { ok: false, unanswered: true } }), blob = await revokeRun(rvNew, VAC, { removed: undefined });
+      check("DF6 (the review of QW5) \"— those days are back on the call schedule\" only when it is true: the time off's removal failed or went unanswered — the notice, the push and the e-mail say only \"…was revoked by FAK\"; a record correction for days already gone (Oct 26–30, today Nov 2) — the same; a removal with nothing to report (the blob mode) — the clause, as a landed one",
+        msgOf(past) === "MCC's approved vacation Mon Oct 26 – Fri Oct 30 was revoked by FAK" && mailOf(past).detail === msgOf(past)
+          && msgOf(failed) === "MCC's approved vacation Mon Dec 14 – Fri Dec 18 was revoked by FAK" && mailOf(failed).detail === msgOf(failed) && mailOf(failed).message === msgOf(failed)
+          && msgOf(unanswered) === msgOf(failed) && msgOf(blob) === MSG,
+        J({ past: msgOf(past), failed: msgOf(failed), unanswered: msgOf(unanswered), blob: msgOf(blob) }));
+      const oneVac = await revokeRun(rvNew, REQ("2026-12-02", "2026-12-02", "vacation")), manyNc = await revokeRun(rvNew, REQ("2026-12-01", "2026-12-03", "nocall"));
+      check("DF6 (the review of QW5) …its wording's other branches: one vacation day — \"vacation Wed Dec 2 was revoked by FAK — that day is back…\"; several no-call days — \"no-call days Tue Dec 1 – Thu Dec 3 were revoked by FAK — those days are back…\"",
+        msgOf(oneVac) === "MCC's approved vacation Wed Dec 2 was revoked by FAK — that day is back on the call schedule"
+          && msgOf(manyNc) === "MCC's approved no-call days Tue Dec 1 – Thu Dec 3 were revoked by FAK — those days are back on the call schedule",
+        J({ oneVac: msgOf(oneVac), manyNc: msgOf(manyNc) }));
+      const byName = await revokeRun(rvNew, VAC, { userProfile: { display_name: "Faraz Khan" } });
       const byRoster = await revokeRun(rvNew, VAC, { userProfile: {} }), byNobody = await revokeRun(rvNew, VAC, { userProfile: null, mySurgeon: "admin" });
-      const nb = byNobody[5] && byNobody[5][2] || {};
-      check("DF6 …who revoked it: the profile's display name, else the roster's name for the signed-in person (FAK); with neither, the sentence leaves the name out (\"…was revoked — those days are back on the call schedule\") and no revoked_by is sent",
-        byRoster[4] && byRoster[4][3] === MSG && byRoster[5] && byRoster[5][2].revoked_by === "FAK"
-          && byNobody[4] && byNobody[4][3] === "MCC's approved vacation Mon Oct 26 – Fri Oct 30 was revoked — those days are back on the call schedule" && !("revoked_by" in nb) && nb.detail === byNobody[4][3],
-        J({ byRoster: byRoster.slice(4), byNobody: byNobody.slice(4) }).slice(0, 1200));
+      const nb = mailOf(byNobody);
+      check("DF6 …who revoked it: the profile's display name (\"by Faraz Khan\"), else the roster's name for the signed-in person (FAK); with neither, the sentence leaves the name out (\"…was revoked — those days are back on the call schedule\") and no revoked_by is sent",
+        msgOf(byName) === "MCC's approved vacation Mon Dec 14 – Fri Dec 18 was revoked by Faraz Khan — those days are back on the call schedule" && mailOf(byName).revoked_by === "Faraz Khan"
+          && msgOf(byRoster) === MSG && mailOf(byRoster).revoked_by === "FAK"
+          && msgOf(byNobody) === "MCC's approved vacation Mon Dec 14 – Fri Dec 18 was revoked — those days are back on the call schedule" && !("revoked_by" in nb) && nb.detail === msgOf(byNobody),
+        J({ byName: msgOf(byName), byRoster: msgOf(byRoster), byNobody: byNobody.slice(4) }).slice(0, 1200));
       const crossStatus = await revokeRun(rvNew, VAC, { cross: "status" }), crossNotice = await revokeRun(rvNew, VAC, { cross: "notice" });
-      check("DF6 …the session changing while the status write is out: nothing told — no notice, no e-mail (set back, as before); changing during the notice: no e-mail from the next session (approve's fence)",
-        !crossStatus.some((e) => Array.isArray(e)) && crossStatus.includes("set back") && crossNotice.filter((e) => Array.isArray(e)).map((e) => e[0]).join() === "notice",
-        J({ crossStatus, crossNotice }).slice(0, 1200));
-      const old = await revokeRun(rvOld, VAC), OLDMSG = "MCC's vacation 2026-10-26 → 2026-10-30 was revoked";
-      check("DF6 …with an OLD cached helpers.js: main's notice text (\"MCC's vacation 2026-10-26 → 2026-10-30 was revoked\"), and the e-mail still goes, carrying those words (no dates in words); nothing thrown",
-        oldLacks && J(old) === J(steps("toast success: Revoked — MCC's vacation, Mon 10/26 → Fri 10/30.", "Vacation Revoked", OLDMSG, VAC, { revoked_by: "FAK", detail: OLDMSG, message: OLDMSG })), J(old).slice(0, 1200));
+      const crossRemove = await revokeRun(rvNew, VAC, { cross: "remove" });
+      // (changed ON PURPOSE 2026-11-02, the review of QW5: + the removal — the revoke now waits for it, so a session can
+      // change there too; no notice is saved as the next account)
+      check("DF6 …the session changing while the status write is out: nothing told — no notice, no e-mail (set back, as before); changing while the time off's removal is out (the revoke waits for it): the revoke stands, nothing told from the next session — no notice, no e-mail; changing during the notice: no e-mail from the next session (approve's fence)",
+        !crossStatus.some((e) => Array.isArray(e)) && crossStatus.includes("set back") && crossNotice.filter((e) => Array.isArray(e)).map((e) => e[0]).join() === "notice"
+          && J(crossRemove) === J(["request PATCH", "list", "toast success: Revoked — MCC's vacation, Mon 12/14 → Fri 12/18.", "time off"]),
+        J({ crossStatus, crossNotice, crossRemove }).slice(0, 1200));
+      const old = await revokeRun(rvOld, VAC), OLDMSG = "MCC's vacation 2026-12-14 → 2026-12-18 was revoked";
+      check("DF6 …with an OLD cached helpers.js: main's notice text (\"MCC's vacation 2026-12-14 → 2026-12-18 was revoked\"), and the e-mail still goes, carrying those words (no dates in words); nothing thrown",
+        oldLacks && J(old) === J(steps("toast success: Revoked — MCC's vacation, Mon 12/14 → Fri 12/18.", "Vacation Revoked", OLDMSG, VAC, { revoked_by: "FAK", detail: OLDMSG, message: OLDMSG })), J(old).slice(0, 1200));
+      // (added 2026-11-02, the review of QW5) a cached helpers.js with requestNoticeText but not "revoked" — it answers
+      // "MCC's vacation Mon Dec 14 – Fri Dec 18", no verb: the old words too, never a sentence that doesn't say revoked
+      const noVerb = await revokeRun(rvNoVerb, VAC, { env: { requestNoticeText: (what, req) => `${req.surgeon_name}'s vacation Mon Dec 14 – Fri Dec 18` } });
+      check("DF6 (the review of QW5) …with a cached helpers.js that has requestNoticeText but not \"revoked\" (it answers without the verb): the old words, \"MCC's vacation 2026-12-14 → 2026-12-18 was revoked\", in the notice and the e-mail",
+        msgOf(noVerb) === OLDMSG && mailOf(noVerb).detail === OLDMSG && mailOf(noVerb).message === OLDMSG, J({ noVerb: msgOf(noVerb), mail: mailOf(noVerb) }));
+      // (added 2026-11-02, the review of QW5) what the revoke reads, from the REAL code: toRemove answers deleteTimeOff's
+      // { ok }; then the revoke with the REAL toRemove — a DELETE refused or unanswered, no clause
+      const delDF = fnDF("sessionEpochRef, showToast, fetch, SUPABASE_URL, dbAuthHeaders, timeOffLoadSeqRef, console",
+        afterDF("  const deleteTimeOff = ", ";\n\n  // ─── Write helpers (the ONLY paths that mutate time_off) ───"), sandbox);
+      const rmDF = fnDF("noCallDays, vacations, setterFor, logAudit, nameOf, USE_TIME_OFF, deleteTimeOff", afterDF("  const toRemove = ", ";\n\n  const toEdit = async ("), sandbox);
+      const TELL = "toast error: Couldn't remove that — check your connection and try again.";
+      const realRm = (answer, use) => {
+        const seen = [];
+        const del = delDF({ sessionEpochRef: { current: 0 }, showToast: (m, t) => seen.push("toast " + t + ": " + m), SUPABASE_URL: "https://x.test", dbAuthHeaders: () => ({ Authorization: "Bearer A" }),
+          timeOffLoadSeqRef: { current: { del: 0 } }, console: quietDF,
+          fetch: async (url, init) => { seen.push(init.method + " " + url.slice(url.indexOf("time_off"))); if (answer === "throw") throw new TypeError("Failed to fetch"); return { ok: answer < 300, status: answer, text: async () => "" }; } });
+        const rm = rmDF({ noCallDays: {}, vacations: { s2: [["2026-12-14", "2026-12-18", 41]] }, setterFor: () => () => {}, logAudit: () => {}, nameOf: () => "MCC", USE_TIME_OFF: use !== false, deleteTimeOff: del });
+        return { seen, rm };
+      };
+      if (!delDF || !rmDF) check("DF6 (the review of QW5) the REAL deleteTimeOff and toRemove are extractable", false, "anchors not found");
+      else {
+        const answers = {}, viaReal = {};
+        for (const [k, a, use] of [["ok", 204], ["refused", 500], ["unanswered", "throw"], ["blob", 204, false]]) {
+          const r = realRm(a, use);
+          try { answers[k] = { said: await r.rm("s2", "vacation", "2026-12-14", "2026-12-18"), seen: r.seen }; } catch (ex) { answers[k] = { threw: String(ex).slice(0, 160) }; }
+        }
+        for (const [k, a] of [["refused", 500], ["unanswered", "throw"], ["ok", 204]]) viaReal[k] = msgOf(await revokeRun(rvNew, VAC, { env: { toRemove: realRm(a).rm } }));
+        check("DF6 (the review of QW5) …what the revoke reads, from the REAL code: toRemove answers the REAL deleteTimeOff's — { ok: true } when the DELETE lands, { ok: false } when it is refused, { ok: false, unanswered: true } when it goes unanswered (each failure with its own toast), nothing in the blob mode (no request); the REAL revoke with it: a refused or unanswered DELETE — \"…was revoked by FAK\", no clause; a landed one — the clause",
+          J(answers.ok) === J({ said: { ok: true }, seen: ["DELETE time_off?id=eq.41"] })
+            && J(answers.refused) === J({ said: { ok: false }, seen: ["DELETE time_off?id=eq.41", TELL] })
+            && J(answers.unanswered) === J({ said: { ok: false, unanswered: true }, seen: ["DELETE time_off?id=eq.41", TELL] })
+            && !!answers.blob && "said" in answers.blob && answers.blob.said === undefined && J(answers.blob.seen) === "[]"
+            && viaReal.refused === "MCC's approved vacation Mon Dec 14 – Fri Dec 18 was revoked by FAK" && viaReal.unanswered === viaReal.refused && viaReal.ok === MSG,
+          J({ answers, viaReal }).slice(0, 1600));
+      }
       // its push: still under each person's vacation PUSH switch (the REAL filterPushTargetsByType, unchanged) and still
       // opening Requests (the REAL buildDeepLink, unchanged); the e-mail's switch is the server's (v18: VACATION_TYPES)
       const fpCode = afterDF("  const filterPushTargetsByType = useCallback(", ", []);");

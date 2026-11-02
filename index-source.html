@@ -2118,7 +2118,7 @@ function CallSchedule() {
     const q = rowId
       ? `id=eq.${rowId}`
       : `person_id=eq.${encodeURIComponent(personId)}&kind=eq.${kind}&start_date=eq.${start}&end_date=eq.${end}`;
-    await deleteTimeOff(q);
+    return await deleteTimeOff(q); // ({ ok }: the revoke's notice reads it — review of QW5, 2026-11-02; the other callers ignore it)
   };
 
   const toEdit = async (personId, kind, oldStart, oldEnd, newStart, newEnd) => {
@@ -4538,8 +4538,10 @@ function CallSchedule() {
       // Before the time off and the notice (as approve's) — so it claims only the revoke: the time off's removal can
       // still fail after it, and its own toast says so (review fix 2026-10-19: it read "…, is off the schedule.").
       showToast(`Revoked — ${req.surgeon_name}'s ${kindLabel}, ${typeof mineRangeLabel === "function" ? mineRangeLabel(req.start_date, req.end_date, fmt(new Date())) : `${req.start_date} to ${req.end_date}`}.`, "success");
-      // Remove from the bucket it landed in
-      toRemove(req.surgeon_id, isNoCall ? "nocall" : "vacation", req.start_date, req.end_date);
+      // Remove from the bucket it landed in — awaited (review of QW5, 2026-11-02): the notice may say "those days are back
+      // on the call schedule" only once the time off is gone (its own toast says when it isn't)
+      const removed = await toRemove(req.surgeon_id, isNoCall ? "nocall" : "vacation", req.start_date, req.end_date);
+      if (!live()) return; // another session now (while the removal was out): no notice or e-mail from it — as after the status write
       const revokeTargets = [...new Set([req.surgeon_id, ...schedulerAdminIds].filter(Boolean))];
       // The notice carries surgeon_id like approve's and deny's: the bell shows
       // a member only notices whose data names them, so with {} the person
@@ -4550,8 +4552,16 @@ function CallSchedule() {
       // back on the call schedule (helpers.js requestNoticeText, guarded). The
       // e-mail is send-notification v18's vacation_revoked, under each person's
       // vacation e-mail setting; `message` is what a server before v18 prints.
+      // "Back on the call schedule" only when it is true (review of QW5): the
+      // time off's removal landed (a failed or unanswered DELETE leaves it; the
+      // blob mode's removal is local), and the request still has a day today or
+      // later — a record correction for days already gone says only "revoked".
+      // A cached helpers.js from before "revoked" (it answers without the verb)
+      // gets the old words, as one with no requestNoticeText at all.
       const revokedBy = userProfile?.display_name || surgeons.find(s => s.id === mySurgeon)?.name || "";
-      const revokeMsg = typeof requestNoticeText === "function" ? requestNoticeText("revoked", req, { by: revokedBy }) : `${req.surgeon_name}'s ${kindLabel} ${req.start_date} → ${req.end_date} was revoked`;
+      const back = (!removed || removed.ok !== false) && req.end_date >= fmt(new Date());
+      const said = typeof requestNoticeText === "function" ? requestNoticeText("revoked", req, { by: revokedBy, back }) : "";
+      const revokeMsg = /\brevoked\b/.test(said) ? said : `${req.surgeon_name}'s ${kindLabel} ${req.start_date} → ${req.end_date} was revoked`;
       await addNotification("vacation_revoked", isNoCall ? "No-Call Revoked" : "Vacation Revoked",
         revokeMsg,
         { surgeon_id: req.surgeon_id }, revokeTargets, ep);

@@ -1350,7 +1350,8 @@ function requestDates(start, end) {
 //   ("approved", req)         → "KJH's vacation Mon Dec 14 – Fri Dec 18 was approved"
 //   ("denied", req, { note }) → "ARW's vacation Mon Jan 4 – Tue Jan 5 was denied: Too many out"
 //   ("revoked", req, { by })  → "MCC's approved vacation Mon Oct 26 – Fri Oct 30 was revoked by FAK
-//                                — those days are back on the call schedule" (no by: no "by …")
+//                                — those days are back on the call schedule" (no by: no "by …"; back: false —
+//                                the time off not removed, or the days already gone — no "— those days…" clause)
 function requestNoticeText(what, req, o) {
   const one = !!req.start_date && req.start_date === req.end_date;
   const noCall = req.request_type === "nocall";
@@ -1361,7 +1362,7 @@ function requestNoticeText(what, req, o) {
   if (what === "submitted") return `${name} requested ${noCall && one ? "a no-call day" : noun} ${dates}`;
   if (what === "approved") return `${name}'s ${noun} ${dates} ${was} approved`;
   if (what === "denied") return `${name}'s ${noun} ${dates} ${was} denied${o && o.note ? ": " + o.note : ""}`;
-  if (what === "revoked") return `${name}'s approved ${noun} ${dates} ${was} revoked${o && o.by ? " by " + o.by : ""} — ${one ? "that day is" : "those days are"} back on the call schedule`;
+  if (what === "revoked") return `${name}'s approved ${noun} ${dates} ${was} revoked${o && o.by ? " by " + o.by : ""}${o && o.back === false ? "" : ` — ${one ? "that day is" : "those days are"} back on the call schedule`}`;
   return `${name}'s ${noun} ${dates}`;
 }
 // The first day a period's label names, read back (periodLabel writes it):
