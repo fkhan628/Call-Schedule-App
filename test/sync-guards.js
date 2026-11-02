@@ -8269,7 +8269,8 @@ console.log("\nCY. Setup's Backup Weeks card hides the weeks that have ended");
   let tgF = null, lbF = null, lfF = null, whyY = "";
   try {
     tgF = tgY && vm.runInContext(`(function (env) { const { h, showPastMarks, setShowPastMarks, font } = env;\n${jsxY(tgY + "\n  };")}\n return pastMarksToggle; })`, sandbox);
-    const NAMES_L = "h, marksListed, pastMarksToggle, showPastMarks, SR_TEXT, css, mono, unmarkBackupWeek, unmarkFierceBackupWeek, backupMondaySet, fierceBackupSet";
+    // (Changed ON PURPOSE 2026-11-02, DD3: each ✕ asks first — askUnmark(its list, its week), answered OK here; DD3 runs the question.)
+    const NAMES_L = "h, marksListed, pastMarksToggle, showPastMarks, SR_TEXT, css, mono, unmarkBackupWeek, unmarkFierceBackupWeek, askUnmark, backupMondaySet, fierceBackupSet";
     lbF = lbY && vm.runInContext(`(function (env) { const { ${NAMES_L} } = env; return (${jsxY(lbY + "})()")}); })`, sandbox);
     lfF = lfY && vm.runInContext(`(function (env) { const { ${NAMES_L} } = env; return (${jsxY(lfY + "})()")}); })`, sandbox);
   } catch (ex) { whyY = String(ex).slice(0, 200); }
@@ -8282,7 +8283,8 @@ console.log("\nCY. Setup's Backup Weeks card hides the weeks that have ended");
       const show = r.sw;
       const toggle = tgF({ h: hhY, showPastMarks: show, font: "font", setShowPastMarks: (f) => { r.swCalls++; r.after = f(Object.assign({}, show, { [kind === "backup" ? "fierce" : "backup"]: "kept" })); } });
       const env = { h: hhY, marksListed: ml, pastMarksToggle: toggle, showPastMarks: show, SR_TEXT: SRT, css: { backupBanner: { k: "banner" } }, mono: "mono",
-        unmarkBackupWeek: (m) => r.unmarked.push(["backup", m]), unmarkFierceBackupWeek: (m) => r.unmarked.push(["fierce", m]), backupMondaySet: new Set(set), fierceBackupSet: new Set(set) };
+        unmarkBackupWeek: (m) => r.unmarked.push(["backup", m]), unmarkFierceBackupWeek: (m) => r.unmarked.push(["fierce", m]),
+        askUnmark: (k, m) => (k === "backup" ? env.unmarkBackupWeek : env.unmarkFierceBackupWeek)(m), backupMondaySet: new Set(set), fierceBackupSet: new Set(set) };
       r.tree = (kind === "backup" ? lbF : lfF)(env);
       r.kids = r.tree && r.tree.tag === "#frag" ? r.tree.kids : [];
       r.switch = r.kids.find((k) => k.tag === "button" && k.props["data-past-marks"]) || null;
@@ -11532,7 +11534,8 @@ console.log("\nAT. A trade waiting on your answer");
   const rmBody = arrowBody("const rmAppShift = (ds) => {", "(ds) => {");
   const paintBody = arrowBody("const commitAppPaint = async (draft) => {", "async (draft) => {");
   const saveBody = arrowBody("const saveAppShifts = async (next) => {", "async (next) => {");
-  const ENV = "appShiftsLoaded, appShifts, appDate, appPerson, showToast, setAppShifts, saveAppShifts, logAudit, nameOf, setAppDate, supabase, APP_SHIFTS_NOT_LOADED, setSaveError, setSaveStatus, sessionEpochRef"; // (22/n: saveAppShifts / commitAppPaint read the session at the call — review r5 fix-1)
+  const ENV = "appShiftsLoaded, appShifts, appDate, appPerson, showToast, setAppShifts, saveAppShifts, logAudit, nameOf, setAppDate, supabase, APP_SHIFTS_NOT_LOADED, setSaveError, setSaveStatus, sessionEpochRef, confirm"; // (22/n: saveAppShifts / commitAppPaint read the session at the call — review r5 fix-1)
+  // (Changed ON PURPOSE 2026-11-02, DD2: the APP ✕ asks first — confirm, answered OK here; DD2 runs the question and its Cancel.)
   const mk = (body) => { try { return body ? vm.runInContext(`(function (env) { const { ${ENV} } = env; return (${body}); })`, sandbox) : null; } catch (ex) { return null; } };
   const mkAdd = mk(addSrc), mkRm = mk(rmBody), mkPaint = mk(paintBody), mkSave = mk(saveBody);
   const envAB = (loaded, over = {}) => {
@@ -11543,7 +11546,7 @@ console.log("\nAT. A trade waiting on your answer");
       logAudit: () => {}, nameOf: (x) => x, setAppDate: () => {}, setSaveError: () => {}, setSaveStatus: () => {},
       supabase: { from: () => ({ upsert: async (row) => { rec.upserts++; rec.rows.push(row); return { error: null }; } }) },
       APP_SHIFTS_NOT_LOADED: "APP shifts haven't loaded yet",
-      sessionEpochRef: { current: 0 },
+      sessionEpochRef: { current: 0 }, confirm: () => true,
     }, over) };
   };
   {
@@ -17457,6 +17460,315 @@ await (async () => {
       && count("if (!confirm(\"Delete this request?\")) return;") === 0 && count("if (!confirm(\"Delete this trade request?\")) return;") === 0,
     J({ revoke: count(">↩ Revoke</button>"), clear: count(">Clear All Reviewed</button>") }));
 })().catch(ex => check("CA harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
+
+// ─── DD. Setup asks first; Setup's lists; the week editor's close, names and Save (2026-11-02) ───
+// The UX audit's QW7, QW15 and QW16, on the owner's 2026-11-02 "work through your list in a safe and expeditious
+// manner". The real code, sliced and run with stubs (the JSX through CJ's h() compiler, copied as CY has it); a path
+// these items do not change runs beside the code before them (test/fixtures/setup-editor-3200f94.txt — its pieces
+// frozen at 3200f94) and must do exactly what it did:
+//   DD1 (QW7) ↻ Re-generate Holidays asks first when a pair already on a card would change and names each one
+//       ("Thanksgiving: MCC / KJH → DJA / KJH"; one it leaves unassigned "→ not assigned"); Cancel changes nothing —
+//       the cards, their warning line, the audit; OK — and a first Generate, or a re-generate that comes out the same,
+//       which ask nothing — gives the cards, the warning line and the audit line exactly as before (the planner's
+//       notes, FAK not on the roster, FAK's Christmas on a Silvis day, a preset on a Silvis day)
+//   DD2 (QW7) + Assign on a date another APP has asks "Thu Nov 5 is MA's APP call. Give it to MS instead?" — Cancel:
+//       nothing; OK: the map as before, its audit line naming whom it replaced; the same APP again writes nothing and
+//       says so; a free date is exactly as before; the APP ✕ asks "Remove MA's APP call Thu Nov 5?" — Cancel: nothing;
+//       OK: as before; before the APP row has loaded both refuse before asking
+//   DD3 (QW7) the Backup / Fierce Backup ✕ asks first (askUnmark): a published Backup week "goes back to our own call,
+//       and its counts move back" (from the counts floor — the real flagNet; before it, no counts), one not generated
+//       yet, a published Fierce Backup week loses its label; Cancel runs no handler, OK the ✕'s own handler for that
+//       week, once; the card's two lists, rendered, send each ✕ there; the four mark handlers are as they were
+console.log("\nDD. Setup asks first; Setup's lists; the week editor's close, names and Save");
+await (async () => {
+  const nsrcD = src.replace(/\r\n/g, "\n"), JD = JSON.stringify, cloneD = (o) => JSON.parse(JSON.stringify(o));
+  const countD = (s) => nsrcD.split(s).length - 1;
+  // The text after `a` (exactly one occurrence) up to the first `b` after it; null when absent.
+  const cutD = (a, b) => { const i = nsrcD.indexOf(a); if (i < 0 || nsrcD.indexOf(a, i + 1) !== -1) return null; const j = nsrcD.indexOf(b, i + a.length); return j < 0 ? null : nsrcD.slice(i + a.length, j); };
+  // The code before these items (the "old" reference, frozen): OLD[name] is the piece's text, cut as its header says.
+  const FIXD = fs.readFileSync(path.join(ROOT, "test", "fixtures", "setup-editor-3200f94.txt"), "utf8").replace(/\r\n/g, "\n");
+  const OLD = {};
+  { const p = FIXD.split(/\n?\/\/@@ (\w+) — [^\n]*\n/); for (let k = 1; k + 1 < p.length; k += 2) OLD[p[k]] = p[k + 1]; }
+  const compileD = (names, code, filename) => { if (code == null) return null; try { return vm.runInContext(`(function (env) { const { ${names} } = env; return (${code}); })`, sandbox, { filename }); } catch (ex) { return null; } };
+  // A body cut from today's code or the frozen one, wrapped back into its function (null when it isn't there).
+  const fnOf = (head, body) => (body == null ? null : head + body + "\n  }");
+  // "Today" for the slices' new Date(): Mon Nov 2, 2026 at noon.
+  const DateD = class extends Date { constructor(...a) { if (a.length) super(...a); else super(2026, 10, 2, 12, 0, 0); } };
+  const S7D = ["DJA", "MCC", "RPC", "KJH", "REH", "FAK", "ARW"].map((n, i) => ({ id: "s" + (i + 1), name: n }));
+  const APPSD = [["a1", "MA"], ["a2", "SJ"], ["a3", "MS"], ["a4", "KMB"], ["a5", "JH"]].map(([id, name]) => ({ id, name }));
+  const nameOfD = (id) => (S7D.find((s) => s.id === id) || APPSD.find((a) => a.id === id) || {}).name || id || "?"; // as the app's nameOf
+  // JSX → h() calls: CY's copy of CJ's compiler (it knows `return <…>`), as is.
+  const jsxD = (code) => {
+    const q = (x) => JSON.stringify(x);
+    const skipStr = (k) => { const ch = code[k]; for (let m = k + 1; m < code.length; m++) { if (code[m] === "\\") { m++; continue; } if (code[m] === ch) return m; } return code.length; };
+    const close = (j) => {
+      let depth = 0;
+      for (let k = j; k < code.length; k++) {
+        const ch = code[k];
+        if (ch === '"' || ch === "'") { k = skipStr(k); continue; }
+        if (ch === "`") { for (k = k + 1; k < code.length && code[k] !== "`"; k++) { if (code[k] === "\\") k++; else if (code[k] === "$" && code[k + 1] === "{") k = close(k + 1); } continue; }
+        if (ch === "{") depth++; else if (ch === "}" && --depth === 0) return k;
+      }
+      throw new Error("unbalanced { at " + j);
+    };
+    const opens = (k) => code[k] === "<" && (/[A-Za-z]/.test(code[k + 1] || "") || code[k + 1] === ">");
+    const el = (k) => {
+      let j = k + 1, tag = "#frag";
+      if (code[j] !== ">") { tag = /^[A-Za-z][\w.]*/.exec(code.slice(j))[0]; j += tag.length; }
+      const props = [], kids = [];
+      for (;;) {
+        while (/\s/.test(code[j])) j++;
+        if (code[j] === "/" && code[j + 1] === ">") return [`h(${q(tag)}, {${props.join(", ")}})`, j + 2];
+        if (code[j] === ">") { j++; break; }
+        const nm = (/^[\w-]+/.exec(code.slice(j)) || [""])[0];
+        if (!nm) throw new Error("attribute at " + j + ": " + code.slice(j, j + 30));
+        j += nm.length;
+        if (code[j] !== "=") { props.push(`${q(nm)}: true`); continue; }
+        j++;
+        if (code[j] === '"') { const e = skipStr(j); props.push(`${q(nm)}: ${code.slice(j, e + 1)}`); j = e + 1; }
+        else if (code[j] === "{") { const e = close(j); props.push(`${q(nm)}: (${jsxD(code.slice(j + 1, e))})`); j = e + 1; }
+        else throw new Error("attribute value at " + j);
+      }
+      let text = "";
+      const flush = () => {
+        if (!text) return;
+        const lines = text.split("\n");
+        const t = lines.length === 1 ? text : lines.map((l, i) => (i > 0 ? l.replace(/^\s+/, "") : l)).map((l, i, a) => (i < a.length - 1 ? l.replace(/\s+$/, "") : l)).filter((l) => l.length).join(" ");
+        if (t.length && !(lines.length > 1 && !t.trim())) kids.push(q(t));
+        text = "";
+      };
+      for (;;) {
+        if (j >= code.length) throw new Error("unclosed <" + tag + ">");
+        if (code.startsWith("</", j)) { flush(); j = code.indexOf(">", j) + 1; break; }
+        if (opens(j)) { flush(); const [js, e] = el(j); kids.push(js); j = e; continue; }
+        if (code[j] === "{") { flush(); const e = close(j); const inner = code.slice(j + 1, e); if (inner.replace(/\/\*[\s\S]*?\*\//g, "").trim()) kids.push(`(${jsxD(inner)})`); j = e + 1; continue; }
+        text += code[j]; j++;
+      }
+      return [`h(${q(tag)}, {${props.join(", ")}}${kids.length ? ", " + kids.join(", ") : ""})`, j];
+    };
+    let out = "";
+    for (let i = 0; i < code.length;) {
+      const ch = code[i];
+      if (ch === '"' || ch === "'") { const e = skipStr(i); out += code.slice(i, e + 1); i = e + 1; continue; }
+      if (ch === "`") { const e0 = i; let k = i + 1; for (; k < code.length && code[k] !== "`"; k++) { if (code[k] === "\\") k++; else if (code[k] === "$" && code[k + 1] === "{") k = close(k + 1); } out += code.slice(e0, k + 1); i = k + 1; continue; }
+      const before = out.replace(/\s+$/, "");
+      if (opens(i) && (/^\s*$/.test(out) || /[(?:,&|>{[=]$/.test(before) || /\breturn$/.test(before))) { const [js, e] = el(i); out += js; i = e; continue; }
+      out += ch; i++;
+    }
+    return out;
+  };
+  const stripD = (s) => s.replace(/^\s*\/\/[^\n]*$/gm, "").replace(/\{\/\*[\s\S]*?\*\/\}/g, ""); // comment lines and {/* … */} out (an apostrophe in one would read as a string)
+  const hD = (tag, props, ...kids) => ({ tag, props: props || {}, kids: kids.flat(Infinity).filter((k) => k !== null && k !== undefined && k !== false && k !== true && k !== "") });
+  const allD = (n, out = []) => { if (n && typeof n === "object") { out.push(n); n.kids.forEach((k) => allD(k, out)); } return out; };
+  const textD = (n) => (n == null ? "" : typeof n !== "object" ? String(n) : n.kids.map(textD).join(""));
+  const pieces = ["generateHolidayAssignments", "addAppShift", "rmAppShift", "saveAppShifts", "toAdd", "addVac", "addNoCall", "saveWeekEdits", "markHandlers"];
+  check("DD the frozen pieces of 3200f94 (test/fixtures/setup-editor-3200f94.txt) are all there",
+    pieces.every((k) => typeof OLD[k] === "string" && OLD[k].length > 40), JD(Object.keys(OLD)));
+
+  // ── DD1 — ↻ Re-generate Holidays ──
+  {
+    const GA = "  const generateHolidayAssignments = useCallback((year) => {", GB = "\n  }, [surgeons, vacations, noCallDays, holidayAssignments, silvisActive, silvisFakId, silvisDays]);";
+    const ENVG = "surgeons, vacations, noCallDays, holidayAssignments, silvisActive, silvisFakId, silvisDays, setHolidayLockWarning, setHolidayAssignments, logAudit, planHolidayPairs, sfConflictDay, buildGenAvailability, buildSilvisPrimary, Date, confirm, console";
+    const gN = compileD(ENVG, fnOf("(year) => {", cutD(GA, GB)), "dd-holgen.js"), gO = compileD(ENVG, fnOf("(year) => {", OLD.generateHolidayAssignments), "dd-holgen-old.js");
+    if (!gN || !gO) check("DD1 generateHolidayAssignments (today's and 3200f94's) is extractable and compiles", false, JD({ now: !!gN, old: !!gO }));
+    else {
+      if (!vm.runInContext("typeof holidayDesign === 'function'", sandbox)) vm.runInContext(fs.readFileSync(path.join(ROOT, "generator.js"), "utf8"), sandbox, { filename: "generator.js" }); // the page loads it before the app (getHolidays, holidayDesign)
+      const planD = vm.runInContext("planHolidayPairs", sandbox);
+      const HA26 = JSON.parse(fs.readFileSync(path.join(ROOT, "test", "fixtures", "holiday-assignments-2026-live.json"), "utf8"));
+      // The planner breaks ties at random (its o.random): each run gets the same seeded one, so today's code and
+      // 3200f94's plan alike from the same inputs.
+      const rngD = (seed) => () => { seed = (seed + 0x6D2B79F5) | 0; let t = Math.imul(seed ^ (seed >>> 15), 1 | seed); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+      // One tap, its effects as React applies them: the warning line (an earlier run's to start with), the year's cards
+      // saved, the audit lines, its console lines, and each question asked (answered OK unless o.answer is false).
+      const STALE = "⚠ an earlier run's warning";
+      const runG = (fn, year, o = {}) => {
+        const r = { warn: STALE, warnSets: 0, saved: null, audits: [], asked: [], logs: [] };
+        try {
+          fn({ surgeons: o.surgeons || S7D, vacations: {}, noCallDays: {}, holidayAssignments: o.hist, silvisActive: !!o.silvis, silvisFakId: "s6", silvisDays: { primary: new Set(o.silvis || []) },
+            console: { error: (...a) => r.logs.push(a.map(String).join(" ")), warn: (...a) => r.logs.push("warn: " + a.map(String).join(" ")), log() {}, info() {} },
+            setHolidayLockWarning: (v) => { r.warnSets++; r.warn = typeof v === "function" ? v(r.warn) : v; },
+            setHolidayAssignments: (u) => { r.saved = u(cloneD(o.hist))[String(year)]; },
+            logAudit: (a, msg, meta) => r.audits.push([a, msg, meta]),
+            planHolidayPairs: (p) => { const x = planD(Object.assign({}, p, { random: rngD(20261102) })); return o.note ? Object.assign({}, x, { notes: x.notes.concat([o.note]) }) : x; },
+            sfConflictDay: (set, days) => (o.silvis ? days.find((d) => set.has(d)) || null : null),
+            buildGenAvailability: () => ({}), buildSilvisPrimary: () => null, Date: DateD,
+            confirm: (q) => { r.asked.push(q); return o.answer !== false; } })(year);
+        } catch (ex) { r.threw = String(ex).slice(0, 160); }
+        return r;
+      };
+      const effects = (r) => JD({ warn: r.warn, saved: r.saved, audits: r.audits, logs: r.logs, threw: r.threw || null });
+      const hist = (y27) => Object.assign(cloneD(HA26), y27 ? { "2027": cloneD(y27) } : {});
+      // The question 3200f94's own run implies: each stored card whose pair its plan changes, in the card order, named
+      // from the run's roster (an id it doesn't know as it is).
+      const askOf = (year, stored, planned, roster) => {
+        const nm = (id) => ((roster || S7D).find((s) => s.id === id) || {}).name || id || "—", pairD = (h) => (h.surgeonA === h.surgeonB ? nm(h.surgeonA) : `${nm(h.surgeonA)} / ${nm(h.surgeonB)}`);
+        const lines = stored.map((h) => [h, (planned || []).find((x) => x.name === h.name)]).filter(([h, n]) => !n || n.surgeonA !== h.surgeonA || n.surgeonB !== h.surgeonB)
+          .map(([h, n]) => `• ${h.name}: ${pairD(h)} → ${n ? pairD(n) : "not assigned"}`);
+        return lines.length ? `Re-generate the ${year} holidays?\n\nThese pairs change (holiday / day after) — anything you set by hand on them is lost:\n${lines.join("\n")}` : null;
+      };
+      // a first Generate of 2027, and the same year re-generated as it was stored
+      const first = runG(gN, 2027, { hist: hist() }), firstO = runG(gO, 2027, { hist: hist() });
+      const cards = first.saved || [];
+      const same = runG(gN, 2027, { hist: hist(cards) }), sameO = runG(gO, 2027, { hist: hist(cards) });
+      check("DD1 a first Generate (2027, no cards yet) and a re-generate that comes out the same ask nothing, and give the cards, the warning line (set once) and the audit line exactly as 3200f94",
+        cards.length === 6 && first.asked.length === 0 && same.asked.length === 0 && effects(first) === effects(firstO) && effects(same) === effects(sameO) && first.warnSets === 1 && !first.threw && !same.threw,
+        JD({ n: cards.length, asked: [first.asked, same.asked], first: effects(first) === effects(firstO), same: effects(same) === effects(sameO), threw: [first.threw, same.threw] }));
+      // Thanksgiving's surgeon A set by hand to someone the plan doesn't pick (as the card's select writes it)
+      const tg = cards.find((h) => h.name === "Thanksgiving") || {}, other = ["s1", "s2", "s3", "s4", "s5", "s7"].find((id) => id !== tg.surgeonA && id !== tg.surgeonB);
+      const hand = cards.map((h) => (h.name === "Thanksgiving" ? Object.assign(cloneD(h), { surgeonA: other }) : cloneD(h)));
+      const no = runG(gN, 2027, { hist: hist(hand), answer: false }), yes = runG(gN, 2027, { hist: hist(hand) }), yesO = runG(gO, 2027, { hist: hist(hand) });
+      const wantAsk = askOf(2027, hand, yesO.saved);
+      check("DD1 a pair set by hand (Thanksgiving's surgeon A): ↻ Re-generate asks ONCE, naming each stored pair that changes — \"• Thanksgiving: <by hand> / <B> → <planned> / <B>\" (the plan 3200f94 makes) — and Cancel changes nothing: no cards saved, no audit, the warning line not touched (an earlier run's stays)",
+        !!wantAsk && wantAsk.includes(`• Thanksgiving: ${nameOfD(other)} / ${nameOfD(tg.surgeonB)} → ${nameOfD(tg.surgeonA)} / ${nameOfD(tg.surgeonB)}`)
+          && JD(no.asked) === JD([wantAsk]) && no.saved === null && no.audits.length === 0 && no.warn === STALE && no.warnSets === 0 && !no.threw,
+        JD({ asked: no.asked, want: wantAsk, saved: !!no.saved, audits: no.audits.length, warn: no.warn }));
+      check("DD1 …OK re-generates exactly as 3200f94 (the cards, the warning line, the audit line)",
+        JD(yes.asked) === JD([wantAsk]) && effects(yes) === effects(yesO) && !yes.threw, JD({ asked: yes.asked.length, same: effects(yes) === effects(yesO) }));
+      // the warning line's four sources, against 3200f94: the planner's notes; FAK not on the roster (Christmas left
+      // unassigned); FAK's Christmas on a Silvis primary day; a hand-written preset on a Silvis day
+      const noFak = S7D.filter((s) => s.name !== "FAK");
+      const warnRuns = [
+        ["the planner's notes", { hist: hist(), note: "a note of the planner's" }],
+        ["FAK not on the roster", { hist: hist(cards), surgeons: noFak }],
+        ["FAK's Christmas on a Silvis day", { hist: hist(cards), silvis: ["2027-12-25"] }],
+        ["a preset on a Silvis day", { hist: hist(), silvis: ["2027-05-31"], preset: true }],
+      ];
+      const warnBad = [], asks = {};
+      for (const [label, o] of warnRuns) {
+        if (o.preset) vm.runInContext('HOLIDAY_PRESETS["2027"] = { "Memorial Day": ["s6", "s7"] };', sandbox);
+        let n = null, n0 = null, w = null;
+        try { n = runG(gN, 2027, o); n0 = runG(gN, 2027, Object.assign({}, o, { answer: false })); w = runG(gO, 2027, o); }
+        finally { if (o.preset) vm.runInContext('delete HOLIDAY_PRESETS["2027"];', sandbox); }
+        const want = o.hist["2027"] ? askOf(2027, o.hist["2027"], w.saved, o.surgeons) : null;
+        asks[label] = n.asked;
+        if (effects(n) !== effects(w) || !/⚠/.test(n.warn) || n.warn === STALE || JD(n.asked) !== JD(want ? [want] : []) || (want && (n0.saved !== null || n0.warn !== STALE || n0.audits.length))) warnBad.push(`${label}: ${effects(n).slice(0, 160)} vs ${effects(w).slice(0, 160)} asked ${JD(n.asked).slice(0, 120)}`);
+      }
+      check("DD1 the warning line, against 3200f94: the planner's notes, FAK not on the roster, FAK's Christmas on a Silvis day and a preset on a Silvis day each give exactly 3200f94's line, cards and audit (OK, or nothing asked); where a stored Christmas would be left unassigned the question says so (\"• Christmas Day: … → not assigned\") and Cancel leaves the cards and the earlier warning",
+        warnBad.length === 0 && asks["FAK not on the roster"].length === 1 && /• Christmas Day: \S+ → not assigned/.test(asks["FAK not on the roster"][0]) && /• Christmas Day: FAK → not assigned/.test(asks["FAK's Christmas on a Silvis day"][0] || ""),
+        warnBad.join(" | ") || JD(asks).slice(0, 400));
+      check("DD1 …the card's button still runs generateHolidayAssignments(holidayYear) (\"↻ Re-generate\" once the year has cards); the warning line is set in ONE place, once the cards are applied",
+        countD("<button onClick={()=>generateHolidayAssignments(holidayYear)}") === 1 && countD('{holidayAssignments[String(holidayYear)] ? "↻ Re-generate" : "Generate"} {holidayYear} Holidays') === 1
+          && countD("setHolidayLockWarning(") === 1 && countD("    setHolidayLockWarning(lockWarning);\n    setHolidayAssignments(prev => ({ ...prev, [String(year)]: assignments }));") === 1);
+    }
+  }
+
+  // ── DD2 — + Assign over another APP, and the APP ✕ ──
+  {
+    const ENVA = "appShiftsLoaded, appShifts, appDate, appPerson, showToast, setAppShifts, saveAppShifts, logAudit, nameOf, setAppDate, APP_SHIFTS_NOT_LOADED, confirm, Date";
+    const addN = compileD(ENVA, fnOf("() => {", cutD("  const addAppShift = () => {", "\n  };")), "dd-add.js"), addO = compileD(ENVA, fnOf("() => {", OLD.addAppShift), "dd-add-old.js");
+    const rmN = compileD(ENVA, fnOf("(ds) => {", cutD("  const rmAppShift = (ds) => {", "\n  };")), "dd-rm.js"), rmO = compileD(ENVA, fnOf("(ds) => {", OLD.rmAppShift), "dd-rm-old.js");
+    if (!addN || !addO || !rmN || !rmO) check("DD2 addAppShift / rmAppShift (today's and 3200f94's) are extractable and compile", false, JD({ addN: !!addN, addO: !!addO, rmN: !!rmN, rmO: !!rmO }));
+    else {
+      const MAPA = { "2026-11-05": "a1", "2027-01-08": "a2", "2026-10-12": "a4" };
+      const runA = (fn, arg, o = {}) => {
+        const r = { toasts: [], sets: [], saves: [], audits: [], dates: [], asked: [] };
+        try {
+          fn({ appShiftsLoaded: o.loaded !== false, appShifts: cloneD(MAPA), appDate: o.date, appPerson: o.app, showToast: (m, t) => r.toasts.push([String(m), t || "info"]),
+            setAppShifts: (x) => r.sets.push(x), saveAppShifts: (x) => r.saves.push(x), logAudit: (a, m, meta) => r.audits.push([a, m, meta]), nameOf: nameOfD, setAppDate: (v) => r.dates.push(v),
+            APP_SHIFTS_NOT_LOADED: "APP shifts haven't loaded yet", confirm: (q) => { r.asked.push(q); return o.answer !== false; }, Date: DateD })(arg);
+        } catch (ex) { r.threw = String(ex).slice(0, 160); }
+        return r;
+      };
+      const writes = (r) => JD({ sets: r.sets, saves: r.saves, dates: r.dates, toasts: r.toasts, threw: r.threw || null });
+      const free = runA(addN, undefined, { date: "2026-11-04", app: "a3" }), freeO = runA(addO, undefined, { date: "2026-11-04", app: "a3" });
+      check("DD2 + Assign on a free date asks nothing and does exactly what 3200f94 did — the map, its save, the audit line, the date back to today",
+        free.asked.length === 0 && writes(free) === writes(freeO) && JD(free.audits) === JD(freeO.audits) && free.saves.length === 1 && free.saves[0]["2026-11-04"] === "a3",
+        JD({ free: [free.asked, writes(free), free.audits], old: [writes(freeO), freeO.audits] }));
+      const no = runA(addN, undefined, { date: "2026-11-05", app: "a3", answer: false }), yes = runA(addN, undefined, { date: "2026-11-05", app: "a3" }), yesO = runA(addO, undefined, { date: "2026-11-05", app: "a3" });
+      const next = runA(addN, undefined, { date: "2027-01-08", app: "a3", answer: false });
+      check("DD2 + Assign on a date another APP has asks \"Thu Nov 5 is MA's APP call. Give it to MS instead?\" (a date not this year with its year: \"Fri Jan 8, 2027 is SJ's …\"); Cancel writes nothing (no map, save, audit, nor the date reset)",
+        JD(no.asked) === JD(["Thu Nov 5 is MA's APP call. Give it to MS instead?"]) && JD(next.asked) === JD(["Fri Jan 8, 2027 is SJ's APP call. Give it to MS instead?"])
+          && [no, next].every((r) => r.sets.length === 0 && r.saves.length === 0 && r.audits.length === 0 && r.dates.length === 0 && r.toasts.length === 0 && !r.threw),
+        JD({ no: no.asked, next: next.asked, writes: writes(no) }));
+      check("DD2 …OK writes the map exactly as 3200f94 did (MS on Thu Nov 5, MA's other days kept), and its audit line now names whom it replaced: \"Assigned APP MS to 2026-11-05 (replacing MA)\", { replaced: \"a1\" }",
+        writes(yes) === writes(yesO) && JD(yes.audits) === JD([["app_shift.assign", "Assigned APP MS to 2026-11-05 (replacing MA)", { date: "2026-11-05", app_id: "a3", replaced: "a1" }]])
+          && JD(yesO.audits) === JD([["app_shift.assign", "Assigned APP MS to 2026-11-05", { date: "2026-11-05", app_id: "a3" }]]),
+        JD({ yes: [writes(yes), yes.audits], old: yesO.audits }));
+      const again = runA(addN, undefined, { date: "2026-11-05", app: "a1" }), cold = runA(addN, undefined, { date: "2026-11-05", app: "a3", loaded: false });
+      check("DD2 …the same APP again writes nothing and says so (\"Thu Nov 5 is already MA's APP call — nothing changed.\"); before the APP row has loaded it refuses before asking (APP_SHIFTS_NOT_LOADED)",
+        again.asked.length === 0 && again.sets.length === 0 && again.saves.length === 0 && again.audits.length === 0 && JD(again.toasts) === JD([["Thu Nov 5 is already MA's APP call — nothing changed.", "info"]])
+          && cold.asked.length === 0 && cold.saves.length === 0 && JD(cold.toasts) === JD([["APP shifts haven't loaded yet", "error"]]),
+        JD({ again: again.toasts, cold: [cold.asked, cold.toasts] }));
+      const rNo = runA(rmN, "2026-11-05", { answer: false }), rYes = runA(rmN, "2026-11-05"), rYesO = runA(rmO, "2026-11-05");
+      const rNext = runA(rmN, "2027-01-08", { answer: false }), rNone = runA(rmN, "2026-11-09"), rNoneO = runA(rmO, "2026-11-09"), rCold = runA(rmN, "2026-11-05", { loaded: false });
+      check("DD2 the APP ✕ asks \"Remove MA's APP call Thu Nov 5?\" (\"Remove SJ's APP call Fri Jan 8, 2027?\"); Cancel removes nothing; OK removes it exactly as 3200f94 did (the map, its save, the audit line); a date with no APP is as before; before the row has loaded it refuses before asking",
+        JD(rNo.asked) === JD(["Remove MA's APP call Thu Nov 5?"]) && JD(rNext.asked) === JD(["Remove SJ's APP call Fri Jan 8, 2027?"]) && rNo.sets.length === 0 && rNo.saves.length === 0 && rNo.audits.length === 0
+          && writes(rYes) === writes(rYesO) && JD(rYes.audits) === JD(rYesO.audits) && rYes.saves.length === 1 && !("2026-11-05" in rYes.saves[0]) && rYes.saves[0]["2026-10-12"] === "a4"
+          && rNone.asked.length === 0 && writes(rNone) === writes(rNoneO) && JD(rNone.audits) === JD(rNoneO.audits) && rCold.asked.length === 0 && rCold.saves.length === 0,
+        JD({ ask: [rNo.asked, rNext.asked], yes: writes(rYes) === writes(rYesO), none: [rNone.asked, writes(rNone) === writes(rNoneO)] }));
+      check("DD2 …the card's + Assign and each row's ✕ go through these two (the ✕ only)",
+        countD("<button onClick={addAppShift}") === 1 && countD("onClick={()=>rmAppShift(ds)}") === 1 && countD("rmAppShift(") === 1 && countD("addAppShift}") === 1);
+    }
+  }
+
+  // ── DD3 — the Backup / Fierce Backup ✕ asks first ──
+  {
+    const ASK = cutD("  const askUnmark = (kind, m) => {", "\n  };");
+    const FN = nsrcD.match(/\n  (const flagNet = \(m, wk, from, to\) => \{\n[\s\S]*?\n  \};)\n/), CF = nsrcD.match(/\n  (const COUNTS_FLOOR = "[^"\n]*";)\n/);
+    const askF = ASK != null && FN && CF ? compileD("scheduleRef, confirm, unmarkBackupWeek, unmarkFierceBackupWeek, netCounts, countsOfWeeks, Date",
+      `(() => { ${CF[1]}\n  ${FN[1]}\n  const askUnmark = (kind, m) => {${ASK}\n  };\n  return askUnmark; })()`, "dd-ask.js") : null;
+    if (!askF) check("DD3 askUnmark (with the real flagNet and COUNTS_FLOOR) is extractable and compiles", false, JD({ ask: ASK != null, flagNet: !!FN, floor: !!CF }));
+    else {
+      // the weeks as stored: a published Backup week from the counts floor, one before it, a published Fierce Backup week,
+      // and a published week whose Backup flag is already off (a split the set still has)
+      const WKS = { "2027-01-04": { dayCall: "s7", isBackup: true }, "2026-04-27": { dayCall: "s1", isBackup: true }, "2026-12-07": { dayCall: "s2", isFierceBackup: true }, "2026-11-09": { dayCall: "s3", isBackup: false } };
+      const runU = (kind, m, answer) => {
+        const r = { asked: [], calls: [] };
+        try {
+          askF({ scheduleRef: { current: cloneD(WKS) }, confirm: (q) => { r.asked.push(q); return answer !== false; }, unmarkBackupWeek: (x) => r.calls.push(["backup", x]), unmarkFierceBackupWeek: (x) => r.calls.push(["fierce", x]),
+            netCounts: () => ({ s7: { dc: 1 } }), countsOfWeeks: () => ({}), Date: DateD })(kind, m);
+        } catch (ex) { r.threw = String(ex).slice(0, 160); }
+        return r;
+      };
+      const Q = (kind, day, what) => `Remove the ${kind} mark from the week of ${day}?${what ? "\n\n" + what : ""}`;
+      const CASES = [
+        ["backup", "2027-01-04", Q("Backup", "Jan 4, 2027", "The published week goes back to our own call, and its counts move back.")],
+        ["backup", "2026-04-27", Q("Backup", "Apr 27, 2026", "The published week goes back to our own call.")],
+        ["backup", "2027-02-22", Q("Backup", "Feb 22, 2027", "It isn't generated yet, so no published week changes.")],
+        ["fierce", "2026-12-07", Q("Fierce Backup", "Dec 7, 2026", "The published week loses its 🛡 Fierce Backup label; no shifts or counts change.")],
+        ["fierce", "2027-03-01", Q("Fierce Backup", "Mar 1, 2027", "It isn't generated yet, so no published week changes.")],
+        ["backup", "2026-11-09", Q("Backup", "Nov 9, 2026", "")],
+        ["backup", null, Q("Backup", "null", "It isn't generated yet, so no published week changes.")],
+      ];
+      const bad = [];
+      for (const [kind, m, want] of CASES) {
+        const no = runU(kind, m, false), yes = runU(kind, m, true);
+        if (JD(no.asked) !== JD([want]) || no.calls.length || JD(yes.asked) !== JD([want]) || JD(yes.calls) !== JD([[kind, m]]) || no.threw || yes.threw) bad.push(`${kind} ${m}: asked ${JD(no.asked)} calls ${JD([no.calls, yes.calls])} ${no.threw || yes.threw || ""}`);
+      }
+      check("DD3 the ✕ asks first (the real askUnmark, flagNet and COUNTS_FLOOR): a published Backup week from the floor — \"Remove the Backup mark from the week of Jan 4, 2027? … goes back to our own call, and its counts move back.\"; before the floor (Apr 27, 2026) no counts; not generated yet; a published Fierce Backup week loses its 🛡 label; a published week whose flag is already off, nothing more; a mark that isn't a date as it is. Cancel runs no handler; OK the ✕'s own handler for that week, once",
+        bad.length === 0, bad.slice(0, 3).join(" | "));
+      // the card's two lists, rendered (CY3's way): each ✕ sends its own week to askUnmark
+      const LIST = (set) => `(() => { const { upcoming, past } = marksListed(${set});`;
+      const lbS = (() => { const i = nsrcD.indexOf(LIST("backupMondaySet")), j = i < 0 ? -1 : nsrcD.indexOf("})()}", i); return i < 0 || j < 0 ? null : nsrcD.slice(i, j) + "})()"; })();
+      const lfS = (() => { const i = nsrcD.indexOf(LIST("fierceBackupSet")), j = i < 0 ? -1 : nsrcD.indexOf("})()}", i); return i < 0 || j < 0 ? null : nsrcD.slice(i, j) + "})()"; })();
+      const NAMES_L = "h, marksListed, pastMarksToggle, showPastMarks, SR_TEXT, css, mono, askUnmark, unmarkBackupWeek, unmarkFierceBackupWeek, backupMondaySet, fierceBackupSet, dk, font";
+      let lb = null, lf = null, why = "";
+      try { lb = lbS && compileD(NAMES_L, jsxD(lbS), "dd-backup-list.js"); lf = lfS && compileD(NAMES_L, jsxD(lfS), "dd-fierce-list.js"); } catch (ex) { why = String(ex).slice(0, 160); }
+      if (!lb || !lf) check("DD3 the card's two lists are extractable and compile (JSX → h())", false, JD({ backup: !!lb, fierce: !!lf, why }));
+      else {
+        const SET = ["2026-11-09", "2027-01-04"];
+        const xsOf = (fn, kind) => {
+          const r = { asks: [], direct: [] };
+          const tree = fn({ h: hD, marksListed: (s) => ({ upcoming: [...s].sort(), past: [] }), pastMarksToggle: () => null, showPastMarks: { backup: false, fierce: false }, SR_TEXT: {}, css: { backupBanner: {} }, mono: "mono",
+            askUnmark: (k, m) => r.asks.push([k, m]), unmarkBackupWeek: (m) => r.direct.push(["backup", m]), unmarkFierceBackupWeek: (m) => r.direct.push(["fierce", m]),
+            backupMondaySet: new Set(SET), fierceBackupSet: new Set(SET), dk: false, font: "font" });
+          const xs = allD(tree).filter((n) => n.tag === "button" && /mark from the week of/.test(n.props["aria-label"] || ""));
+          xs.forEach((x) => x.props.onClick());
+          return Object.assign(r, { n: xs.length, labels: xs.map((x) => x.props["aria-label"]), kind });
+        };
+        const xb = xsOf(lb, "backup"), xf = xsOf(lf, "fierce");
+        check("DD3 …the card, rendered: every ✕ of both lists (named for its week, as before) asks — askUnmark(<its list>, <its week>) — and none unmarks without asking",
+          [xb, xf].every((x) => x.n === 2 && JD(x.asks) === JD(SET.map((m) => [x.kind, m])) && x.direct.length === 0
+            && JD(x.labels) === JD(SET.map((m) => `Remove the ${x.kind === "backup" ? "Backup" : "Fierce Backup"} mark from the week of ${m}`))),
+          JD({ backup: [xb.asks, xb.direct], fierce: [xf.asks, xf.direct] }));
+      }
+      const handlersNow = cutD("  const markBackupWeek = () => {", "\n  // The ✕ on a Backup or Fierce Backup week asks first");
+      check("DD3 …the four mark handlers are byte for byte 3200f94's (their gates, then the mark — CX, CY and SE-G run them); askUnmark is called only from the two ✕ and calls no mark itself",
+        handlersNow !== null && OLD.markHandlers === handlersNow + "\n" && countD("askUnmark(") === 2 && !/markWeek\(|setWeekFlag\(|pushUndo\(/.test(ASK),
+        JD({ found: handlersNow !== null, same: OLD.markHandlers === handlersNow + "\n", calls: countD("askUnmark(") }));
+    }
+  }
+})().catch((ex) => check("DD harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
 
 // ─── BA. Requests: a decline is audited as who declined; a failed delete keeps its row; the trade buttons in dark mode (UX audit 2026-10-19) ───
 // (1) declineTradeRequest's useCallback listed only its notice deps, so React kept the closure of the render those

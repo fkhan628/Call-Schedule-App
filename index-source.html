@@ -5483,18 +5483,26 @@ function CallSchedule() {
   };
   const APP_SHIFTS_NOT_LOADED = "APP shifts haven't loaded yet — editing is disabled so saved assignments can't be overwritten. Retries automatically (~1 min); reload if it persists.";
 
+  // + Assign on a date another APP has, and the ✕ on an APP shift, ask first (UX audit 2026-11-01, QW7), as the
+  // time-off ✕ does: one tap silently replaced or deleted an assignment, and APP shifts are in neither ↩ Undo nor a
+  // restore. The question names the date as the range field writes it ("Thu Nov 5", with its year when that isn't
+  // this year) and the APPs. The same APP again changes nothing, and says so.
   const addAppShift = () => {
     if (!appShiftsLoaded) { showToast(APP_SHIFTS_NOT_LOADED, "error"); return; }
     if(!appDate||!appPerson) return;
+    const was = appShifts[appDate] || "", day = typeof rangeDayLabel === "function" ? rangeDayLabel(appDate, fmt(new Date())) : appDate;
+    if (was === appPerson) { showToast(`${day} is already ${nameOf(was)}'s APP call — nothing changed.`, "info"); return; }
+    if (was && !confirm(`${day} is ${nameOf(was)}'s APP call. Give it to ${nameOf(appPerson)} instead?`)) return;
     const next = {...appShifts,[appDate]:appPerson};
     setAppShifts(next);
     saveAppShifts(next);
-    logAudit("app_shift.assign", `Assigned APP ${nameOf(appPerson)} to ${appDate}`, { date: appDate, app_id: appPerson });
+    logAudit("app_shift.assign", `Assigned APP ${nameOf(appPerson)} to ${appDate}${was ? ` (replacing ${nameOf(was)})` : ""}`, was ? { date: appDate, app_id: appPerson, replaced: was } : { date: appDate, app_id: appPerson });
     setAppDate(fmt(new Date()));
   };
   const rmAppShift = (ds) => {
     if (!appShiftsLoaded) { showToast(APP_SHIFTS_NOT_LOADED, "error"); return; }
     const prevId = appShifts[ds];
+    if (prevId && !confirm(`Remove ${nameOf(prevId)}'s APP call ${typeof rangeDayLabel === "function" ? rangeDayLabel(ds, fmt(new Date())) : ds}?`)) return;
     const next={...appShifts}; delete next[ds];
     setAppShifts(next);
     saveAppShifts(next);
@@ -6878,7 +6886,9 @@ function CallSchedule() {
   // out a major each year and get one the next). Nobody gets the same holiday
   // as last year; the holidays rotate (helpers.js planHolidayPairs).
   const generateHolidayAssignments = useCallback((year) => {
-    setHolidayLockWarning(""); // a healthy run clears any stale lock warning
+    // What this run warns about, shown with its cards: a healthy run clears any stale lock warning. Kept here until
+    // the cards are applied, so a re-generate answered Cancel (below) leaves the cards and their warning as they were.
+    let lockWarning = "";
     const holidays = getHolidays(year);
     const ids = surgeons.map(s => s.id);
     const nameMap = {}; surgeons.forEach(s => nameMap[s.id] = s.name);
@@ -7030,7 +7040,7 @@ function CallSchedule() {
           const ph = [];
           if (sA === silvisFakId) { const h = sfConflictDay(silvisDays.primary, holDatesFor(hol, sA, "A")); if (h) ph.push(h); }
           if (sB === silvisFakId) { const h = sfConflictDay(silvisDays.primary, holDatesFor(hol, sB, "B")); if (h) ph.push(h); }
-          if (ph.length) setHolidayLockWarning(`⚠ ${hol.name} ${year} preset puts ${nameMap[silvisFakId]} on a Silvis PRIMARY day (${ph.join(", ")}) — kept as written; resolve with Silvis or change it via the swap controls.`);
+          if (ph.length) lockWarning = `⚠ ${hol.name} ${year} preset puts ${nameMap[silvisFakId]} on a Silvis PRIMARY day (${ph.join(", ")}) — kept as written; resolve with Silvis or change it via the swap controls.`;
         }
         const c = card(hol, sA, sB);
         assignments.push(c); fixedCards.push(c);
@@ -7050,7 +7060,7 @@ function CallSchedule() {
           // told. Surface it and leave Christmas UNASSIGNED for the
           // scheduler to fill by hand.
           console.error(`Christmas lock: designated surgeon "FAK" not found in the roster — Christmas ${year} left unassigned.`);
-          setHolidayLockWarning(`⚠ Christmas ${year} was NOT auto-assigned: the designated surgeon (FAK) isn't in the roster. Assign it manually via the swap controls.`);
+          lockWarning = `⚠ Christmas ${year} was NOT auto-assigned: the designated surgeon (FAK) isn't in the roster. Assign it manually via the swap controls.`;
           return;
         }
         // silvisBusy: the standing rule is FAK, so check HIS dates (Eve is
@@ -7061,7 +7071,7 @@ function CallSchedule() {
           const hit = sfConflictDay(silvisDays.primary, holDatesFor(hol, fakId, "both"));
           if (hit) {
             console.error(`Christmas lock: ${nameMap[fakId]} is Silvis PRIMARY on ${hit} — Christmas ${year} left unassigned.`);
-            setHolidayLockWarning(`⚠ Christmas ${year} was NOT auto-assigned: ${nameMap[fakId]} is Silvis PRIMARY on ${hit} (rule silvisBusy). Resolve it with Silvis or assign manually via the swap controls.`);
+            lockWarning = `⚠ Christmas ${year} was NOT auto-assigned: ${nameMap[fakId]} is Silvis PRIMARY on ${hit} (rule silvisBusy). Resolve it with Silvis or assign manually via the swap controls.`;
             return;
           }
         }
@@ -7094,10 +7104,18 @@ function CallSchedule() {
     const rateOf = (id, type) => holidayRate(lifetimeCt[id]?.[type] || 0, eligibleCt[id]?.[type] || 0);
     const plan = planHolidayPairs({ year, holidays: toPlan, partners: ids.filter(id => id !== fakId), history: holidayAssignments, fixed: fixedCards, unavailable, rate: rateOf, nameOf: (id) => nameMap[id] || id });
     toPlan.forEach(hol => { const pk = plan.picks[hol.name]; if (pk) assignments.push(card(hol, pk.surgeonA, pk.surgeonB)); });
-    if (plan.notes.length) setHolidayLockWarning(prev => [prev, ...plan.notes.map(n => "⚠ " + n)].filter(Boolean).join(" · "));
+    if (plan.notes.length) lockWarning = [lockWarning, ...plan.notes.map(n => "⚠ " + n)].filter(Boolean).join(" · ");
 
     // Sort final assignments by date for display
     assignments.sort((a, b) => a.date.localeCompare(b.date));
+    // ↻ Re-generate asks first when a pair already on a card would change (UX audit 2026-11-01, QW7): it re-plans
+    // every holiday not yet worked and replaces the year's cards — a pair set by hand too — and the cards are in
+    // neither ↩ Undo nor a restore of the schedule. The question names each stored pair that changes (holiday / day
+    // after). A first Generate, a holiday with no card yet, or a re-generate that comes out the same asks nothing.
+    const pairOf = (h) => (h.surgeonA === h.surgeonB ? (nameMap[h.surgeonA] || h.surgeonA || "—") : `${nameMap[h.surgeonA] || h.surgeonA || "—"} / ${nameMap[h.surgeonB] || h.surgeonB || "—"}`);
+    const changed = stored.filter(h => h && h.name).map(h => [h, assignments.find(x => x.name === h.name)]).filter(([h, n]) => !n || n.surgeonA !== h.surgeonA || n.surgeonB !== h.surgeonB);
+    if (changed.length && !confirm(`Re-generate the ${year} holidays?\n\nThese pairs change (holiday / day after) — anything you set by hand on them is lost:\n${changed.map(([h, n]) => `• ${h.name}: ${pairOf(h)} → ${n ? pairOf(n) : "not assigned"}`).join("\n")}`)) return;
+    setHolidayLockWarning(lockWarning);
     setHolidayAssignments(prev => ({ ...prev, [String(year)]: assignments }));
     logAudit("holiday.generate", `Generated holiday assignments for ${year} (${assignments.length} holidays)`, { year, count: assignments.length });
   }, [surgeons, vacations, noCallDays, holidayAssignments, silvisActive, silvisFakId, silvisDays]);
@@ -7790,6 +7808,19 @@ function CallSchedule() {
   const unmarkFierceBackupWeek = (m) => {
     if (!schedEditable() || !marksEditable()) return;
     markWeek("fierce", m, false);
+  };
+  // The ✕ on a Backup or Fierce Backup week asks first (UX audit 2026-11-01, QW7), as the time-off ✕ does: it changes
+  // the stored week at once — a published Backup week goes back to our own call and its counts move back (flagNet,
+  // the rule watchFlip counts by). The question names the week and says what changes; OK runs the ✕'s handler as it
+  // was (its two gates, then the mark).
+  const askUnmark = (kind, m) => {
+    const bk = kind === "backup", wk = scheduleRef.current[m];
+    const day = typeof monthDayLabel === "function" && /^\d{4}-\d\d-\d\d$/.test(String(m)) ? monthDayLabel(m, true) : String(m);
+    const what = !wk ? "It isn't generated yet, so no published week changes."
+      : bk ? (wk.isBackup ? `The published week goes back to our own call${flagNet(m, wk, true, false) ? ", and its counts move back" : ""}.` : "")
+      : (wk.isFierceBackup ? "The published week loses its 🛡 Fierce Backup label; no shifts or counts change." : "");
+    if (!confirm(`Remove the ${bk ? "Backup" : "Fierce Backup"} mark from the week of ${day}?${what ? "\n\n" + what : ""}`)) return;
+    (bk ? unmarkBackupWeek : unmarkFierceBackupWeek)(m);
   };
   // 📋 Paste Fierce's schedule (owner 2026-11-01): his year's table
   // (helpers.js parseFierceWeeks / planFierceWeeks) → a preview of what it
@@ -10107,7 +10138,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               <div key={m} style={{display:"flex",alignItems:"center",gap:8,marginBottom:5}}>
                 <span style={{fontFamily:mono,fontSize:12,color:"#5a6a78",textDecoration:ended?"line-through":"none"}} title={ended?"This week has ended":undefined}>Wk of {m}{ended && <span style={SR_TEXT}> (ended)</span>}</span>
                 <span style={css.backupBanner}>⚡ BACKUP — Fierce Primary</span>
-                <button onClick={()=>unmarkBackupWeek(m)} aria-label={`Remove the Backup mark from the week of ${m}`} style={{background:"none",border:"none",color:"#904040",cursor:"pointer",fontSize:12}}>✕</button>
+                <button onClick={()=>askUnmark("backup", m)} aria-label={`Remove the Backup mark from the week of ${m}`} style={{background:"none",border:"none",color:"#904040",cursor:"pointer",fontSize:12}}>✕</button>
               </div>
               );
               return <>{pastMarksToggle("backup", past.length)}{showPastMarks.backup && past.map(m => row(m, true))}{upcoming.map(m => row(m, false))}</>; })()}
@@ -10127,7 +10158,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 <div key={m} style={{display:"flex",alignItems:"center",gap:8,marginBottom:5}}>
                   <span style={{fontFamily:mono,fontSize:12,color:"#5a6a78",textDecoration:ended?"line-through":"none"}} title={ended?"This week has ended":undefined}>Wk of {m}{ended && <span style={SR_TEXT}> (ended)</span>}</span>
                   <span style={{fontSize:11,color:"#1a6fa8",background:"#e8f0fc",border:"1px solid #a8c8e0",borderRadius:6,padding:"3px 8px",fontWeight:600}}>🛡 Fierce Backup</span>
-                  <button onClick={()=>unmarkFierceBackupWeek(m)} aria-label={`Remove the Fierce Backup mark from the week of ${m}`} style={{background:"none",border:"none",color:"#904040",cursor:"pointer",fontSize:12}}>✕</button>
+                  <button onClick={()=>askUnmark("fierce", m)} aria-label={`Remove the Fierce Backup mark from the week of ${m}`} style={{background:"none",border:"none",color:"#904040",cursor:"pointer",fontSize:12}}>✕</button>
                 </div>
                 );
                 return <>{pastMarksToggle("fierce", past.length)}{showPastMarks.fierce && past.map(m => row(m, true))}{upcoming.map(m => row(m, false))}</>; })()}
