@@ -17683,9 +17683,9 @@ await (async () => {
 // 2026-11-02: "do what you think is good for the app and us"): Q6 the developer test tools are the scheduler's only,
 // inside a closed "Developer tools" section; Q5 the Clinic Manager gets their own e-mail / push settings, prefilled,
 // which they can switch off; Q4 MS (the APP lead) loses the No-Call card — MS's own no-call days go through Requests.
-// The real code, sliced and run with stubs; the JSX through CZ2's h() compiler (copied here, as is). Every path these
-// items leave alone is compared with main's code at 3200f94 (test/fixtures/settings-auth-main-3200f94.txt), byte for
-// byte (a handler by its source):
+// The real code, sliced and run with stubs; the JSX through CZ2's h() compiler (copied here, with three additions —
+// see jsxD). Every path these items leave alone is compared with main's code at 3200f94
+// (test/fixtures/settings-auth-main-3200f94.txt), byte for byte (a handler by its source):
 //   DE1 (QW6) 🛠 Developer tools — the scheduler's alone, closed until opened — holds the Edge Function URL (✏️ Edit,
 //       then Save: saveEdgeUrlDraft takes only https://…/functions/v1/send-notification), "🔔 Test push to me"
 //       (send-push aimed at the scheduler's own person_id), "📣 Test push to every phone…" (asks first, naming the
@@ -17955,11 +17955,13 @@ await (async () => {
     const cancel = r1.threw ? null : byTextD(r1, "Cancel")[0]; if (cancel) tryD(() => cancel.props.onClick());
     const cancelCalls = callsD.slice(); callsD.length = 0;
     const inp1 = r1.threw ? null : findD(r1, (n) => n.tag === "input")[0];
-    check("DE1g the Edge Function URL row: shown as text with ✏️ Edit, no field (a keystroke can't reach it); Edit opens the field on the current URL; Cancel closes it untouched; the field writes only the draft — never the URL; an error line is a red role=\"alert\"",
+    if (inp1) tryD(() => inp1.props.onChange({ target: { value: EDGE + "x" } }));
+    const typeCalls = callsD.slice(); callsD.length = 0;
+    check("DE1g the Edge Function URL row: shown as text with ✏️ Edit, no field (a keystroke can't reach it); Edit opens the field on the current URL; Cancel closes it untouched; a keystroke in the field (its handler run) writes only the draft — never the URL; an error line is a red role=\"alert\"",
       !r0.threw && findD(r0, (n) => n.tag === "input").length === 0 && textD(r0).includes(EDGE) && !!editBtn && editBtn.props["aria-label"] === "Edit the Edge Function URL" && J(editCalls) === J([["setEdgeUrlDraft", EDGE], ["setEdgeUrlErr", ""]])
-        && J(cancelCalls) === J([["setEdgeUrlDraft", null], ["setEdgeUrlErr", ""]]) && !!inp1 && inp1.props.value === EDGE && STUBS.get(inp1.props.onChange) === undefined && /setEdgeUrlDraft\(e\.target\.value\)/.test(String(inp1.props.onChange))
+        && J(cancelCalls) === J([["setEdgeUrlDraft", null], ["setEdgeUrlErr", ""]]) && !!inp1 && inp1.props.value === EDGE && J(typeCalls) === J([["setEdgeUrlDraft", EDGE + "x"]])
         && STUBS.get(byTextD(r1, "Save")[0] && byTextD(r1, "Save")[0].props.onClick) === "saveEdgeUrlDraft" && findD(r2, (n) => n.props.role === "alert" && textD(n) === "Not saved — x").length === 1,
-      J({ r0: r0.threw || textD(r0).slice(0, 160), editCalls, cancelCalls, inp: inp1 && inp1.props.value }));
+      J({ r0: r0.threw || textD(r0).slice(0, 160), editCalls, cancelCalls, typeCalls, inp: inp1 && inp1.props.value }));
     check("DE1g …Save, executed: a draft that isn't https://…/functions/v1/send-notification — a stray character, http, empty, blank, another function, no scheme, a space, no host — writes nothing and says so (the field stays open); a good one is trimmed and written once, the field closed; the same URL again writes nothing (no echo); from no URL, the first one is written",
       !!badRuns && badRuns.every((l) => J(l) === J(["err:Not saved — the address must look like https://…/functions/v1/send-notification."]))
         && J(good) === J(["url:" + NEWURL, "draft:null", "err:"]) && J(sameUrl) === J(["draft:null", "err:"]) && J(fromEmpty) === J(["url:" + NEWURL, "draft:null", "err:"]),
