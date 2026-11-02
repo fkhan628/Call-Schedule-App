@@ -3651,7 +3651,7 @@ function CallSchedule() {
       // Said once it is approved, BEFORE the time off is written and anyone is
       // notified — a failure of either toasts after this, so it is the message
       // left on screen (the submits' order, sync-guards AA3). This session only.
-      showToast(`Approved — ${req.surgeon_name}'s ${isNoCall ? "no-call days" : "vacation"}, ${req.start_date} to ${req.end_date}.`, "success");
+      showToast(`Approved — ${req.surgeon_name}'s ${isNoCall ? "no-call days" : "vacation"}, ${typeof mineRangeLabel === "function" ? mineRangeLabel(req.start_date, req.end_date, fmt(new Date())) : `${req.start_date} to ${req.end_date}`}.`, "success");
       // Auto-add to the right bucket: no-call requests go to noCallDays, vacations to vacations
       toAdd(req.surgeon_id, isNoCall ? "nocall" : "vacation", req.start_date, req.end_date);
       logAudit("request.approve", `Approved ${req.surgeon_name}'s ${isNoCall ? "no-call" : "vacation"} request: ${req.start_date} → ${req.end_date}`, { request_id: req.id, surgeon_id: req.surgeon_id });
@@ -3699,7 +3699,7 @@ function CallSchedule() {
         return;
       }
       setVacRequests(prev => prev.map(r => r.id === req.id ? { ...r, status: "denied", review_note: note } : r));
-      showToast(`Denied — ${req.surgeon_name}'s ${kindLabel}, ${req.start_date} to ${req.end_date}.`, "success"); // before the notice (as approve's)
+      showToast(`Denied — ${req.surgeon_name}'s ${kindLabel}, ${typeof mineRangeLabel === "function" ? mineRangeLabel(req.start_date, req.end_date, fmt(new Date())) : `${req.start_date} to ${req.end_date}`}.`, "success"); // before the notice (as approve's)
       denyAudit();
       const denyTargets = [...new Set([req.surgeon_id, ...schedulerAdminIds].filter(Boolean))];
       await addNotification("vacation_denied", isNoCall ? "No-Call Denied" : "Vacation Denied",
@@ -4272,7 +4272,7 @@ function CallSchedule() {
     const req = vacRequests.find(r => r.id === reqId);
     if (!canChangeVacRequest(req)) return;
     const ask = req.status === "pending"
-      ? `Withdraw ${req.surgeon_id === userProfile?.person_id ? "your" : `${req.surgeon_name || "this person"}'s`} ${req.request_type === "nocall" ? "no-call" : "vacation"} request, ${req.start_date} → ${req.end_date}?`
+      ? `Withdraw ${req.surgeon_id === userProfile?.person_id ? "your" : `${req.surgeon_name || "this person"}'s`} ${req.request_type === "nocall" ? "no-call" : "vacation"} request, ${typeof mineRangeLabel === "function" ? mineRangeLabel(req.start_date, req.end_date, fmt(new Date())) : `${req.start_date} → ${req.end_date}`}?`
       : "Delete this request?";
     if (!confirm(ask)) return;
     const ep = sessionEpochRef.current; // (review r5 fix-1 — as deleteTradeRequest's)
@@ -4384,7 +4384,7 @@ function CallSchedule() {
   const revokeApprovedVac = useCallback(async (req) => {
     const isNoCall = req.request_type === "nocall";
     const kindLabel = isNoCall ? "no-call days" : "vacation";
-    if (!confirm(`Revoke ${req.surgeon_name}'s approved ${kindLabel} ${req.start_date} → ${req.end_date}? This will remove it from the schedule.`)) return;
+    if (!confirm(`Revoke ${req.surgeon_name}'s approved ${kindLabel} ${typeof mineRangeLabel === "function" ? mineRangeLabel(req.start_date, req.end_date, fmt(new Date())) : `${req.start_date} → ${req.end_date}`}? This will remove it from the schedule.`)) return;
     // This session, at the tap (review r5 fix-1 — as the approval): after the
     // revoke's status PATCH, a session change meanwhile stops it there,
     // silently — the time_off row is not deleted (as the next account; or
@@ -4424,7 +4424,7 @@ function CallSchedule() {
       setVacRequests(prev => prev.map(r => r.id === req.id ? { ...r, status: "revoked" } : r));
       // Before the time off and the notice (as approve's) — so it claims only the revoke: the time off's removal can
       // still fail after it, and its own toast says so (review fix 2026-10-19: it read "…, is off the schedule.").
-      showToast(`Revoked — ${req.surgeon_name}'s ${kindLabel}, ${req.start_date} to ${req.end_date}.`, "success");
+      showToast(`Revoked — ${req.surgeon_name}'s ${kindLabel}, ${typeof mineRangeLabel === "function" ? mineRangeLabel(req.start_date, req.end_date, fmt(new Date())) : `${req.start_date} to ${req.end_date}`}.`, "success");
       // Remove from the bucket it landed in
       toRemove(req.surgeon_id, isNoCall ? "nocall" : "vacation", req.start_date, req.end_date);
       const revokeTargets = [...new Set([req.surgeon_id, ...schedulerAdminIds].filter(Boolean))];
@@ -9090,6 +9090,13 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     }
   };
 
+  // Mine's date style on every screen (UX audit 2026-11-01, QW18 — helpers.js mineDayLabel / mineRangeLabel): "Mon 11/9",
+  // "Mon 11/9 → Fri 11/13", the year added outside this year; a timestamp by its own (local) day. Raw dates stay only in
+  // the CSV and calendar files. An old cached helpers.js: the raw dates, as before.
+  const dayText = (ds) => (typeof mineDayLabel === "function" ? mineDayLabel(ds, todayStr) : String(ds || ""));
+  const rangeText = (a, b) => (typeof mineRangeLabel === "function" ? mineRangeLabel(a, b, todayStr) : !b || a === b ? String(a || "") : `${a} → ${b}`);
+  const stampText = (ts) => { const d = ts ? new Date(ts) : null; return d && !isNaN(d) ? dayText(fmt(d)) : ""; };
+
   const Badge = ({id,small}) => {
     const s=sMap[id]; if(!s) return <span style={{color:"#a0a8b0",fontSize:10}}>—</span>;
     return <span style={{...css.badge(s.idx, s.name),fontSize:small?10:11,padding:small?"1px 6px":"2px 9px"}}>{s.name}</span>;
@@ -10426,7 +10433,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               const lastSun = addD(parse(ms[ms.length-1]), 6);
               return (
                 <p style={{fontSize:12,color:"#5a6a78",margin:"0 0 10px",lineHeight:1.5}}>
-                  Current schedule ends <strong style={{fontFamily:mono}}>{fmt(lastSun)}</strong>. Configure the next period below.
+                  Current schedule ends <strong>{dayText(fmt(lastSun))}</strong>. Configure the next period below.
                 </p>
               );
             })()}
@@ -11448,6 +11455,9 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             // A line's week label (the small mono date): light #5a6a78 reads 4.7:1 on the error fill #fce8e8 and 5.2:1 on the
             // info / warning fills (dkSubtext's #7a8a98 read 3.0:1 and 3.3:1 — UX fix 2026-10-20); dark keeps dkSubtext.
             const weekInk = dk ? dkSubtext : "#5a6a78";
+            // …and it reads as Mine's week heads do, "Nov 2 – Nov 8", not "2026-11-02" (UX audit 2026-11-01, QW18 — helpers.js
+            // weekRangeLabel); a label that isn't a week (the feed's health lines: "feed") is shown as it is
+            const weekTag = (w) => (/^\d{4}-\d\d-\d\d$/.test(String(w || "")) && typeof weekRangeLabel === "function" ? weekRangeLabel(w) : w);
             // The ✕ on an ERROR line takes the line's own error ink (rendered check 2026-10-19): #a06020 read 4.26:1 on the light
             // error fill #fce8e8 — and every member sees the ✕ now; #b03030 reads 5.3:1. A warning / info line's ✕ keeps #a06020
             // (4.7:1 on #fef8e8 and on #f0f8ff). Dark mode: the sheet forces every button's text #c0c8d8 (≥ 10:1 on each dark fill).
@@ -11497,7 +11507,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 {showDismissedWarnings && warnShown.hidden.map(d => (
                   <div key={d.key} style={listRow}>
                     <span style={{flex:"1 1 160px",minWidth:0,overflowWrap:"anywhere",textDecoration:"line-through"}}>{d.text}</span>
-                    <span style={{fontSize:10,whiteSpace:"nowrap"}}>— {d.by}{d.at ? ", " + new Date(d.at).toLocaleDateString() : ""}</span>
+                    <span style={{fontSize:10,whiteSpace:"nowrap"}}>— {d.by}{d.at ? ", " + stampText(d.at) : ""}</span>
                     <button onClick={()=>restoreWarning(d)}
                       style={{marginLeft:"auto",minHeight:36,padding:"4px 12px",border:"1px solid #c8d0dc",borderRadius:6,background:"transparent",color:"#1a6fa8",fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:font,flexShrink:0}}>Restore</button>
                   </div>
@@ -11514,7 +11524,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               {warnShown.silvis.slice(0,10).map((c,i) => (
                 <div key={c.key || `s${i}`} data-warn-line="1" style={{display:"flex",flexWrap:"wrap",alignItems:"center",gap:8,padding:"4px 8px",marginBottom:3,fontSize:12,color:lineInk(c.severity==="error"?"error":"info"),background:c.severity==="error"?(dk?"#2a0a0a":"#fce8e8"):dk?"#1a1a2a":"#f0f8ff",borderRadius:4,border:`1px solid ${c.severity==="error"?"#e0b0b0":"#c0d8f0"}`}}>
                   <span style={{fontWeight:700}}>{c.severity==="error"?"🔴":"🔵"}</span>
-                  <span style={{fontFamily:mono,fontSize:11,color:weekInk}}>{c.week}</span>
+                  <span style={{fontFamily:mono,fontSize:11,color:weekInk,whiteSpace:"nowrap"}}>{weekTag(c.week)}</span>
                   <span style={{flex:"1 1 0",minWidth:0,overflowWrap:"anywhere"}}>{c.message}</span>
                   {dismissBtn(c)}
                   {warnChoice(c)}
@@ -11523,7 +11533,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               {warnShown.conflicts.slice(0,10).map((c,i) => (
                 <div key={c.key || `c${i}`} data-warn-line="1" style={{display:"flex",flexWrap:"wrap",alignItems:"center",gap:8,padding:"4px 8px",marginBottom:3,fontSize:12,color:lineInk(c.severity),background:c.severity==="error"?(dk?"#2a0a0a":"#fce8e8"):dk?"#2a1a0a":"#fef8e8",borderRadius:4,border:`1px solid ${c.severity==="error"?"#e0b0b0":"#e8d0b0"}`}}>
                   <span style={{fontWeight:700}}>{c.severity==="error"?"🔴":c.severity==="warning"?"🟡":"🔵"}</span>
-                  <span style={{fontFamily:mono,fontSize:11,color:weekInk}}>{c.week}</span>
+                  <span style={{fontFamily:mono,fontSize:11,color:weekInk,whiteSpace:"nowrap"}}>{weekTag(c.week)}</span>
                   <span style={{flex:"1 1 0",minWidth:0,overflowWrap:"anywhere"}}>{c.message}</span>
                   {dismissBtn(c)}
                   {warnChoice(c)}
@@ -11986,8 +11996,9 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                         <b>{silvisRuleRows.length}</b> days cached · FAK Silvis <b>primary</b> on <b>{silvisDays.primary.size}</b>, backup on {silvisDays.backup.size}
                         {" · "}fetched {st.ageHours === null ? "?" : st.ageHours + "h ago"}{st.stale && <span style={{color:"#c06020",fontWeight:700}}> · STALE</span>}
                         {silvisLoadError && <span style={{color:"#c04040"}}> · last load failed ({silvisLoadError}) — showing the previous cache</span>}
-                        {silvisDays.from && silvisDays.to && <span> · covers {silvisDays.from} → {silvisDays.to}</span>}
-                        {!silvisActive && <span style={{color:"#a06020",fontWeight:700}}> · {!sfRuleActive(silvisRule) ? "rule silvisBusy is OFF (silvisRule.enabled = false in the config blob)" : `code "${silvisRule.code}" is not on the roster — rule silvisBusy is inactive`}</span>}
+                        {silvisDays.from && silvisDays.to && <span> · covers {rangeText(silvisDays.from, silvisDays.to)}</span>}
+                        {/* The setting's technical line is the scheduler's; everyone else reads what it means (QW18) */}
+                        {!silvisActive && <span style={{color:"#a06020",fontWeight:700}}> · {!isScheduler ? "Silvis conflict check is off" : !sfRuleActive(silvisRule) ? "rule silvisBusy is OFF (silvisRule.enabled = false in the config blob)" : `code "${silvisRule.code}" is not on the roster — rule silvisBusy is inactive`}</span>}
                         {silvisSoftNotes.length > 0 && <div style={{marginTop:3,color:"#7a8a98"}}>Backup touches (standby — no action needed): {silvisSoftNotes.map(n => n.short).join(" · ")}</div>}
                       </>}
                 </div>
@@ -13775,12 +13786,12 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                           </div>
                         ) : (
                           <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
-                            <span style={{fontFamily:mono,fontSize:13,color:"#2c3e50",minWidth:130}}>{r.start_date} → {r.end_date}</span>
+                            <span style={{fontFamily:mono,fontSize:13,color:"#2c3e50",minWidth:130}}>{rangeText(r.start_date, r.end_date)}</span>
                             {r.request_type === "nocall"
                               ? <span style={{fontSize:10,fontWeight:700,color:"#8a6a10",background:"#fcf6e8",padding:"1px 7px",borderRadius:10,border:"1px solid #e8dcae",whiteSpace:"nowrap"}}>🚫 No-Call</span>
                               : <span style={{fontSize:10,fontWeight:700,color:"#5a8aa8",background:"#eef6fb",padding:"1px 7px",borderRadius:10,border:"1px solid #cfe2ee",whiteSpace:"nowrap"}}>🏖 Vacation</span>}
                             {r.reason && <span style={{fontSize:12,color:"#7a8a98",fontStyle:"italic"}}>"{r.reason}"</span>}
-                            <span style={{fontSize:11,color:"#a0a8b0"}}>Submitted {new Date(r.submitted_at).toLocaleDateString()}</span>
+                            <span style={{fontSize:11,color:"#a0a8b0"}}>Submitted {stampText(r.submitted_at)}</span>
                             {(r.surgeon_id !== mySurgeon || isScheduler) && (
                               <div style={{marginLeft:"auto",display:"flex",gap:6}}>
                                 <button onClick={()=>approveVacRequest(r)} style={{background:"#e8f8e8",border:"1px solid #a0d8a0",color:"#1a8040",borderRadius:6,padding:"4px 12px",fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:font,...(dk ? {background:"#1b4d2c",border:"1px solid #3a8a55",color:"#d6f5e0"} : {})}}>✓ Approve</button>
@@ -13803,14 +13814,14 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                           return <div style={{marginTop:6}}>
                             {cov.breach && (
                               <div style={{fontSize:11,fontWeight:700,color:"#a02020",background:"#fce8e8",border:"1px solid #e0a8a8",borderRadius:6,padding:"4px 9px",marginBottom:4}}>
-                                ⚠ Coverage below minimum — only {cov.worst.available} of {surgeons.length} surgeons available on {cov.worst.date} if approved (floor: {MIN_AVAILABLE_SURGEONS})
+                                ⚠ Coverage below minimum — only {cov.worst.available} of {surgeons.length} surgeons available on {dayText(cov.worst.date)} if approved (floor: {MIN_AVAILABLE_SURGEONS})
                               </div>
                             )}
                             {cov.conflicts.length > 0 && (
                               <div style={{fontSize:11,color:"#8a6a10",marginBottom:2}}>
                                 🏖 Also on vacation in this window:{" "}
                                 {cov.conflicts.map((c,i)=>(
-                                  <span key={c.id}>{i>0?" · ":""}<strong>{sMap[c.id]?.name || c.id}</strong>{" ("}{c.ranges.map(([cs,ce])=>cs===ce?cs:`${cs}→${ce}`).join(", ")}{")"}</span>
+                                  <span key={c.id}>{i>0?" · ":""}<strong>{sMap[c.id]?.name || c.id}</strong>{" ("}{c.ranges.map(([cs,ce])=>rangeText(cs, ce)).join(", ")}{")"}</span>
                                 ))}
                               </div>
                             )}
@@ -13818,7 +13829,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                               <div style={{fontSize:11,color:"#7a6a98"}}>
                                 ⏳ Overlapping pending requests:{" "}
                                 {cov.pendingOverlaps.map((o,i)=>(
-                                  <span key={o.id}>{i>0?" · ":""}<strong>{sMap[o.surgeon_id]?.name || o.surgeon_id}</strong>{" ("}{o.start_date}→{o.end_date}{")"}</span>
+                                  <span key={o.id}>{i>0?" · ":""}<strong>{sMap[o.surgeon_id]?.name || o.surgeon_id}</strong>{" ("}{rangeText(o.start_date, o.end_date)}{")"}</span>
                                 ))}
                               </div>
                             )}
@@ -13878,14 +13889,14 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                           ) : (
                             <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
                               <span style={{fontSize:13,fontWeight:700,color:r.status==="approved"?"#1a8040":r.status==="revoked"?"#8a8a40":"#c04040"}}>{r.status==="approved"?"✓":r.status==="revoked"?"↩":"✕"}</span>
-                              <span style={{fontFamily:mono,fontSize:12,color:"#2c3e50"}}>{r.start_date} → {r.end_date}</span>
+                              <span style={{fontFamily:mono,fontSize:12,color:"#2c3e50"}}>{rangeText(r.start_date, r.end_date)}</span>
                               {r.request_type === "nocall"
                                 ? <span style={{fontSize:9,fontWeight:700,color:"#8a6a10",background:"#fcf6e8",padding:"1px 6px",borderRadius:10,border:"1px solid #e8dcae",whiteSpace:"nowrap"}}>🚫 No-Call</span>
                                 : <span style={{fontSize:9,fontWeight:700,color:"#5a8aa8",background:"#eef6fb",padding:"1px 6px",borderRadius:10,border:"1px solid #cfe2ee",whiteSpace:"nowrap"}}>🏖 Vacation</span>}
                               {r.reason && <span style={{fontSize:11,color:"#8a94a0"}}>"{r.reason}"</span>}
                               {r.review_note && <span style={{fontSize:11,color:"#c04040"}}>Note: {r.review_note}</span>}
                               {r.status==="revoked" && <span style={{fontSize:10,color:"#8a8a40",fontWeight:600}}>Revoked</span>}
-                              <span style={{fontSize:11,color:"#a0a8b0",marginLeft:"auto"}}>{r.reviewed_at ? new Date(r.reviewed_at).toLocaleDateString() : ""}</span>
+                              <span style={{fontSize:11,color:"#a0a8b0",marginLeft:"auto"}}>{stampText(r.reviewed_at)}</span>
                               {isScheduler && r.status==="approved" && (
                                 <>
                                   <button onClick={()=>setEditingVacReq({id:r.id,start_date:r.start_date,end_date:r.end_date,reason:r.reason||""})} style={{background:"none",border:"1px solid #d0d8e0",color:"#5a6a78",borderRadius:5,padding:"2px 8px",fontSize:10,cursor:"pointer",fontFamily:font}}>✎ Edit</button>
@@ -14141,7 +14152,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                         </div>
                       )}
                       <div style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap"}}>
-                        <span style={{fontSize:10,color:"#a0a8b0"}}>Proposed {new Date(r.submitted_at).toLocaleDateString()}</span>
+                        <span style={{fontSize:10,color:"#a0a8b0"}}>Proposed {stampText(r.submitted_at)}</span>
                         {silvisActive && (()=>{
                           // silvisBusy: a pending trade that cannot be accepted says so on the row, not only after the click
                           const hits = [];

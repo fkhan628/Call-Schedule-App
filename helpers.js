@@ -806,6 +806,28 @@ function weekRangeLabel(mStr) {
   return `${monthDayLabel(mStr)} – ${monthDayLabel(fmt(addD(parse(mStr), 6)))}`;
 }
 
+// Mine's date style for every date on screen (UX audit 2026-11-01): the
+// weekday and the month/day, "Mon 11/9", with the year when it isn't today's
+// year ("Mon 1/4/2027": a date booked a year ahead must not read as next
+// week), as Mine writes its vacation and no-call days. Requests, Stats, the
+// toasts and questions, Generate and Schedule Warnings showed raw ISO dates,
+// sometimes three formats in one card; raw "YYYY-MM-DD" now stays only in the
+// CSV and calendar files.
+//   mineDayLabel("2026-11-09", "2026-11-02")                 → "Mon 11/9"
+//   mineDayLabel("2027-01-04", "2026-11-02")                 → "Mon 1/4/2027"
+//   mineRangeLabel("2026-11-09", "2026-11-13", "2026-11-02") → "Mon 11/9 → Fri 11/13"
+//   mineRangeLabel("2026-11-09", "2026-11-09", "2026-11-02") → "Mon 11/9" (one day)
+// A value that isn't a date is shown as it is ("" for none). Pure: today is
+// passed in; dates are local, via parse.
+function mineDayLabel(ds, today) {
+  const s = String(ds || "");
+  if (!/^\d{4}-\d\d-\d\d$/.test(s)) return s;
+  return s.slice(0, 4) === String(today || "").slice(0, 4) ? dayMonthLabel(s) : `${dayMonthLabel(s)}/${s.slice(0, 4)}`;
+}
+function mineRangeLabel(start, end, today) {
+  return !end || end === start ? mineDayLabel(start, today) : `${mineDayLabel(start, today)} → ${mineDayLabel(end, today)}`;
+}
+
 // The time-off request form's one line under its dates (UX audit 2026-10-19),
 // so the range is read back before it is sent. Days counted inclusive, by date.
 //   rangeSummary("2026-12-14", "2026-12-18") → "5 days, Mon Dec 14 – Fri Dec 18"

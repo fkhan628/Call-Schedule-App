@@ -2432,12 +2432,14 @@ ${chainSrc}
       else await fn(Object.assign({}, TREQ));
       return ev;
     };
+    // (changed on purpose 2026-11-02, section DB: the dates are said in Mine's style — helpers.js mineRangeLabel; 2099 isn't
+    // this year, so each carries it)
     const SAID = {
-      approve: "toast success: Approved — CCC's vacation, 2099-03-02 to 2099-03-06.",
-      deny: "toast success: Denied — CCC's vacation, 2099-03-02 to 2099-03-06.",
+      approve: "toast success: Approved — CCC's vacation, Mon 3/2/2099 → Fri 3/6/2099.",
+      deny: "toast success: Denied — CCC's vacation, Mon 3/2/2099 → Fri 3/6/2099.",
       accept: "toast success: Trade accepted — the schedule is updated.",
       decline: "toast success: Trade declined.",
-      revoke: "toast success: Revoked — CCC's vacation, 2099-03-02 to 2099-03-06.", // (review fix: no "…, is off the schedule." — BE3 below)
+      revoke: "toast success: Revoked — CCC's vacation, Mon 3/2/2099 → Fri 3/6/2099.", // (review fix: no "…, is off the schedule." — BE3 below)
     };
     const out = {};
     for (const which of Object.keys(SAID)) out[which] = { one: await decide(which, false), crossed: await decide(which, true) };
@@ -2458,7 +2460,7 @@ ${chainSrc}
     // the schedule — the success toast claims the revoke only, and the removal's own failure toast follows it
     const rvFail = (await decide("revoke", false, true)) || [];
     const rvToasts = rvFail.filter((e) => e.startsWith("toast "));
-    check("BE3 (review fix) the REAL revoke whose time-off removal then fails: \"✓ Revoked — CCC's vacation, 2099-03-02 to 2099-03-06.\" then the removal's \"⚠ Couldn't remove that …\" — nothing on screen says the vacation is off the schedule (it read \"…, is off the schedule.\", and the time_off row still blocked the surgeon)",
+    check("BE3 (review fix) the REAL revoke whose time-off removal then fails: \"✓ Revoked — CCC's vacation, Mon 3/2/2099 → Fri 3/6/2099.\" then the removal's \"⚠ Couldn't remove that …\" — nothing on screen says the vacation is off the schedule (it read \"…, is off the schedule.\", and the time_off row still blocked the surgeon)",
       JSON.stringify(rvToasts) === JSON.stringify([SAID.revoke, "toast error: Couldn't remove that — check your connection and try again."]) && !rvFail.some((e) => /off the schedule/.test(e))
         && count("is off the schedule.`") === 0, JSON.stringify(rvFail));
   }
@@ -3039,7 +3041,8 @@ ${chainSrc}
   check("feed card: refresh is signed-in only, the failure copy says the cache is kept, the empty copy says the rule is BLIND, OFF vs code-not-on-roster are distinct, coverage is shown",
     count("Sign in to refresh the Silvis feed") === 1 && count("Silvis feed refresh FAILED — the cached Silvis days are kept") === 1
     && count("Rule silvisBusy is BLIND until") === 1 && count("rule silvisBusy is OFF (silvisRule.enabled = false in the config blob)") === 1
-    && count("is not on the roster — rule silvisBusy is inactive") === 1 && count("covers {silvisDays.from} → {silvisDays.to}") === 1);
+    // (changed on purpose 2026-11-02, section DB: the covered span is said in Mine's style; the setting lines are the scheduler's)
+    && count("is not on the roster — rule silvisBusy is inactive") === 1 && count("covers {rangeText(silvisDays.from, silvisDays.to)}") === 1);
   check("Refresh button forces a re-pull (force = !quiet); success is toasted only when the re-read succeeded; a skipped answer never toasts undefined counts; the code comes from the rule",
     count("sfRefreshFeed(SUPABASE_URL, h, !quiet)") === 1 && count("const ok = await loadSilvisFeed(quiet);") === 1
     && count("could not re-read the cache") === 1 && count("r && r.skipped") === 1 && count("${silvisRule.code} primary on ${r.fak_primary}") === 1);
@@ -4101,10 +4104,14 @@ console.log("\nBL. Schedule Warnings: anyone can hide a warning on this phone");
     return out;
   };
   let renderPanel = null, jsxErr = "";
+  // (changed on purpose 2026-11-02, section DB: the "dismissed for everyone" list says its day with the app's stampText —
+  // Mine's date style, QW18 — so the panel reads it; the real one, sliced)
+  const stampBL = (() => { const a = nsrcL.indexOf("  const dayText = (ds) => "), b = a < 0 ? -1 : nsrcL.indexOf("  const stampText = ", a), c = b < 0 ? -1 : nsrcL.indexOf("\n", b);
+    try { return a < 0 || c < 0 ? null : vm.runInContext(`(function (todayStr) { ${nsrcL.slice(a, c)}\n return stampText; })`, sandbox)("2026-10-19"); } catch (ex) { return null; } })();
   try {
     if (pS === -1 || pE === -1) throw new Error("panel anchor");
     const iife = nsrcL.slice(pS + "{!isPublicMode && ".length, pE + "\n          })()".length).replace(/^\s*\/\/[^\n]*$/gm, "").replace(/;\s*\/\/[^\n]*$/gm, ";");
-    renderPanel = vm.runInContext(`(function (env) { const { h, warnShown, canWriteBlob, warnChoiceKey, showPhoneHidden, showDismissedWarnings, dk, font, mono, dkSubtext, css, hideWarningHere, showWarningHere, warnChoiceEveryone, warnChoiceCancel, setWarnChoiceKey, setShowPhoneHidden, setShowDismissedWarnings, restoreWarning, dismissWarning } = env; return ${jsxLite(iife)}; })`, sandbox, { filename: "bl-panel.js" });
+    renderPanel = vm.runInContext(`(function (env) { const { h, warnShown, canWriteBlob, warnChoiceKey, showPhoneHidden, showDismissedWarnings, dk, font, mono, dkSubtext, css, hideWarningHere, showWarningHere, warnChoiceEveryone, warnChoiceCancel, setWarnChoiceKey, setShowPhoneHidden, setShowDismissedWarnings, restoreWarning, dismissWarning, stampText } = env; return ${jsxLite(iife)}; })`, sandbox, { filename: "bl-panel.js" });
   } catch (ex) { renderPanel = null; jsxErr = String(ex).slice(0, 200); }
   if (!renderPanel || !runWS) check("BL7 the Schedule Warnings panel (its real JSX) compiles and renders on fixtures", false, jsxErr || "warnShown");
   else {
@@ -4119,7 +4126,7 @@ console.log("\nBL. Schedule Warnings: anyone can hide a warning on this phone");
       const tree = renderPanel({ h: hh, warnShown: ws, canWriteBlob: !!o.sched, warnChoiceKey: o.choice === undefined ? null : o.choice, showPhoneHidden: !!o.openPhone, showDismissedWarnings: !!o.openBlob,
         dk: !!o.dk, font: "F", mono: "M", dkSubtext: o.dk ? "#8a8aaa" : "#7a8a98", css: { card: { padding: 14 } },
         hideWarningHere: spy("hide"), showWarningHere: spy("show"), warnChoiceEveryone: spy("everyone"), warnChoiceCancel: spy("cancel"), setWarnChoiceKey: spy("setChoice"),
-        setShowPhoneHidden: spy("togglePhone"), setShowDismissedWarnings: spy("toggleBlob"), restoreWarning: spy("restore"), dismissWarning: spy("dismissDirect") });
+        setShowPhoneHidden: spy("togglePhone"), setShowDismissedWarnings: spy("toggleBlob"), restoreWarning: spy("restore"), dismissWarning: spy("dismissDirect"), stampText: stampBL });
       const nodes = all(tree);
       const lines = nodes.filter((x) => x.props["data-warn-line"] === "1");
       const xOf = (ln) => ln.kids.find((k) => k && k.tag === "button" && k.props["data-warn-x"] === "1") || null;
@@ -10955,7 +10962,8 @@ console.log("\nAQ. calendar says why a month is blank");
       && count("sfDaysFromRows(silvisRows") === 0 && count("sfDaysFromRows(") === 1
       && src.indexOf("const silvisRuleRows = useMemo(") < src.indexOf("const silvisDays = useMemo("));
   check("Z7 the feed card's 'days cached' counts the rule's window (same number as before v7), next to the unchanged covers line",
-    count("<b>{silvisRuleRows.length}</b> days cached") === 1 && count("<b>{silvisRows.length}</b> days cached") === 0 && count("covers {silvisDays.from} → {silvisDays.to}") === 1);
+    // (changed on purpose 2026-11-02, section DB: the covers line says its dates in Mine's style — rangeText)
+    count("<b>{silvisRuleRows.length}</b> days cached") === 1 && count("<b>{silvisRows.length}</b> days cached") === 0 && count("covers {rangeText(silvisDays.from, silvisDays.to)}") === 1);
 }
 
 // ─── AR. Requests tab: no "scheduler PIN" line; an APP gets a note, not a trade form it can't use (UX audit 2026-10-18) ───
@@ -11310,7 +11318,8 @@ console.log("\nAT. A trade waiting on your answer");
   const KNOCK_LINE = "{knockOns.get(r.id) && <div style={{fontSize:11,fontWeight:500,color:\"#6a4a90\",marginTop:2}}>{knockOns.get(r.id)}</div>}";
   const at2 = {
     badgesEnd: row.indexOf("(one-way — no return shift)</span>}"), guard: row.indexOf('{typeof tradeLegsFor === "function" && ('),
-    call: row.indexOf(BOX_TEXT), knock: row.indexOf(KNOCK_LINE), proposed: row.indexOf("Proposed {new Date(r.submitted_at).toLocaleDateString()}"),
+    // (changed on purpose 2026-11-02, section DB: the Proposed date is said in Mine's style — stampText)
+    call: row.indexOf(BOX_TEXT), knock: row.indexOf(KNOCK_LINE), proposed: row.indexOf("Proposed {stampText(r.submitted_at)}"),
     onClicks: (row.match(/onClick=/g) || []).length,
   };
   // the box: its <div …> opens right after the guard, holds the legs text then the knock-on line, and closes before the Proposed line
@@ -12526,7 +12535,8 @@ console.log("\nAV. Pending requests: a collapsed group shows a coverage-floor br
       && count('const toggleVacGroup = (id) => setExpandedVacGroups(prev => ({ ...prev, [id]: !prev[id] }));') === 1
       && count('{expanded && <div style={{borderTop:"1px solid #e8d8c0",padding:"4px 12px 8px"}}>') === 1
       && count("const cov = vacRequestCoverage(r);") === 1 && count("{cov.breach && (") === 1
-      && count("⚠ Coverage below minimum — only {cov.worst.available} of {surgeons.length} surgeons available on {cov.worst.date} if approved (floor: {MIN_AVAILABLE_SURGEONS})") === 1
+      // (changed on purpose 2026-11-02, section DB: the day is said in Mine's style, dayText — the line is otherwise the same)
+      && count("⚠ Coverage below minimum — only {cov.worst.available} of {surgeons.length} surgeons available on {dayText(cov.worst.date)} if approved (floor: {MIN_AVAILABLE_SURGEONS})") === 1
       && nsrcAV.indexOf("const cov = vacRequestCoverage(r);") > iDetail && nsrcAV.indexOf("const cov = vacRequestCoverage(r);") < iRev,
     JSON.stringify({ toggles: count("setExpandedVacGroups("), iDetail, iRev }));
 
@@ -16128,7 +16138,8 @@ await (async () => {
     if (ok) {
       for (const m of lineMs) {
         const st = fnBM(`${m[1]}, dk, lineInk`, m[3]);
-        const wk = m[5].match(/^\s*<span style=\{(\{fontFamily:mono,fontSize:11,color:[^\n]*?\})\}>\{c\.week\}<\/span>$/);
+        // (changed on purpose 2026-11-02, section DB: the label says the week as Mine does — weekTag(c.week), "Nov 2 – Nov 8")
+        const wk = m[5].match(/^\s*<span style=\{(\{fontFamily:mono,fontSize:11,color:[^\n]*?\})\}>\{weekTag\(c\.week\)\}<\/span>$/);
         const wkSt = wk ? fnBM("mono, weekInk, dkSubtext", wk[1]) : null;
         if (!st) { ok = false; continue; }
         for (const dk of [false, true]) for (const sev of ["error", "warning", "info"]) {
@@ -16146,8 +16157,8 @@ await (async () => {
       J({ lines: lineMs.length, rows: rows.map((x) => `${x.kind}${x.dk ? "D" : "L"}${x.sev[0]} ${x.fg} on ${x.bg} ${x.r}`) }));
     check("BM1 …the old ink (dkSubtext in light, #7a8a98) read under 4.5:1 on the error and info fills (3.02, 3.31 — the low the rendered check measured); both week labels now use weekInk, none dkSubtext",
       !!dkSub && ratioBM(dkSub(false), "#fce8e8") === 3.02 && ratioBM(dkSub(false), "#f0f8ff") === 3.31
-        && countBM("<span style={{fontFamily:mono,fontSize:11,color:weekInk}}>{c.week}</span>") === 2 && countBM("color:dkSubtext}}>{c.week}") === 0,
-      J({ old: dkSub ? [ratioBM(dkSub(false), "#fce8e8"), ratioBM(dkSub(false), "#f0f8ff")] : null, uses: countBM("color:weekInk}}>{c.week}") }));
+        && countBM('<span style={{fontFamily:mono,fontSize:11,color:weekInk,whiteSpace:"nowrap"}}>{weekTag(c.week)}</span>') === 2 && countBM('color:dkSubtext,whiteSpace:"nowrap"}}>{weekTag(c.week)}') === 0,
+      J({ old: dkSub ? [ratioBM(dkSub(false), "#fce8e8"), ratioBM(dkSub(false), "#f0f8ff")] : null, uses: countBM('color:weekInk,whiteSpace:"nowrap"}}>{weekTag(c.week)}') }));
   }
 
   // BM2 — the range sheet's rows give up their spare height before it scrolls
@@ -17364,12 +17375,13 @@ await (async () => {
     failed: await delVacCA("RPC", { status: 500 }), crossed: await delVacCA("RPC", { status: 500, cross: true }),
   } : null;
   // (review fix 2026-10-20, on purpose — RQ-1: a member's DELETE carries &status=eq.pending; a scheduler's stays id-only)
+  // (changed on purpose 2026-11-02, section DB: the confirm says its dates in Mine's style — "Mon 3/2/2099 → Fri 3/6/2099")
   const W4 = (who, q) => ["confirm: " + q, "DELETE vacation_requests?id=eq.7" + (V_CA[who].isScheduler ? "" : "&status=eq.pending") + " Bearer " + who, "list 8"];
   check("CA4 the REAL deleteVacRequest: a colleague's call (ARW on RPC's; an APP; signed out; RPC on DJA's) does NOTHING — no confirm, no DELETE, nothing said",
     !!ca4 && ["colleague", "app", "signedOut", "othersRow"].every(k => J(ca4[k]) === "[]"), ca4 ? J(ca4) : NONE_CA);
-  check("CA4 …the confirm says what its button does: the requester's Withdraw — \"Withdraw your vacation request, 2099-03-02 → 2099-03-06?\" (\"no-call\" for a no-call one; an APP's too), the scheduler's Withdraw — \"Withdraw RPC's vacation request, …?\", the Reviewed list's ✕ — \"Delete this request?\"; each then deletes it",
-    !!ca4 && J(ca4.own) === J(W4("RPC", "Withdraw your vacation request, 2099-03-02 → 2099-03-06?")) && J(ca4.ownNoCall) === J(W4("RPC", "Withdraw your no-call request, 2099-03-02 → 2099-03-06?"))
-      && J(ca4.appOwn) === J(W4("MA", "Withdraw your vacation request, 2099-03-02 → 2099-03-06?")) && J(ca4.scheduler) === J(W4("FAK", "Withdraw RPC's vacation request, 2099-03-02 → 2099-03-06?"))
+  check("CA4 …the confirm says what its button does: the requester's Withdraw — \"Withdraw your vacation request, Mon 3/2/2099 → Fri 3/6/2099?\" (\"no-call\" for a no-call one; an APP's too), the scheduler's Withdraw — \"Withdraw RPC's vacation request, …?\", the Reviewed list's ✕ — \"Delete this request?\"; each then deletes it",
+    !!ca4 && J(ca4.own) === J(W4("RPC", "Withdraw your vacation request, Mon 3/2/2099 → Fri 3/6/2099?")) && J(ca4.ownNoCall) === J(W4("RPC", "Withdraw your no-call request, Mon 3/2/2099 → Fri 3/6/2099?"))
+      && J(ca4.appOwn) === J(W4("MA", "Withdraw your vacation request, Mon 3/2/2099 → Fri 3/6/2099?")) && J(ca4.scheduler) === J(W4("FAK", "Withdraw RPC's vacation request, Mon 3/2/2099 → Fri 3/6/2099?"))
       && J(ca4.schedulerReviewed) === J(W4("FAK", "Delete this request?")), ca4 ? J({ own: ca4.own, ownNoCall: ca4.ownNoCall, appOwn: ca4.appOwn, scheduler: ca4.scheduler, schedulerReviewed: ca4.schedulerReviewed }) : NONE_CA);
   check("CA4 …a declined confirm sends nothing; a failed DELETE says so once and keeps the row (BA3); failing after a session change: nothing said, nothing changed (the fence)",
     !!ca4 && ca4.declined.length === 1 && /^confirm: Withdraw your /.test(ca4.declined[0])
@@ -17389,16 +17401,16 @@ await (async () => {
   } : null;
   const REVIEWED4 = "toast error: This request was already reviewed or withdrawn — nothing was changed.";
   check("CA4 (review fix — RQ-1) a member's Withdraw (a surgeon's, an APP's) DELETEs only a request still pending (&status=eq.pending, Prefer return=representation) and takes the row off once the server says it removed it; a scheduler's Withdraw and the Reviewed ✕ stay id-only (return=minimal)",
-    !!ca4p && J(ca4p.member) === J(W4("RPC", "Withdraw your vacation request, 2099-03-02 → 2099-03-06?")) && J(ca4p.app) === J(W4("MA", "Withdraw your vacation request, 2099-03-02 → 2099-03-06?"))
+    !!ca4p && J(ca4p.member) === J(W4("RPC", "Withdraw your vacation request, Mon 3/2/2099 → Fri 3/6/2099?")) && J(ca4p.app) === J(W4("MA", "Withdraw your vacation request, Mon 3/2/2099 → Fri 3/6/2099?"))
       && J(pref4.member) === J(["return=representation"]) && J(pref4.app) === J(["return=representation"])
-      && J(ca4p.sched) === J(W4("FAK", "Withdraw RPC's vacation request, 2099-03-02 → 2099-03-06?")) && J(ca4p.schedReviewed) === J(W4("FAK", "Delete this request?"))
+      && J(ca4p.sched) === J(W4("FAK", "Withdraw RPC's vacation request, Mon 3/2/2099 → Fri 3/6/2099?")) && J(ca4p.schedReviewed) === J(W4("FAK", "Delete this request?"))
       && J(pref4.sched) === J(["return=minimal"]) && J(pref4.schedRev) === J(["return=minimal"]),
     ca4p ? J({ member: ca4p.member, app: ca4p.app, sched: ca4p.sched, schedReviewed: ca4p.schedReviewed, pref4 }) : NONE_CA);
   check("CA4 (review fix — RQ-1) …the server found it already reviewed (it removed nothing): nothing changed, the row kept, said once — \"This request was already reviewed or withdrawn — nothing was changed.\"; the session changing while its answer is read: nothing said, the list left alone (the fence, either answer); a 2xx with a body it can't read takes the row off (the DELETE was accepted)",
-    !!ca4p && J(ca4p.memberReviewed) === J(["confirm: Withdraw your vacation request, 2099-03-02 → 2099-03-06?", "DELETE vacation_requests?id=eq.7&status=eq.pending Bearer RPC", REVIEWED4])
-      && J(ca4p.memberReviewedCrossed) === J(["confirm: Withdraw your vacation request, 2099-03-02 → 2099-03-06?", "DELETE vacation_requests?id=eq.7&status=eq.pending Bearer RPC"])
-      && J(ca4p.memberRemovedCrossed) === J(["confirm: Withdraw your vacation request, 2099-03-02 → 2099-03-06?", "DELETE vacation_requests?id=eq.7&status=eq.pending Bearer RPC"])
-      && J(ca4p.memberOddBody) === J(W4("RPC", "Withdraw your vacation request, 2099-03-02 → 2099-03-06?")),
+    !!ca4p && J(ca4p.memberReviewed) === J(["confirm: Withdraw your vacation request, Mon 3/2/2099 → Fri 3/6/2099?", "DELETE vacation_requests?id=eq.7&status=eq.pending Bearer RPC", REVIEWED4])
+      && J(ca4p.memberReviewedCrossed) === J(["confirm: Withdraw your vacation request, Mon 3/2/2099 → Fri 3/6/2099?", "DELETE vacation_requests?id=eq.7&status=eq.pending Bearer RPC"])
+      && J(ca4p.memberRemovedCrossed) === J(["confirm: Withdraw your vacation request, Mon 3/2/2099 → Fri 3/6/2099?", "DELETE vacation_requests?id=eq.7&status=eq.pending Bearer RPC"])
+      && J(ca4p.memberOddBody) === J(W4("RPC", "Withdraw your vacation request, Mon 3/2/2099 → Fri 3/6/2099?")),
     ca4p ? J({ memberReviewed: ca4p.memberReviewed, crossed: ca4p.memberReviewedCrossed, removedCrossed: ca4p.memberRemovedCrossed, odd: ca4p.memberOddBody }) : NONE_CA);
 
   // CA5 — the REAL deleteTradeRequest
@@ -17469,7 +17481,8 @@ await (async () => {
       && !!calls7 && calls7.every(ev => J(ev) === "[]"),
     J({ shown: ca7, calls: calls7 }));
   check("CA7 …their confirms match their buttons: ↩ Revoke asks \"Revoke <name>'s approved …?\", Clear All Reviewed asks \"Clear all reviewed …?\" (unchanged); the request deletes' Withdraw / ✕ wording is CA4's and CA5's (executed); no confirm on the tab says \"Delete\" for a Withdraw any more",
-    count("if (!confirm(`Revoke ${req.surgeon_name}'s approved ${kindLabel} ${req.start_date} → ${req.end_date}? This will remove it from the schedule.`)) return;") === 1 && count(">↩ Revoke</button>") === 1
+    // (changed on purpose 2026-11-02, section DB: the revoke's question says its dates in Mine's style — mineRangeLabel)
+    count("if (!confirm(`Revoke ${req.surgeon_name}'s approved ${kindLabel} ${typeof mineRangeLabel === \"function\" ? mineRangeLabel(req.start_date, req.end_date, fmt(new Date())) : `${req.start_date} → ${req.end_date}`}? This will remove it from the schedule.`)) return;") === 1 && count(">↩ Revoke</button>") === 1
       && count("if (!confirm(\"Clear all reviewed (approved/denied) requests? Pending requests will be kept.\")) return;") === 1 && count(">Clear All Reviewed</button>") === 1
       && count("if (!confirm(\"Delete this request?\")) return;") === 0 && count("if (!confirm(\"Delete this trade request?\")) return;") === 0,
     J({ revoke: count(">↩ Revoke</button>"), clear: count(">Clear All Reviewed</button>") }));
@@ -19251,6 +19264,12 @@ console.log("\nAJ. owner decisions 2026-10-13");
 //       scheduler only / "No schedule published yet." for everyone else. Rendered: the sub-tab bar (aria-pressed), the
 //       APP table (its span in the title, the viewer's row tinted with "(you)" at ≥ 4.5:1 in both modes), Monthly and
 //       Billing's status card with no weeks, no Running Totals for an APP, and an APP's own 0-day vacation row
+//   DB3 (QW18) Mine's date style on every screen: helpers.js mineDayLabel / mineRangeLabel (executed — and equal to Mine's
+//       own mineDay on every day of 2026–2027) and the app's dayText / rangeText / stampText (an old cached helpers.js:
+//       the raw dates). Rendered: an opened pending request and the reviewed rows (no raw YYYY-MM-DD left), the
+//       decisions' toasts and the Withdraw / Revoke questions (their real templates), Generate's "Current schedule
+//       ends …", a Schedule Warnings line's week ("Nov 2 – Nov 8"), the Silvis card ("covers …"; the setting line in
+//       words for everyone but the scheduler)
 console.log("\nDB. Quick wins: the bell, Stats for APPs and members, \"This year\", Mine's dates everywhere, a member's Monthly CSV");
 {
   const nsrcDB = src.replace(/\r\n/g, "\n"), JDB = JSON.stringify;
@@ -19260,8 +19279,8 @@ console.log("\nDB. Quick wins: the bell, Stats for APPs and members, \"This year
   const tryDB = (fn) => { try { return fn(); } catch (ex) { return "threw: " + String((ex && ex.message) || ex).slice(0, 160); } };
   // a slice compiled in the sandbox (the helpers.js / config.js globals it reads) as a function of env; a broken slice → null
   const mkDB = (names, body, filename) => { if (!body) return null; try { return vm.runInContext(`(function (env) { const { ${names} } = env;\n${body}\n})`, sandbox, { filename }); } catch (ex) { console.log("  (DB compile) " + filename + ": " + String(ex).slice(0, 200)); return null; } };
-  // JSX → h() calls: CJ's compiler, as is (fragments <>…</> as tag "#frag"); comment lines are dropped first (an
-  // apostrophe in one would read as a string)
+  // JSX → h() calls: CJ's compiler (fragments <>…</> as tag "#frag"), plus one case: JSX right after `return` (a
+  // render IIFE's `return <div …>`); comment lines are dropped first (an apostrophe in one would read as a string)
   const jsxDB = (code) => {
     const q = (x) => JSON.stringify(x);
     const skipStr = (k) => { const ch = code[k]; for (let m = k + 1; m < code.length; m++) { if (code[m] === "\\") { m++; continue; } if (code[m] === ch) return m; } return code.length; };
@@ -19315,7 +19334,7 @@ console.log("\nDB. Quick wins: the bell, Stats for APPs and members, \"This year
       const ch = code[i];
       if (ch === '"' || ch === "'") { const e = skipStr(i); out += code.slice(i, e + 1); i = e + 1; continue; }
       if (ch === "`") { const e0 = i; let k = i + 1; for (; k < code.length && code[k] !== "`"; k++) { if (code[k] === "\\") k++; else if (code[k] === "$" && code[k + 1] === "{") k = close(k + 1); } out += code.slice(e0, k + 1); i = k + 1; continue; }
-      if (opens(i) && (/^\s*$/.test(out) || /[(?:,&|>{[=]$/.test(out.replace(/\s+$/, "")))) { const [js, e] = el(i); out += js; i = e; continue; }
+      if (opens(i) && (/^\s*$/.test(out) || /[(?:,&|>{[=]$/.test(out.replace(/\s+$/, "")) || /\breturn$/.test(out.replace(/\s+$/, "")))) { const [js, e] = el(i); out += js; i = e; continue; }
       out += ch; i++;
     }
     return out;
@@ -19578,6 +19597,116 @@ console.log("\nDB. Quick wins: the bell, Stats for APPs and members, \"This year
     check("DB2 Fairness for an APP (the real JSX, rendered): no Running Totals card (surgeons' totals only — it drew two tables' headers over no rows), a member and the scheduler still see it as before; Vacation Days Used lists the APP's own row even at 0 days, while the scheduler's list still leaves an APP with none out",
       db2f.app === "none" && db2f.member === "s3,s3" && db2f.sched === "s1,s3,s1,s3" && db2g.appMA === "a1 0" && db2g.sched === "s1 3 · s3 0 · a2 2" && db2g.member === "s3 0",
       JDB({ db2f, db2g }));
+  }
+  // ── DB3 (QW18) — Mine's date style on Requests, the toasts and questions, Generate, Schedule Warnings and the Silvis card ──
+  {
+    const H3 = vm.runInContext('({ mdl: typeof mineDayLabel === "function" ? mineDayLabel : null, mrl: typeof mineRangeLabel === "function" ? mineRangeLabel : null })', sandbox);
+    const ISO = /\d{4}-\d\d-\d\d/;
+    const db3a = H3.mdl && H3.mrl ? {
+      days: [["2026-11-09", "2026-11-02"], ["2027-01-04", "2026-11-02"], ["2026-12-31", "2027-01-02"], ["2026-03-08", "2026-11-02"], ["feed", "2026-11-02"], ["", "2026-11-02"], [null, "2026-11-02"], ["2026-11-09T10:00", "2026-11-02"]].map(([d, t]) => H3.mdl(d, t)),
+      ranges: [["2026-11-09", "2026-11-13"], ["2026-11-09", "2026-11-09"], ["2026-12-28", "2027-01-01"], ["2026-11-09", ""], ["2026-11-09", null]].map(([a, b]) => H3.mrl(a, b, "2026-11-02")),
+    } : null;
+    check("DB3 helpers.js mineDayLabel / mineRangeLabel (executed): \"Mon 11/9\" this year, \"Mon 1/4/2027\" another year (a booked-ahead date never reads as next week), across a new year each end on its own; one day said once; a value that isn't a date shown as it is (\"feed\"), none → \"\"",
+      !!db3a && JDB(db3a.days) === JDB(["Mon 11/9", "Mon 1/4/2027", "Thu 12/31/2026", "Sun 3/8", "feed", "", "", "2026-11-09T10:00"])
+        && JDB(db3a.ranges) === JDB(["Mon 11/9 → Fri 11/13", "Mon 11/9", "Mon 12/28 → Fri 1/1/2027", "Mon 11/9", "Mon 11/9"]), JDB(db3a));
+    // the same style as Mine's own (its mineDay, sliced): every day of 2026–2027, from two "todays"
+    const MD = cutDB("\n            const mineDay = (ds) => ", ";\n", false);
+    const mineDayOf = MD ? tryDB(() => vm.runInContext(`(function (myToday) { return (ds) => ${MD}; })`, sandbox)) : null;
+    let same3 = null;
+    if (typeof mineDayOf === "function" && H3.mdl) {
+      const G3 = vm.runInContext("({ fmt, parse, addD })", sandbox); same3 = { n: 0, bad: [] };
+      for (const today of ["2026-11-02", "2027-06-30"]) { const md = mineDayOf(today); for (let d = G3.parse("2026-01-01"); G3.fmt(d) <= "2027-12-31"; d = G3.addD(d, 1)) { const ds = G3.fmt(d); same3.n++; if (md(ds) !== H3.mdl(ds, today)) same3.bad.push(ds + " " + md(ds) + " / " + H3.mdl(ds, today)); } }
+    }
+    check("DB3 it IS Mine's style: mineDayLabel equals Mine's own mineDay (sliced) on every day of 2026 and 2027, seen from Nov 2, 2026 and from Jun 30, 2027 (1,460 dates)",
+      !!same3 && same3.n === 1460 && same3.bad.length === 0, JDB(same3 && { n: same3.n, bad: same3.bad.slice(0, 4) }));
+
+    // the component's wrappers (sliced), with a today, and with an old cached helpers.js (no mineDayLabel / mineRangeLabel)
+    const WR = cutDB("  const dayText = (ds) => ", "\n\n  const Badge = ", true);
+    const wrapOf = (ctx) => (WR ? tryDB(() => vm.runInContext(`(function (todayStr) {\n${WR}\n  return { dayText, rangeText, stampText }; })`, ctx)) : null);
+    const oldCtx = vm.createContext({ fmt: vm.runInContext("fmt", sandbox), Date });
+    const wNew = wrapOf(sandbox), wOld = wrapOf(oldCtx);
+    const noon = (y, m, d) => new Date(y, m - 1, d, 12).toISOString();
+    const db3b = typeof wNew === "function" && typeof wOld === "function" ? (() => { const n = wNew("2026-11-02"), o = wOld("2026-11-02"); return {
+      now: [n.dayText("2026-11-11"), n.rangeText("2026-11-09", "2026-11-13"), n.rangeText("2027-01-04", "2027-01-05"), n.stampText(noon(2026, 10, 12)), n.stampText(noon(2025, 12, 30)), n.stampText(null), n.stampText("not a time")],
+      old: [o.dayText("2026-11-11"), o.rangeText("2026-11-09", "2026-11-13"), o.rangeText("2026-11-09", "2026-11-09"), o.stampText(noon(2026, 10, 12))] }; })() : { wNew: typeof wNew, wOld: typeof wOld };
+    check("DB3 the app's dayText / rangeText / stampText (sliced, executed on today's date): \"Wed 11/11\", \"Mon 11/9 → Fri 11/13\", \"Mon 1/4/2027 → Tue 1/5/2027\"; a timestamp by its own local day (\"Mon 10/12\", \"Tue 12/30/2025\"), none or garbage → \"\"; an old cached helpers.js (no mineDayLabel) → the raw dates, as before, never a throw",
+      !!db3b.now && JDB(db3b.now) === JDB(["Wed 11/11", "Mon 11/9 → Fri 11/13", "Mon 1/4/2027 → Tue 1/5/2027", "Mon 10/12", "Tue 12/30/2025", "", ""])
+        && JDB(db3b.old) === JDB(["2026-11-11", "2026-11-09 → 2026-11-13", "2026-11-09", "2026-10-12"]), JDB(db3b));
+    const W3 = typeof wNew === "function" ? wNew("2026-11-02") : null;
+
+    // a pending request opened, and a reviewed one, rendered (the real JSX) — no raw date left
+    const PD = cutDB('{expanded && <div style={{borderTop:"1px solid #e8d8c0",padding:"4px 12px 8px"}}>', "\n                    </div>}", true);
+    const RD = cutDB('{expanded && <div style={{borderTop:"1px solid #d8e0d8",padding:"4px 12px 6px"}}>', "\n                      </div>}", true);
+    const pendOf = PD ? viewDB("h, expanded, reqs, editingVacReq, canChangeVacRequest, setEditingVacReq, isScheduler, dk, css, updateBannerRef, updateAvailable, saveVacRequestEdit, mono, rangeText, stampText, dayText, mySurgeon, approveVacRequest, font, denyVacRequest, prompt, deleteVacRequest, vacRequestCoverage, surgeons, MIN_AVAILABLE_SURGEONS, sMap",
+      PD.slice(1) + "\n                    </div>", "db3-pending.js") : null;
+    const revOf = RD ? viewDB("h, expanded, reqs, editingVacReq, canChangeVacRequest, setEditingVacReq, dk, css, updateBannerRef, updateAvailable, saveVacRequestEdit, mono, rangeText, stampText, isScheduler, font, revokeApprovedVac, deleteVacRequest",
+      RD.slice(1) + "\n                      </div>", "db3-reviewed.js") : null;
+    const SMAP3 = { s1: { name: "DJA" }, s3: { name: "RPC" }, s4: { name: "KJH" } };
+    const PREQ = { id: 1, surgeon_id: "s1", start_date: "2026-11-09", end_date: "2026-11-13", request_type: "vacation", reason: "trip", submitted_at: noon(2026, 10, 12), status: "pending" };
+    const COV = { breach: true, worst: { available: 2, date: "2026-11-11" }, conflicts: [{ id: "s3", ranges: [["2026-11-09", "2026-11-13"], ["2026-11-20", "2026-11-20"]] }], pendingOverlaps: [{ id: 9, surgeon_id: "s4", start_date: "2027-01-04", end_date: "2027-01-05" }] };
+    const common3 = { h: hDB, expanded: true, editingVacReq: null, canChangeVacRequest: () => true, setEditingVacReq() {}, dk: false, css: { inp: {}, btn: () => ({}) }, updateBannerRef: {}, updateAvailable: null, saveVacRequestEdit() {}, mono: "M", font: "F", deleteVacRequest() {} };
+    const pText = pendOf && W3 ? (() => { const t = tryDB(() => pendOf(Object.assign({}, common3, W3, { reqs: [PREQ], isScheduler: true, mySurgeon: "s6", approveVacRequest() {}, denyVacRequest() {}, prompt: () => null, vacRequestCoverage: () => COV, surgeons: [1, 2, 3, 4, 5, 6, 7], MIN_AVAILABLE_SURGEONS: 3, sMap: SMAP3 }))); return okTree(t) ? textDB(t) : t; })() : "not found";
+    const RREQ = [{ id: 2, start_date: "2026-10-26", end_date: "2026-10-30", request_type: "vacation", status: "approved", reviewed_at: noon(2026, 10, 20) }, { id: 3, start_date: "2027-01-04", end_date: "2027-01-04", request_type: "nocall", status: "denied", review_note: "short", reviewed_at: null }];
+    const rText = revOf && W3 ? (() => { const t = tryDB(() => revOf(Object.assign({}, common3, W3, { reqs: RREQ, isScheduler: true, revokeApprovedVac() {} }))); return okTree(t) ? textDB(t) : t; })() : "not found";
+    const has = (t, parts) => typeof t === "string" && parts.every((p) => t.includes(p));
+    check("DB3 a pending request opened (the real JSX, rendered): \"Mon 11/9 → Fri 11/13\", \"Submitted Mon 10/12\", \"…available on Wed 11/11 if approved\", \"RPC (Mon 11/9 → Fri 11/13, Fri 11/20)\", \"KJH (Mon 1/4/2027 → Tue 1/5/2027)\" — and no raw YYYY-MM-DD left in it",
+      has(pText, ["Mon 11/9 → Fri 11/13", "Submitted Mon 10/12", "surgeons available on Wed 11/11 if approved (floor: 3)", "RPC (Mon 11/9 → Fri 11/13, Fri 11/20)", "KJH (Mon 1/4/2027 → Tue 1/5/2027)"]) && !ISO.test(pText), String(pText).slice(0, 700));
+    check("DB3 a reviewed request (the real JSX, rendered): \"Mon 10/26 → Fri 10/30\" with its review day \"Tue 10/20\", a one-day no-call \"Mon 1/4/2027\" with no day when none was recorded — no raw date, no \"Invalid Date\"",
+      has(rText, ["Mon 10/26 → Fri 10/30", "Tue 10/20", "Mon 1/4/2027"]) && !ISO.test(rText) && !/Invalid|1970/.test(rText), String(rText).slice(0, 500));
+    const TRP = cutDB("{pendingTrades.map(r => (", "{reviewedTrades.length > 0 && (", false) || "";
+    const reqBlock = cutDB("{/* Pending Requests — Grouped by Person */}", "{/* ─── Shift Trade Requests ─── */}", true) || "";
+    check("DB3 the Requests tab's request rows and the Pending Trades row read no raw date any more: no \"{r.start_date} → {r.end_date}\", no toLocaleDateString(), the trade's \"Proposed\" through stampText",
+      !!reqBlock && !/\{r\.start_date\} → \{r\.end_date\}|start_date\}→|toLocaleDateString\(\)|\{cov\.worst\.date\}/.test(reqBlock) && !!TRP && TRP.includes("Proposed {stampText(r.submitted_at)}") && !/toLocaleDateString\(\)/.test(TRP),
+      JDB({ block: reqBlock.length, trades: TRP.length }));
+
+    // the toasts and the questions (their real template literals, evaluated on a pinned today), and their old-helpers fallback
+    const lineOf = (re) => { const m = nsrcDB.match(re); return m ? m[1] : null; };
+    const T3 = {
+      approve: lineOf(/\n\s*showToast\((`Approved — .*`), "success"\);\n/), deny: lineOf(/\n\s*showToast\((`Denied — .*`), "success"\); \/\/ before the notice \(as approve's\)\n/),
+      revoke: lineOf(/\n\s*showToast\((`Revoked — .*`), "success"\);\n/), withdraw: lineOf(/\n\s*\? (`Withdraw .*`)\n\s*: "Delete this request\?";\n/), revokeAsk: lineOf(/\n\s*if \(!confirm\((`Revoke .*`)\)\) return;\n/),
+    };
+    const D3 = vm.runInContext("(function () { return class extends Date { constructor(...a) { if (a.length) super(...a); else super(2026, 10, 2, 12); } }; })()", sandbox);
+    const say3 = (ctx, tpl, req) => tryDB(() => vm.runInContext(`(function (req, isNoCall, kindLabel, userProfile, Date) { return ${tpl}; })`, ctx)(req, req.request_type === "nocall", req.request_type === "nocall" ? "no-call days" : "vacation", { person_id: "s3" }, D3));
+    const RQ3 = { surgeon_id: "s3", surgeon_name: "RPC", start_date: "2026-11-09", end_date: "2026-11-13", request_type: "vacation" }, RQ3b = Object.assign({}, RQ3, { start_date: "2027-01-04", end_date: "2027-01-04", request_type: "nocall", surgeon_id: "s1", surgeon_name: "DJA" });
+    const oldCtx3 = vm.createContext({ fmt: vm.runInContext("fmt", sandbox) });
+    const db3c = Object.values(T3).every(Boolean) ? {
+      now: Object.keys(T3).map((k) => say3(sandbox, T3[k], RQ3)), next: [say3(sandbox, T3.approve, RQ3b), say3(sandbox, T3.withdraw, RQ3b)], old: [say3(oldCtx3, T3.approve, RQ3), say3(oldCtx3, T3.withdraw, RQ3)],
+    } : { found: Object.keys(T3).filter((k) => !T3[k]) };
+    check("DB3 the decisions' toasts and the Withdraw / Revoke questions (their real templates, evaluated; today pinned Nov 2, 2026) say the dates as Mine does — \"Approved — RPC's vacation, Mon 11/9 → Fri 11/13.\", \"Withdraw your vacation request, Mon 11/9 → Fri 11/13?\" — a one-day no-call next year \"Mon 1/4/2027\"; an old cached helpers.js: the raw dates, as before",
+      !!db3c.now && JDB(db3c.now) === JDB(["Approved — RPC's vacation, Mon 11/9 → Fri 11/13.", "Denied — RPC's vacation, Mon 11/9 → Fri 11/13.", "Revoked — RPC's vacation, Mon 11/9 → Fri 11/13.", "Withdraw your vacation request, Mon 11/9 → Fri 11/13?", "Revoke RPC's approved vacation Mon 11/9 → Fri 11/13? This will remove it from the schedule."])
+        && JDB(db3c.next) === JDB(["Approved — DJA's no-call days, Mon 1/4/2027.", "Withdraw DJA's no-call request, Mon 1/4/2027?"])
+        && JDB(db3c.old) === JDB(["Approved — RPC's vacation, 2026-11-09 to 2026-11-13.", "Withdraw your vacation request, 2026-11-09 → 2026-11-13?"]), JDB(db3c));
+
+    // Generate's "Current schedule ends …", rendered
+    const GE = cutDB("{Object.keys(schedule).length > 0 && (() => {\n              const ms = Object.keys(schedule).sort();", "})()}", true);
+    const genOf = GE ? viewDB("h, schedule, dayText", GE.slice(1) + "})()", "db3-generate.js") : null;
+    const gText = genOf && W3 ? (() => { const t = tryDB(() => genOf({ h: hDB, schedule: { "2026-11-02": {}, "2027-02-15": {} }, dayText: W3.dayText })); return okTree(t) ? textDB(t) : t; })() : "not found";
+    check("DB3 Generate's period card (the real JSX, rendered): \"Current schedule ends Sun 2/21/2027. Configure the next period below.\" (it said 2027-02-21)",
+      gText === "Current schedule ends Sun 2/21/2027. Configure the next period below.", JDB(gText));
+
+    // Schedule Warnings: a line's week label, rendered
+    const WT = cutDB("            const weekTag = (w) => ", "\n", false);
+    const weekTagOf = WT ? tryDB(() => vm.runInContext(`(function () { const weekTag = (w) => ${WT}\n return weekTag; })()`, sandbox)) : null;
+    const CF = cutDB("{warnShown.conflicts.slice(0,10).map((c,i) => (", "\n              ))}", true);
+    const linesOf = CF ? viewDB("h, warnShown, lineInk, dk, mono, weekInk, weekTag, dismissBtn, warnChoice", CF.slice(1) + "\n              ))", "db3-warn-lines.js") : null;
+    const wl = linesOf && typeof weekTagOf === "function" ? tryDB(() => linesOf({ h: hDB, warnShown: { conflicts: [{ key: "k1", week: "2026-11-02", severity: "error", message: "RPC's weekend 11/6–11/8 runs into their vacation starting Mon 11/9" }, { key: "k2", week: "2026-12-28", severity: "warning", message: "x" }] },
+      lineInk: () => "#000000", dk: false, mono: "M", weekInk: "#5a6a78", weekTag: weekTagOf, dismissBtn: () => null, warnChoice: () => null })) : "not found";
+    const tags = Array.isArray(wl) ? wl.map((l) => textDB(l.kids[1])) : wl;
+    check("DB3 a Schedule Warnings line (the real JSX and weekTag, rendered) names its week as Mine's week heads do — \"Nov 2 – Nov 8\", \"Dec 28 – Jan 3\" — not \"2026-11-02\"; a label that isn't a week (the feed's \"feed\") stays as it is; the label doesn't wrap",
+      JDB(tags) === JDB(["Nov 2 – Nov 8", "Dec 28 – Jan 3"]) && typeof weekTagOf === "function" && weekTagOf("feed") === "feed" && Array.isArray(wl) && wl[0].kids[1].props.style.whiteSpace === "nowrap", JDB(tags));
+
+    // the Silvis feed card: the covered span, and the setting line — the scheduler's alone
+    const OFF = cutDB('{!silvisActive && <span style={{color:"#a06020",fontWeight:700}}> · {', "\n", true);
+    const offOf = OFF ? viewDB("h, silvisActive, isScheduler, sfRuleActive, silvisRule", OFF.slice(1, -1), "db3-silvis-off.js") : null;
+    const COVL = cutDB("{silvisDays.from && silvisDays.to && <span> · covers {", "\n", true);
+    const covOf = COVL ? viewDB("h, silvisDays, rangeText", COVL.slice(1, -1), "db3-silvis-covers.js") : null;
+    const off = (isScheduler, enabled) => { const t = offOf ? tryDB(() => offOf({ h: hDB, silvisActive: false, isScheduler, sfRuleActive: () => enabled, silvisRule: { enabled, code: "XYZ" } })) : "not found"; return okTree(t) ? textDB(t) : t; };
+    const db3d = { member: off(false, false), memberCode: off(false, true), sched: off(true, false), schedCode: off(true, true),
+      active: offOf ? tryDB(() => offOf({ h: hDB, silvisActive: true, isScheduler: false, sfRuleActive: () => true, silvisRule: {} })) : null,
+      covers: covOf && W3 ? (() => { const t = tryDB(() => covOf({ h: hDB, silvisDays: { from: "2026-10-01", to: "2027-01-31" }, rangeText: W3.rangeText })); return okTree(t) ? textDB(t) : t; })() : null };
+    check("DB3 the Silvis feed card (the real JSX, rendered): a member reads \" · Silvis conflict check is off\" (it read \"rule silvisBusy is OFF (silvisRule.enabled = false in the config blob)\"), the scheduler keeps both technical lines; nothing while the rule is on; the cache covers \"Thu 10/1 → Sun 1/31/2027\"",
+      db3d.member === " · Silvis conflict check is off" && db3d.memberCode === " · Silvis conflict check is off" && db3d.sched === " · rule silvisBusy is OFF (silvisRule.enabled = false in the config blob)"
+        && db3d.schedCode === ' · code "XYZ" is not on the roster — rule silvisBusy is inactive' && db3d.active === false && db3d.covers === " · covers Thu 10/1 → Sun 1/31/2027", JDB(db3d));
   }
 }
 
