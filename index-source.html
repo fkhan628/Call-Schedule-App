@@ -490,7 +490,12 @@ function CallSchedule() {
   // not the counts). Other steps carry none and leave the counts alone — but
   // a CLEAR step (2026-10-26) is marked `clear`, and gets `uncounted` once
   // its clear stands: exactly the counts the clear took off, which ↩ Undo
-  // puts back on. A step ↩ Undo takes back is marked `undone`.
+  // puts back on. A step ↩ Undo takes back is marked `undone`. Each step
+  // says what it undoes (`what` — UX audit 2026-11-01, QW4; set by its caller:
+  // "publish" with its `period` and `first` Monday, "trade", "swap", "edit",
+  // "restore"; a clear step is `clear`), which the ↩ Undo button names
+  // (undoWords); a publish the group was told of is marked `told`
+  // (markPublishTold), so undoing it offers to say it was withdrawn.
   // Returns the step, so a caller whose change then doesn't happen (a clear /
   // restore that wrote nothing) can take exactly that step back.
   const pushUndo = useCallback((counts) => {
@@ -530,6 +535,42 @@ function CallSchedule() {
     if (step.counts) { setJustPublished(null); publishUndoneRef.current++; }
     step.undone = true; // (a clear still running when its step is taken back takes nothing off the counts — clearSchedule)
     setScheduleHistory(h => h.slice(0, -1));
+  };
+  // What ↩ Undo would take back, in words (UX audit 2026-11-01, QW4): the
+  // button's only description was the hover title "Undo (1 steps)", which an
+  // iPhone never shows. kind — the button's word ("publish"); what — its
+  // spoken name, its question and its toast ("the publish of Feb 22 – May 30,
+  // 2027"). A step carrying counts is a publish; one with no kind is "the last
+  // change".
+  const undoWords = (step) => {
+    const kind = step.counts || step.what === "publish" ? "publish" : step.clear ? "clear" : step.what || "";
+    return { kind, what: kind === "publish" ? (step.period ? `the publish of ${step.period}` : "the publish") : kind === "edit" ? "the week edit" : kind ? `the ${kind}` : "the last change" };
+  };
+  // ↩ Undo, tapped (UX audit 2026-11-01, QW4): one tap took back a publish
+  // everyone had just been told of, with no question first and no word after.
+  // A publish or a clear — the two that change a whole period and its counts —
+  // is asked about first: what comes back, and whether the group was told.
+  // undoLastChange still decides (a refused Undo says why there and leaves its
+  // step); once it went through, a toast says what was undone. Undoing a
+  // publish the group was told of (owner decision Q7, 2026-11-02) also raises
+  // the Calendar's "↩ … was undone" banner, whose 📣 tells everyone it was
+  // withdrawn — never sent by itself (notifyWithdrawn). A tap from a render
+  // that still shows a step already undone does nothing (it took two steps).
+  const undoTap = () => {
+    const step = scheduleHistory[scheduleHistory.length - 1];
+    if (!step || step.undone) return;
+    const w = undoWords(step);
+    if (w.kind === "publish" || w.kind === "clear") {
+      const n = Object.keys(step.sched || {}).length;
+      const ask = w.kind === "clear"
+        ? `Undo the clear?\n\nThe schedule comes back as it was before it (${n} week${n === 1 ? "" : "s"}), and so do the counts it took off.`
+        : `Undo ${w.what}?\n\nIts weeks go back to what they were before it, and the counts with them.\n\n${step.told ? "Everyone was notified of this publish. They are told it was withdrawn only if you choose to — the Calendar then offers 📣." : "Nobody was notified of this publish."}`;
+      if (!confirm(ask)) return;
+    }
+    undoLastChange();
+    if (!step.undone) return;
+    showToast(`↩ Undone: ${w.what}.`, "info");
+    if (w.kind === "publish" && step.told) setWithdrawnOffer({ label: step.period || "", week: step.first || null, ep: sessionEpochRef.current });
   };
 
   // ─── What-If Preview ───
@@ -574,6 +615,16 @@ function CallSchedule() {
   // it already sent for (one send, however many taps).
   const [justPublished, setJustPublished] = useState(null);
   const notifiedRef = useRef(null);
+  // ↩ Undo took back a publish the group had been told of (owner decision Q7,
+  // 2026-11-02): the Calendar warns the scheduler and offers 📣 "Tell everyone
+  // it was withdrawn" — sent only on that tap (notifyWithdrawn), never by
+  // itself. { label: the publish's period, week: its first Monday (the notice
+  // opens the Calendar there), ep: the session that undid it — a tap from any
+  // other sends nothing }. It goes on Not now, with the scheduler's session,
+  // and when a publish of the same period lands since (the effects beside
+  // notifyWithdrawn). withdrawnSentRef: the one already sent for (one send).
+  const [withdrawnOffer, setWithdrawnOffer] = useState(null);
+  const withdrawnSentRef = useRef(null);
   const [pendingLocks, setPendingLocks] = useState([]); // [{ mondayStr, slot: "dc"|"mon"|"tue"|"wed"|"thu"|"wknd", surgeonId }]
 
   // ─── Silvis (trauma) feed — rule silvisBusy (silvis-feed.js) ───
@@ -4007,7 +4058,7 @@ function CallSchedule() {
       // notified — a failure after this toasts last (sync-guards AA3's order).
       showToast(`Trade accepted — the schedule is updated${cascadesNow.length ? ` (${cascadesNow.length} other shift${cascadesNow.length === 1 ? "" : "s"} moved too)` : ""}.`, "success");
       logAudit("trade.accept", `${acceptMsg}${cascadesNow.length ? ` (+${cascadesNow.length} cascade change${cascadesNow.length === 1 ? "" : "s"})` : ""}`, { request_id: req.id, cascades: cascadesNow.length });
-      pushUndo();
+      const undoStep = pushUndo(); if (undoStep) undoStep.what = "trade"; // (↩ Undo names what it takes back — QW4)
       updateSchedule(p => {
         const n = { ...p };
 
@@ -4859,7 +4910,13 @@ function CallSchedule() {
   // view, since the Calendar opens at the Generate tab's scroll. Called by
   // doGenerateAndNotify in the tap's session, so mondays is the tap's: the
   // Mondays it published. (A success toast shows its own ✓ — toastText.)
+  // The group was sent the notice and the e-mail, so the publish's ↩ Undo
+  // step remembers it (markPublishTold — QW4: undoing it then offers to say
+  // it was withdrawn), and an offer to say an earlier publish of this period
+  // was withdrawn goes: this one is what is in place now.
   const generateAndPublishDone = (period, told) => {
+    markPublishTold(period);
+    setWithdrawnOffer(w => (w && w.label === period ? null : w));
     showToast(told ? `Published ${period} — everyone was notified.` : `Published ${period}.`, "success");
     const first = mondays[0];
     if (!first || viewNowRef.current !== "generate") return;
@@ -4876,9 +4933,16 @@ function CallSchedule() {
   // Calendar's scheduler-only "✓ Published" banner exactly as ✓ Accept &
   // Publish does, with 📣 Notify everyone (one send) and Not now. A result
   // sent to the preview (Needs your OK, inputs changed during the search)
-  // raises nothing here — its ✓ Accept & Publish raises its own. No confirm
-  // (it never had one). e: the tap's click (the button's onClick hands it in).
+  // raises nothing here — its ✓ Accept & Publish raises its own. It asks
+  // first (UX audit 2026-11-01, QW4): one tap re-rolled and re-published the
+  // period the Generate tab holds — published weeks, even a period already
+  // over — with no question. e: the tap's click (the button's onClick hands
+  // it in).
   const doRegenerate = async (e) => {
+    // The question Generate & Publish asks (helpers.js publishConfirmText):
+    // the period's dates, the published weeks it replaces, a period started or
+    // over — its last line that nobody is told until 📣. Cancel: nothing runs.
+    if (!confirm(publishConfirmText(mondays, { schedule: scheduleRef.current, today: fmt(new Date()), regenerate: true }))) return;
     // This session, at the tap (review r3 regress-3): a sign-out / another
     // account meanwhile → no banner on the next session's screen.
     const ep = sessionEpochRef.current;
@@ -5889,7 +5953,9 @@ function CallSchedule() {
     // there, silently — none of it is run, saved or said as the next session.
     const ep = sessionEpochRef.current;
     if (!schedEditable("job")) return; // the edit gate first — before even asking (and no other clear / reset / restore / publish queued or running — P7)
-    if (!confirm("Clear the entire generated schedule? Holiday assignments and setup data will be kept. The cleared weeks from May 4, 2026 on come off the running totals.\n\nThis cannot be undone.")) return;
+    // (Its last line said "This cannot be undone." — ↩ Undo brings a clear back, until undoLastChange refuses it: something
+    // published since, or the history gone with a sign-out; then the snapshot taken below. UX audit 2026-11-01, QW4.)
+    if (!confirm("Clear the entire generated schedule? Holiday assignments and setup data will be kept. The cleared weeks from May 4, 2026 on come off the running totals.\n\n↩ Undo brings it back until something new is published or you sign out; after that, restore its \"Before schedule clear\" snapshot in Settings.")) return;
     // Preserve pre-clear state; if the snapshot can't be written, refuse to clear.
     const clearSnap = await snapshots.capture("clear_schedule", { minWeeks: Object.keys(schedSyncRef.current.knownSchedule()).length ? 1 : 0 });
     if (sessionEpochRef.current !== ep) return;
@@ -6063,6 +6129,7 @@ function CallSchedule() {
         const busyJob = schedSyncRef.current.jobPending();
         if (busyJob) { setSaveStatus(""); weeksR = { ok: false, wrote: false, error: `${schedSyncRef.current.jobLabel(busyJob)} is still running — wait for it to finish.` }; return { ok: false, error: weeksR.error }; }
         const undoStep = Object.keys(scheduleRef.current).length > 0 ? pushUndo() : null;
+        if (undoStep) undoStep.what = "restore"; // (↩ Undo names what it takes back — QW4)
         const before = scheduleRef.current;
         commitSchedule(sched);
         setSaveStatus("");
@@ -6557,7 +6624,49 @@ function CallSchedule() {
     // The banner unmounts with the focus in it (review fix 2026-10-20): VoiceOver's cursor jumped to the top of the
     // page. It goes to the Calendar's month heading instead; the toast's live region still says what happened.
     setTimeout(() => { const h = document.querySelector('[data-cal-month="1"]'); if (h && h.focus) h.focus(); }, 0);
-    if ((await notifyPublished(jp.ep, jp.label)) && sessionEpochRef.current === jp.ep) showToast("Everyone has been notified.", "success");
+    const sent = await notifyPublished(jp.ep, jp.label);
+    if (sessionEpochRef.current !== jp.ep) return; // (a tap from another session sent nothing; one that changed during the send says nothing)
+    markPublishTold(jp.label); // (the group was sent it — the e-mail even when the notice wasn't saved: its ↩ Undo offers "withdrawn", QW4)
+    if (sent) showToast("Everyone has been notified.", "success");
+  };
+
+  // The group was told of the publish of `period` — Generate & Publish's own
+  // notice (generateAndPublishDone) or 📣 Notify everyone (notifyJustPublished),
+  // sent in the publish's session: that publish's ↩ Undo step, the newest of
+  // that period still on the history, remembers it — undoing it then asks with
+  // that in mind and offers to say it was withdrawn (QW4, owner decision Q7).
+  // The history as last rendered (scheduleHistoryRef — the send ends after
+  // awaits); a publish into an empty schedule has no step, so nothing to mark.
+  const markPublishTold = (period) => {
+    const st = scheduleHistoryRef.current.slice().reverse().find(s => s.what === "publish" && s.period === period && !s.undone);
+    if (st) st.told = true;
+  };
+
+  // The offer to say a publish was withdrawn (withdrawnOffer) goes with the
+  // scheduler's session — the session boundary clears isScheduler — and when a
+  // publish of the same period lands since (its "✓ Published" banner here;
+  // Generate & Publish's own notice in generateAndPublishDone): that publish's
+  // 📣 tells everyone what is in place now, and "withdrawn" after it would read
+  // as if the new one were.
+  useEffect(() => { if (!isScheduler) setWithdrawnOffer(null); }, [isScheduler]);
+  useEffect(() => { if (justPublished) setWithdrawnOffer(w => (w && w.label === justPublished.label ? null : w)); }, [justPublished]);
+  // 📣 Tell everyone it was withdrawn, on the Calendar's "↩ … was undone"
+  // banner (owner decision Q7, 2026-11-02): ONE send per offer — the banner
+  // goes on the tap, and a second tap finds it already sent for; a tap from
+  // another session than the Undo's sends nothing. The group's notice (the
+  // bell) and its device push, to everyone, opening the Calendar on those
+  // weeks — no e-mail: the e-mail service has no template for it, and the
+  // toast says so. The focus goes to the month heading, as 📣 Notify
+  // everyone's does (the banner unmounts with it).
+  const notifyWithdrawn = async () => {
+    const w = withdrawnOffer;
+    if (!w || withdrawnSentRef.current === w) return;
+    withdrawnSentRef.current = w; setWithdrawnOffer(null);
+    setTimeout(() => { const h = document.querySelector('[data-cal-month="1"]'); if (h && h.focus) h.focus(); }, 0);
+    if (sessionEpochRef.current !== w.ep) return;
+    const saved = await addNotification("schedule_changed", "Schedule Withdrawn",
+      `The call schedule published for ${w.label} was withdrawn — the Calendar shows the schedule now in place.`, w.week ? { week: w.week } : {}, null, w.ep);
+    if (saved === true && sessionEpochRef.current === w.ep) showToast("Everyone has been told it was withdrawn — in the app and by push (no e-mail goes out for this).", "success");
   };
 
   // 🔍 Search more (owner 2026-10-12, item 5): another SEARCH_MS of searching
@@ -6595,7 +6704,10 @@ function CallSchedule() {
   const publishWeeks = (newWeeks, how) => {
     const cur = scheduleRef.current || {};
     const replacedWeeks = Object.fromEntries(Object.keys(newWeeks).filter(m => cur[m]).map(m => [m, cur[m]]));
-    if (Object.keys(cur).length > 0) pushUndo({ prior: priorCounts, y1: year1Counts }); // the step snapshots the mirror (= cur) and the engine epoch
+    const step = Object.keys(cur).length > 0 ? pushUndo({ prior: priorCounts, y1: year1Counts }) : null; // the step snapshots the mirror (= cur) and the engine epoch
+    // …and says what it undoes (QW4): the publish of its period — said as the publish's banner and notice say it (periodLabel,
+    // guarded: an old cached helpers.js gives the plain weeks, as runPublish's) — from its first Monday
+    if (step) { const ms = Object.keys(newWeeks).sort(); step.what = "publish"; step.first = ms[0]; step.period = typeof periodLabel === "function" ? periodLabel(ms[0], ms[ms.length - 1]) : `weeks of ${ms[0]} – ${ms[ms.length - 1]}`; }
     const r = rollForwardCounts(newWeeks, replacedWeeks);
     const merged = { ...cur, ...newWeeks };
     commitSchedule(merged); // the schedule's ONE writer (sync v2 §2.1): the mirror first — a publish right after this one sees it before the next render
@@ -6958,7 +7070,7 @@ function CallSchedule() {
     // silvisBusy (see acceptTradeRequest). swapShift is a manual edit path, so
     // the scheduler override applies.
     if (silvisActive) { const r = silvisBlock(newId, mStr, shift, cur[mStr]); if (silvisRefuse(r ? [r] : [])) return; }
-    pushUndo();
+    const undoStep = pushUndo(); if (undoStep) undoStep.what = "swap"; // (↩ Undo names what it takes back — QW4)
     updateSchedule(p => {
       const wk = {...p[mStr]};
       if(shift==="dayCall") wk.dayCall=newId;
@@ -7206,7 +7318,7 @@ function CallSchedule() {
       if (returnMon && returnShift) { const r2 = silvisBlock(targetOldId, returnMon, returnShift, cur[returnMon]); if (r2) hits.push(r2); }
       if (silvisRefuse(hits)) return;
     }
-    pushUndo();
+    const undoStep = pushUndo(); if (undoStep) undoStep.what = "swap"; // (↩ Undo names what it takes back — QW4)
     updateSchedule(p => {
       const n = { ...p };
       // Swap 1: candidate takes the target shift
@@ -7381,7 +7493,7 @@ function CallSchedule() {
     // included). Only when a surgeon slot changed: an APP-only save writes the
     // APP map, never a schedule week (it used to create an empty one).
     if (changes.some(c => !c.isApp)) {
-      pushUndo();
+      const undoStep = pushUndo(); if (undoStep) undoStep.what = "edit"; // (↩ Undo names what it takes back — QW4)
       updateSchedule(p => ({ ...p, [mondayStr]: next }));
     }
     // APP changes (2026-10-11): only the days edited in this editor, applied to
@@ -9265,11 +9377,18 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               <span style={{position:"absolute",top:-4,right:-4,background:"#e04040",color:"#fff",borderRadius:10,fontSize:9,fontWeight:700,minWidth:16,height:16,display:"flex",alignItems:"center",justifyContent:"center",padding:"0 4px"}}>{myUnreadCount}</span>
             )}
           </button>
-          {scheduleHistory.length > 0 && (
-            <button onClick={undoLastChange} style={{...css.tab(false),fontSize:12,padding:"4px 10px",color:"#c09030"}} title={`Undo (${scheduleHistory.length} steps)`}>
-              ↩ Undo
-            </button>
-          )}
+          {/* ↩ Undo says what it takes back (UX audit 2026-11-01, QW4): "↩ Undo publish", its spoken name and title "Undo the
+              publish of Feb 22 – May 30, 2027" (it had only the hover title "Undo (1 steps)", which an iPhone never shows); its
+              text #8a6410, 5.1:1 on the header (#c09030 was 2.8:1). undoTap asks first for a publish or a clear and says what
+              it undid. */}
+          {scheduleHistory.length > 0 && (() => {
+            const w = undoWords(scheduleHistory[scheduleHistory.length - 1]);
+            return (
+              <button onClick={undoTap} aria-label={`Undo ${w.what}`} title={`Undo ${w.what}`} style={{...css.tab(false),fontSize:12,padding:"4px 10px",color:"#8a6410"}}>
+                ↩ Undo{w.kind ? " " + w.kind : ""}
+              </button>
+            );
+          })()}
         </div>}
       </div>
 
@@ -10832,6 +10951,21 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               </div>
             </div>
           )}
+          {/* ↩ Undo took back a publish the group had been told of (owner decision Q7, 2026-11-02): the scheduler is warned
+              and offered 📣 to tell everyone it was withdrawn — sent only on that tap (notifyWithdrawn), never by itself; Not
+              now only closes it. The Notify banner's pattern: scheduler-only, in the page's flow, ≥44px buttons that wrap at
+              320px; its own amber, 7.2:1 in light and 10.6:1 in dark. */}
+          {isScheduler && withdrawnOffer && (
+            <div role="status" aria-live="polite" data-withdrawn="1" style={{background:dk?"#33260f":"#fdf3e3",border:`1px solid ${dk?"#6a5020":"#e8c890"}`,borderRadius:12,padding:"12px 14px",marginBottom:14,display:"flex",alignItems:"center",flexWrap:"wrap",gap:10}}>
+              <div style={{flex:"1 1 200px",minWidth:0,fontSize:14,fontWeight:600,lineHeight:1.4,color:dk?"#f0d8a8":"#6e4a08",overflowWrap:"anywhere"}}>
+                ↩ The publish of {withdrawnOffer.label} was undone. Everyone had been notified of it, and nobody has been told it was withdrawn.
+              </div>
+              <div style={{display:"flex",gap:8,flexWrap:"wrap",flex:"1 1 auto",justifyContent:"flex-end"}}>
+                <button onClick={notifyWithdrawn} style={{...css.btn(true),background:"linear-gradient(135deg,#155a8a,#1a6fa8)",minHeight:44,padding:"8px 14px",fontSize:14,flex:"1 1 auto"}}>📣 Tell everyone it was withdrawn</button>
+                <button onClick={()=>setWithdrawnOffer(null)} style={{...css.btn(false),minHeight:44,padding:"8px 14px",fontSize:14}}>Not now</button>
+              </div>
+            </div>
+          )}
           {/* ─── On Call Today Banner ─── */}
           {/* Shown when today has call, or when someone is on call right now without it (review fix:
               the first morning past the published schedule) — then only the "now" line. */}
@@ -11172,7 +11306,9 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               month simply isn't published yet — say which. Reads only loaded and the
               published schedule (calMonthStatus, helpers.js); a month with any surgeon
               call shows nothing here. Past the last published week, a button goes back
-              to that week's month. */}
+              to that week's month. Right after this scheduler's ✕ Clear (the newest
+              Undo step is the clear's) it says ↩ Undo brings it back — it said "reload
+              the app" (UX audit 2026-11-01, QW4); everyone else's line is as before. */}
           {(() => {
             const st = loaded && typeof calMonthStatus === "function" ? calMonthStatus(schedule, calYear, calMonth) : null;
             const ym = (ds) => Number(ds.slice(0, 4)) * 12 + Number(ds.slice(5, 7)) - 1, here = calYear * 12 + calMonth;
@@ -11182,7 +11318,9 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             const inRange = !!(st && st.from && here >= ym(st.from) && here <= ym(st.to));
             const text = !loaded ? (Object.keys(schedule || {}).length ? "" : "Loading the schedule…")
               : !st || st.kind === "ok" ? ""
-              : st.kind === "empty" ? "No call schedule to show — it may not be published yet; if you expected one, reload the app."
+              : st.kind === "empty" ? (scheduleHistory.length && scheduleHistory[scheduleHistory.length - 1].clear
+                ? "The schedule was cleared — ↩ Undo clear, at the top of the screen, brings it back."
+                : "No call schedule to show — it may not be published yet; if you expected one, reload the app.")
               : `No surgeon call scheduled for ${MO[calMonth]} ${calYear}${(st.from && here < ym(st.from)) || inRange ? "" : " yet"}${st.from && !inRange ? ` — the published schedule runs ${dated(st.from)} → ${dated(st.to)}` : ""}.`;
             const goTo = st && st.kind === "unscheduled" && st.to && here > ym(st.to) ? { y: Number(st.to.slice(0, 4)), m: Number(st.to.slice(5, 7)) - 1 } : null;
             if (!text) return null;

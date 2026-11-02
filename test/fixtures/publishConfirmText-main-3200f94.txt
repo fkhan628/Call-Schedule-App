@@ -1,0 +1,18 @@
+// main's code at 3200f94, byte-for-byte: helpers.js publishConfirmText — the "old" reference for sync-guards DC4
+// (Generate & Publish's question must read exactly as before; only ↻ Regenerate's — opts.regenerate — is new).
+function publishConfirmText(mondays, opts) {
+  const o = opts || {};
+  const ms = (mondays || []).map(m => (typeof m === "string" ? m : fmt(m))).sort();
+  const notify = "If it publishes straight away, everyone is notified by push and email (per their notification settings). If anything needs your OK, the preview opens instead — after ✓ Accept & Publish there, you choose whether to notify everyone.";
+  if (!ms.length) return `Generate and publish the schedule?\n\n${notify}`;
+  const n = ms.length, first = ms[0], end = fmt(addD(parse(ms[n - 1]), 6));
+  const sched = o.schedule || {};
+  const k = ms.filter(m => sched[m]).length;
+  const warn = [];
+  if (k > 0) warn.push(n === 1 ? "⚠ This week is already published and will be replaced."
+    : k === n ? `⚠ ${n === 2 ? "Both weeks" : `All ${n} weeks`} are already published and will be replaced.`
+    : `⚠ ${k} of the ${n} weeks ${k === 1 ? "is" : "are"} already published and will be replaced.`);
+  if (typeof o.today === "string" && end < o.today) warn.push("⚠ This whole period is already over — publishing it changes past call history, counts and billing.");
+  else if (typeof o.today === "string" && first < o.today) warn.push("⚠ This period has already started.");
+  return `Generate and publish ${monthDayLabel(first, true)} → ${monthDayLabel(end, true)} (${n} week${n === 1 ? "" : "s"})?\n\n${warn.length ? warn.join("\n") + "\n\n" : ""}${notify}`;
+}

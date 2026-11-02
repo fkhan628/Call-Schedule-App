@@ -999,14 +999,23 @@ function publishedThrough(schedule) {
 // instead, and Accept & Publish there (acceptPreview) sends no notice by
 // itself: the Calendar then asks the scheduler whether to notify everyone
 // (owner decision 2026-10-20 — said so here since the review fixes).
+// The Calendar's ↻ Regenerate asks it too (UX audit 2026-11-01, QW4: one tap
+// re-rolled and re-published the period, even one already over): the same
+// period, the same weeks it replaces, the same warnings — only its first
+// words and its last line differ (opts.regenerate), since it tells nobody by
+// itself: once it has published, the Calendar offers 📣 Notify everyone.
 //   mondays: the period's Mondays, as Dates or "YYYY-MM-DD"
-//   opts:    { schedule: the published weeks by Monday, today: "YYYY-MM-DD" }
+//   opts:    { schedule: the published weeks by Monday, today: "YYYY-MM-DD",
+//              regenerate: true for ↻ Regenerate }
 // Pure: no clock, no state.
 function publishConfirmText(mondays, opts) {
   const o = opts || {};
   const ms = (mondays || []).map(m => (typeof m === "string" ? m : fmt(m))).sort();
-  const notify = "If it publishes straight away, everyone is notified by push and email (per their notification settings). If anything needs your OK, the preview opens instead — after ✓ Accept & Publish there, you choose whether to notify everyone.";
-  if (!ms.length) return `Generate and publish the schedule?\n\n${notify}`;
+  const verb = o.regenerate ? "Regenerate and publish" : "Generate and publish";
+  const notify = o.regenerate
+    ? "Nobody is notified by itself: once it is published, the Calendar offers 📣 Notify everyone. If anything needs your OK, it opens in the preview on the Generate tab instead."
+    : "If it publishes straight away, everyone is notified by push and email (per their notification settings). If anything needs your OK, the preview opens instead — after ✓ Accept & Publish there, you choose whether to notify everyone.";
+  if (!ms.length) return `${verb} the schedule?\n\n${notify}`;
   const n = ms.length, first = ms[0], end = fmt(addD(parse(ms[n - 1]), 6));
   const sched = o.schedule || {};
   const k = ms.filter(m => sched[m]).length;
@@ -1016,7 +1025,7 @@ function publishConfirmText(mondays, opts) {
     : `⚠ ${k} of the ${n} weeks ${k === 1 ? "is" : "are"} already published and will be replaced.`);
   if (typeof o.today === "string" && end < o.today) warn.push("⚠ This whole period is already over — publishing it changes past call history, counts and billing.");
   else if (typeof o.today === "string" && first < o.today) warn.push("⚠ This period has already started.");
-  return `Generate and publish ${monthDayLabel(first, true)} → ${monthDayLabel(end, true)} (${n} week${n === 1 ? "" : "s"})?\n\n${warn.length ? warn.join("\n") + "\n\n" : ""}${notify}`;
+  return `${verb} ${monthDayLabel(first, true)} → ${monthDayLabel(end, true)} (${n} week${n === 1 ? "" : "s"})?\n\n${warn.length ? warn.join("\n") + "\n\n" : ""}${notify}`;
 }
 
 // A schedule period, said one way (UX audit 2026-10-19): its first Monday

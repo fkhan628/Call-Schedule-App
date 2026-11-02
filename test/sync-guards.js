@@ -3399,8 +3399,9 @@ console.log("\nBF. toasts stack (up to 3), errors stay longer, no doubled ⚠");
   // period with its own guarded call, madePeriodText.)
   // (2026-10-25, on purpose — CO: ×6 — runPublish's late() labels the weeks it raises the 📣 banner for)
   // (2026-10-26, on purpose — CV: ×7 — findSwapSuggestions says the made period it counted, taken with its counts)
-  check("BF7 (review fix) every call of the batch's twelve helpers in index-source.html sits behind its own `typeof … === \"function\"` (the app's convention for a newer helper), each of them called somewhere — toastAdd / toastMs / toastText, periodLabel ×7 (periodText, the office prefill, both publish audit lines, Stats' made period — CJ, runPublish's late banner — CO, the swap options' period — CV), periodSeam, periodHolidayGaps ×2, authErrorText ×6, tradeSlotHolder ×2, tradePickNotes, calMonthWeekMondays, calendarFeedUrls ×2 — except rangeSummary, called nowhere since the range field replaced its line (moved by BK; it stays in helpers.js, BE1 runs it)",
-    unguarded.length === 0 && BATCH4_HELPERS.every((n) => (n === "rangeSummary" ? callsOf[n] === 0 : callsOf[n] > 0)) && callsOf.authErrorText === 6 && callsOf.periodLabel === 7 && callsOf.periodHolidayGaps === 2 && callsOf.tradeSlotHolder === 2 && callsOf.calendarFeedUrls === 2,
+  // (2026-11-02, on purpose — DC: ×8 — publishWeeks names its ↩ Undo step's period, the words ↩ Undo says — QW4)
+  check("BF7 (review fix) every call of the batch's twelve helpers in index-source.html sits behind its own `typeof … === \"function\"` (the app's convention for a newer helper), each of them called somewhere — toastAdd / toastMs / toastText, periodLabel ×8 (periodText, the office prefill, both publish audit lines, Stats' made period — CJ, runPublish's late banner — CO, the swap options' period — CV, the publish's ↩ Undo step — DC), periodSeam, periodHolidayGaps ×2, authErrorText ×6, tradeSlotHolder ×2, tradePickNotes, calMonthWeekMondays, calendarFeedUrls ×2 — except rangeSummary, called nowhere since the range field replaced its line (moved by BK; it stays in helpers.js, BE1 runs it)",
+    unguarded.length === 0 && BATCH4_HELPERS.every((n) => (n === "rangeSummary" ? callsOf[n] === 0 : callsOf[n] > 0)) && callsOf.authErrorText === 6 && callsOf.periodLabel === 8 && callsOf.periodHolidayGaps === 2 && callsOf.tradeSlotHolder === 2 && callsOf.calendarFeedUrls === 2,
     JSON.stringify({ unguarded, callsOf }));
 }
 
@@ -10826,12 +10827,14 @@ console.log("\nAQ. calendar says why a month is blank");
 
   // AQ3 — the Calendar's line, run as written (the slice reads only loaded, schedule, calYear and calMonth;
   // any other component variable would throw a ReferenceError in the sandbox)
+  // (2026-11-02, on purpose — DC: + scheduleHistory — right after this scheduler's ✕ Clear the empty line says ↩ Undo
+  // brings it back, not "reload the app"; no Undo step here, so every line below is as before — DC10 runs the clear's)
   const START = 'const st = loaded && typeof calMonthStatus === "function" ? calMonthStatus(schedule, calYear, calMonth) : null;';
   const END = "if (!text) return null;";
   const iS = src.indexOf(START), iE = iS < 0 ? -1 : src.indexOf(END, iS);
   let lineFn = null;
-  try { lineFn = iS >= 0 && iE > iS && count(START) === 1 ? vm.runInContext(`(function (env) { const { loaded, schedule, calYear, calMonth } = env; ${src.slice(iS, iE)} return { text, goTo }; })`, sandbox) : null; } catch (ex) { lineFn = null; }
-  const L = (loaded, schedule, calYear, calMonth) => { try { const r = lineFn({ loaded, schedule, calYear, calMonth }); return JSON.stringify([r.text, r.goTo]); } catch (ex) { return "threw: " + String(ex).slice(0, 120); } };
+  try { lineFn = iS >= 0 && iE > iS && count(START) === 1 ? vm.runInContext(`(function (env) { const { loaded, schedule, calYear, calMonth, scheduleHistory } = env; ${src.slice(iS, iE)} return { text, goTo }; })`, sandbox) : null; } catch (ex) { lineFn = null; }
+  const L = (loaded, schedule, calYear, calMonth) => { try { const r = lineFn({ loaded, schedule, calYear, calMonth, scheduleHistory: [] }); return JSON.stringify([r.text, r.goTo]); } catch (ex) { return "threw: " + String(ex).slice(0, 120); } };
   const RUNS = "the published schedule runs Mon 4/6/2026 → Sun 1/3/2027.";
   const lineCases = lineFn ? [
     ["still loading, nothing drawn yet", L(false, {}, 2027, 1), ["Loading the schedule…", null]],
@@ -12624,6 +12627,9 @@ console.log("\nAV. Pending requests: a collapsed group shows a coverage-floor br
 //       announce a cleared schedule), cancelled or refused → still up
 //   the section runs inside its own catch: a throw fails one named check,
 //   it never ends the run (as CD)
+// Changed ON PURPOSE 2026-11-02 (UX audit 2026-11-01, QW4 — section DC): ↻ Regenerate now asks first, the question
+// Generate & Publish asks (publishConfirmText, its regenerate variant), inside doRegenerate — the button still hands
+// it the click. CH's runs answer OK (confirm, mondays and scheduleRef are handed in); DC5 runs Cancel and the words.
 console.log("\nCH. After Regenerate publishes, the same one-tap Notify banner");
 await (async () => {
   const nsrcCH = src.replace(/\r\n/g, "\n");
@@ -12642,9 +12648,11 @@ await (async () => {
   const rgBody = bodyCH("  const doRegenerate = async (e) => {", "\n  };\n");
   const rgCode = rgBody === null ? null : "async (e) => {" + rgBody + "\n  }";
   // (every sender is handed in, as a spy: doRegenerate must call none of them)
-  const RG_ENV = "sessionEpochRef, periodText, doGenerate, setJustPublished, setView, setTimeout, window, document, addNotification, sendEmailNotif, sendPushNotif, notifyPublished";
+  // (2026-11-02, on purpose — DC: + confirm, mondays, scheduleRef — it asks Generate & Publish's question first; answered OK here)
+  const RG_ENV = "sessionEpochRef, periodText, doGenerate, setJustPublished, setView, setTimeout, window, document, addNotification, sendEmailNotif, sendPushNotif, notifyPublished, confirm, mondays, scheduleRef";
   const rgMk = fnCH(RG_ENV, rgCode), rgMkOld = fnCH(RG_ENV, rgCode, OLD_SB);
-  const spies = (rec) => ({ addNotification: (t) => rec.sends.push("notice " + t), sendEmailNotif: (t) => rec.sends.push("e-mail " + t), sendPushNotif: (t) => rec.sends.push("push " + t), notifyPublished: () => rec.sends.push("notifyPublished") });
+  const spies = (rec) => ({ addNotification: (t) => rec.sends.push("notice " + t), sendEmailNotif: (t) => rec.sends.push("e-mail " + t), sendPushNotif: (t) => rec.sends.push("push " + t), notifyPublished: () => rec.sends.push("notifyPublished"),
+    confirm: () => true, mondays: MONS.map(parseCH), scheduleRef: { current: {} } }); // (the question, answered OK — DC5)
   // The page around the tap (review F2): scrollY, the tapped button's spot on the screen, whether it is still in the page,
   // whether a sheet is open. The tap's click hands doRegenerate the button (e.currentTarget), as React does.
   const pageCH = () => { const pg = { y: 300, top: 120, inPage: true, sheet: false }; pg.btn = { get isConnected() { return pg.inPage; }, getBoundingClientRect: () => ({ top: pg.top, bottom: pg.top + 36 }) }; pg.window = { get scrollY() { return pg.y; } }; return pg; };
@@ -12789,7 +12797,8 @@ await (async () => {
   const npBody = bodyCH("  const notifyPublished = async (ep, period) => {", "\n  };\n");
   const npMk = fnCH("sessionEpochRef, addNotification, sendEmailNotif, justPublished, notifiedRef, setJustPublished", npBody === null ? null : "async (ep, period) => {" + npBody + "\n  }");
   const njBody = bodyCH("  const notifyJustPublished = async () => {", "\n  };\n");
-  const njMk = fnCH("justPublished, notifiedRef, setJustPublished, notifyPublished, sessionEpochRef, showToast, document, setTimeout", njBody === null ? null : "async () => {" + njBody + "\n  }");
+  // (2026-11-02, on purpose — DC: + markPublishTold, the publish's Undo step remembers the group was told; a no-op here, DC runs it)
+  const njMk = fnCH("justPublished, notifiedRef, setJustPublished, notifyPublished, sessionEpochRef, showToast, document, setTimeout, markPublishTold", njBody === null ? null : "async () => {" + njBody + "\n  }");
   const sbBody = bodyCH("  const sessionBoundary = ", "\n  };\n");
   const sbMk = fnCH("searchRef, setSearching, setSearchStats, setPreviewSchedule, setShowPreview, schedSyncRef, setScheduleHistory, setEditWeekModal, setReauthNeeded, setStaleTokenWarn, setIsScheduler, setupReadRef, lastSyncRef, sessionEpochRef, forgetDayOffs, setJustPublished", sbBody === null ? null : sbBody + "\n  }");
   const B_OPEN = "\n          {isScheduler && justPublished && (\n", bAt = nsrcCH.indexOf(B_OPEN), bEnd = bAt < 0 ? -1 : nsrcCH.indexOf("\n          )}", bAt + B_OPEN.length);
@@ -12809,7 +12818,7 @@ await (async () => {
       justPublished: jp, notifiedRef: c.notified, setJustPublished: c.setJP });
     c.regen = () => rgMk(Object.assign({ sessionEpochRef: c.ep, periodText: PT, doGenerate: async () => "published", setJustPublished: c.setJP, setView: () => {}, setTimeout: () => 0, window: { scrollY: 0 }, document: { querySelector: () => null } }, spies({ sends: c.log })))();
     c.tap = (jp = c.state) => njMk({ justPublished: jp, notifiedRef: c.notified, setJustPublished: c.setJP, notifyPublished: c.np(jp), sessionEpochRef: c.ep,
-      showToast: (m, t) => c.log.push("toast " + t + ": " + m), document: { querySelector: () => null }, setTimeout: (fn) => { fn(); return 0; } })();
+      showToast: (m, t) => c.log.push("toast " + t + ": " + m), document: { querySelector: () => null }, setTimeout: (fn) => { fn(); return 0; }, markPublishTold: () => {} })();
     return c;
   };
   let ch3 = null;
@@ -12839,13 +12848,18 @@ await (async () => {
 
   // CH4 — the wiring
   const rowCH = (nsrcCH.match(/\n {14}\{isScheduler && <>\n {16}<button onClick=\{\(\)=>setView\("setup"\)\}[^\n]*\n {16}(<button [^\n]*↻ Regenerate"\}<\/button>)\n {16}<button onClick=\{clearSchedule\}/) || [])[1] || null;
-  check("CH4 the Calendar's ↻ Regenerate — in the scheduler-only block, between Setup → and ✕ Clear — calls doRegenerate on the tap with its click (the handler itself, so React hands it the event: e.currentTarget is the button — F2), no confirm (it never had one), disabled while a search runs; nothing else calls doRegenerate",
+  // (2026-11-02, on purpose — DC: the button itself still has no confirm — its question is asked inside doRegenerate, below)
+  check("CH4 the Calendar's ↻ Regenerate — in the scheduler-only block, between Setup → and ✕ Clear — calls doRegenerate on the tap with its click (the handler itself, so React hands it the event: e.currentTarget is the button — F2), no confirm on the button (doRegenerate asks — DC), disabled while a search runs; nothing else calls doRegenerate",
     !!rowCH && rowCH.startsWith("<button onClick={doRegenerate} disabled={!!searching} ") && !/confirm\(/.test(rowCH) && count("onClick={doRegenerate}") === 1
       && count("const doRegenerate = async (e) => {") === 1 && !/\bdoRegenerate\(/.test(nsrcCH), String(rowCH));
-  check("CH4 doRegenerate takes the tap's session, the period (periodText) and where the scheduler is (the tapped button, scrollY) first, asks doGenerate to publish ONCE as \"↻ Regenerate\", gates on the session, sends a \"review\" to the preview (a scheduler who stayed only), gates on \"published\", judges \"stayed\" before raising the banner, then scrolls only if so; it names none of the senders and no confirm",
+  // (2026-11-02, on purpose — DC, QW4: it asks ONE question first — Generate & Publish's, its regenerate variant — before
+  // it takes anything; the rest is as before. DC5 runs Cancel and the question's words)
+  check("CH4 doRegenerate asks ONE question first (publishConfirmText for the period on screen, the published weeks and today, regenerate: true — DC), then takes the tap's session, the period (periodText) and where the scheduler is (the tapped button, scrollY), asks doGenerate to publish ONCE as \"↻ Regenerate\", gates on the session, sends a \"review\" to the preview (a scheduler who stayed only), gates on \"published\", judges \"stayed\" before raising the banner, then scrolls only if so; it names none of the senders",
     !!rgBody && (rgBody.match(/doGenerate\(/g) || []).length === 1
       && /^\n[^]*?    const ep = sessionEpochRef\.current;\n[^]*?    const period = periodText;\n[^]*?    const btn = \(e && e\.currentTarget\) \|\| null;\n    const at0 = btn \? \{ y: window\.scrollY, top: btn\.getBoundingClientRect\(\)\.top \} : null;\n[^]*?    const outcome = await doGenerate\(false, "↻ Regenerate"\);\n    if \(sessionEpochRef\.current !== ep\) return;\n[^]*?    if \(outcome === "review"\) \{\n      if \(stayed\(\)\) \{\n        setView\("generate"\);\n[^]*?    if \(outcome !== "published"\) return;\n    const here = stayed\(\);[^\n]*\n    setJustPublished\(\{ label: period, ep \}\);\n[^]*?    if \(here\) setTimeout\(/.test(rgBody)
-      && !/addNotification\(|sendEmailNotif\(|sendPushNotif\(|notifyPublished\(|confirm\(/.test(rgBody), String(rgBody).slice(0, 900));
+      && !/addNotification\(|sendEmailNotif\(|sendPushNotif\(|notifyPublished\(/.test(rgBody) && (rgBody.match(/confirm\(/g) || []).length === 1
+      && rgBody.indexOf("    if (!confirm(publishConfirmText(mondays, { schedule: scheduleRef.current, today: fmt(new Date()), regenerate: true }))) return;\n") >= 0
+      && rgBody.indexOf("confirm(") < rgBody.indexOf("    const ep = sessionEpochRef.current;"), String(rgBody).slice(0, 900));
   const dgBody = bodyCH("  const doGenerate = async (preview, via) => {", "\n  };\n");
   const fgPass = !!fgBody && fgBody.includes("const out = await genCommitRef.current(result, via);");
   check("CH4 R3 / R2 the wiring of the review fixes: doGenerate hands `via` to finishGenerate, finishGenerate to commitGenerated (whose audit line ends with it — or \"Generate & Publish\"); finishGenerate's two preview toasts say where the preview is by the tab (inPreview); the preview card carries data-gen-preview=\"1\" (what Regenerate scrolls to), once",
@@ -13122,7 +13136,8 @@ await (async () => {
   // CD3 — the REAL notifyJustPublished (📣 Notify everyone) over the REAL notifyPublished
   const njBody = afterCD("  const notifyJustPublished = async () => {", "\n  };\n");
   // (review fix 2026-10-20, on purpose: + document, setTimeout — the tap moves the focus to the Calendar's month heading)
-  const njMk = fnCD("justPublished, notifiedRef, setJustPublished, notifyPublished, sessionEpochRef, showToast, document, setTimeout", njBody === null ? null : "async () => {" + njBody + "\n  }");
+  // (2026-11-02, on purpose — DC: + markPublishTold, the publish's Undo step remembers the group was told; a no-op here, DC runs it)
+  const njMk = fnCD("justPublished, notifiedRef, setJustPublished, notifyPublished, sessionEpochRef, showToast, document, setTimeout, markPublishTold", njBody === null ? null : "async () => {" + njBody + "\n  }");
   // one component: its session's senders (world), the ref that outlives renders, the banner's setter and the toasts in one
   // log. The banner's state is React's: a set to the value it already holds changes nothing (no re-render), so only a
   // change is logged — the tap's own close, then the sender's close of the same banner (review fix 2026-10-20) is no
@@ -13133,7 +13148,7 @@ await (async () => {
     const setJP = (v) => { if (!Object.is(v, state)) { state = v; log.push("banner " + J(v)); } };
     const doc = { querySelector: (sel) => ({ focus: () => focus.push(sel) }) };
     const tap = (jp) => { state = jp; return njMk({ justPublished: jp, notifiedRef: notified, setJustPublished: setJP, notifyPublished: w.npWith(jp, notified, setJP), sessionEpochRef: w.ep,
-      showToast: (m, t) => log.push("toast " + t + ": " + m), document: doc, setTimeout: (fn, ms) => { timers.push(ms); fn(); return 0; } })(); };
+      showToast: (m, t) => log.push("toast " + t + ": " + m), document: doc, setTimeout: (fn, ms) => { timers.push(ms); fn(); return 0; }, markPublishTold: () => {} })(); };
     return { log, w, tap, focus, timers };
   };
   const JP = { label: P1, ep: 0 }, JP2 = { label: P2, ep: 0 };
@@ -13162,8 +13177,9 @@ await (async () => {
       && J(cd3.again) === J(cd3.one.concat(["banner null", NOTICE(0), EMAIL(P1, 0), TOAST])), J(cd3));
   check("CD3 (review fix 2026-10-20 — PH-8) the banner unmounts with the focus in it, so the tap moves the focus to the Calendar's month heading ([data-cal-month=\"1\"], tabIndex -1 — focusable, not in the tab order) once it is gone (a 0 ms timer); no banner → no move",
     !!cd3 && !cd3.threw && J(cd3.oneFocus) === J(['[data-cal-month="1"]']) && J(cd3.oneTimers) === J([0]) && cd3.noneFocus.length === 0
-      // (2026-11-02, on purpose — DC: 3, Generate & Publish's end brings the same heading into view — generateAndPublishDone)
-      && count('<span tabIndex={-1} data-cal-month="1" style={{fontSize:15,fontWeight:700,color:"#2c5a80",minWidth:170,textAlign:"center"}}>{MO[calMonth]} {calYear}</span>') === 1 && count('data-cal-month="1"') === 3,
+      // (2026-11-02, on purpose — DC: 4, Generate & Publish's end brings the same heading's row into view —
+      // generateAndPublishDone — and 📣 "Tell everyone it was withdrawn" moves the focus to it, as this tap does — notifyWithdrawn)
+      && count('<span tabIndex={-1} data-cal-month="1" style={{fontSize:15,fontWeight:700,color:"#2c5a80",minWidth:170,textAlign:"center"}}>{MO[calMonth]} {calYear}</span>') === 1 && count('data-cal-month="1"') === 4,
     cd3 ? J({ focus: cd3.oneFocus, timers: cd3.oneTimers, none: cd3.noneFocus }) : "not run");
   check("CD3 nothing to send (no banner) → nothing at all; the notice not saved → no \"Everyone has been notified.\" (addNotification says what failed)",
     !!cd3 && !cd3.threw && cd3.none.length === 0 && J(cd3.unsaved) === J(["banner null", NOTICE(0), EMAIL(P1, 0)]), J(cd3));
@@ -13229,7 +13245,7 @@ await (async () => {
         const afterGP = { up: state, marked: !!jp && notified.current === jp };
         log.push("—— the old screen's 📣 ——");
         await njMk({ justPublished: jp, notifiedRef: notified, setJustPublished: setJP, notifyPublished: w.npWith(jp, notified, setJP), sessionEpochRef: w.ep,
-          showToast: (m, t) => log.push("toast " + t + ": " + m), document: { querySelector: () => null }, setTimeout: (fn) => { fn(); return 0; } })();
+          showToast: (m, t) => log.push("toast " + t + ": " + m), document: { querySelector: () => null }, setTimeout: (fn) => { fn(); return 0; }, markPublishTold: () => {} })();
         return { jp, afterGP, log };
       };
       cd7 = { published: await run("published"), review: await run("review"), refused: await run("refused"), noBanner: await run("published", { noBanner: true }) };
@@ -16722,6 +16738,33 @@ console.log("\nAZ. Mine works for an APP");
 //       scheduler reading further down) is not moved; another tab or no preview → no timer; the cleanup clears it
 //   DC3 the wiring: viewNowRef beside the view state; one call of generateAndPublishDone, after the notice's session
 //       check; the effect right after the Needs-your-OK reset, listing exactly [previewSchedule, showPreview]
+// QW4 — one tap on the Calendar's ↻ Regenerate re-rolled and re-published the period the Generate tab holds (even one
+// already over: past call history, counts and billing) with no question; one tap on ↩ Undo took back a publish everyone
+// had just been told of, with no question and no word after (its only description a hover title an iPhone never shows);
+// ✕ Clear's question said it "cannot be undone" though ↩ Undo brings it back, and right after a clear the Calendar said
+// "reload the app". The owner's lead decided (Q7): after undoing a publish everyone was told of, warn the scheduler and
+// OFFER "📣 Tell everyone it was withdrawn" — never sent by itself, the Notify banner's pattern.
+//   DC4 the real publishConfirmText: Generate & Publish's question byte for byte as main's (the frozen copy,
+//       test/fixtures/publishConfirmText-main-3200f94.txt) over 420 inputs; ↻ Regenerate's variant the same question
+//       with its own first words and last line (nobody is told until 📣), exact strings — the audit's past period too
+//   DC5 the REAL doRegenerate: ONE question first — Cancel runs nothing (no search, no publish, no banner); OK goes on
+//       exactly as before; the question is the helper's for the period on screen, the published weeks and today
+//   DC6 the REAL undoWords: each step's kind and words (a publish names its period)
+//   DC7 the REAL undoTap over the REAL pushUndo / undoLastChange / publishWeeks / clearSchedule: a publish or a clear
+//       asks first (what comes back; whether the group was told), Cancel changes nothing; OK ends exactly as Undo did
+//       before (schedule, counts, history, banner, publishUndoneRef) plus ONE toast naming what was undone; a told
+//       publish raises the "withdrawn" offer { label, week, ep }, an untold one doesn't; an edit asks nothing; a refused
+//       Undo says why and nothing more; a second tap from the same render does nothing
+//   DC8 the steps say what they are: the REAL publishWeeks labels its step (period by periodLabel; an OLD cached
+//       helpers.js → the plain weeks), none for a publish into an empty schedule; the trade / swap / edit / restore sites
+//   DC9 who was told: the REAL markPublishTold (the newest step of that period), the REAL 📣 Notify everyone and the
+//       REAL Generate & Publish end mark it — a stale tap or another session doesn't; a publish of the same period
+//       takes the "withdrawn" offer down
+//   DC10 the REAL notifyWithdrawn: ONE send (the bell notice + push, "schedule_changed", to everyone, opening the
+//       Calendar on those weeks — no e-mail), a second tap nothing, another session nothing; the banner (gate, words,
+//       contrast in both modes, ≥44px buttons, Not now executed, its place); the offer's effects; ✕ Clear's question;
+//       the Calendar's line right after a clear (everyone else's as before)
+//   DC11 the ↩ Undo button: its words by step, its spoken name, its ink (≥4.5:1 on the header), undoTap the only way in
 //   the section runs inside its own catch: a throw fails one named check, it never ends the run (as CD)
 console.log("\nDC. Publishing says what it did; Regenerate and Undo ask first");
 await (async () => {
@@ -16737,18 +16780,23 @@ await (async () => {
   const dgnB = afterDC("  const doGenerateAndNotify = async () => {", "\n  };\n");
   const npB = afterDC("  const notifyPublished = async (ep, period) => {", "\n  };\n");
   const gpdB = afterDC("  const generateAndPublishDone = (period, told) => {", "\n  };\n");
-  const GP_ENV = "sessionEpochRef, doGenerate, periodText, mondays, addNotification, sendEmailNotif, justPublished, notifiedRef, setJustPublished, showToast, viewNowRef, setCalMonth, setCalYear, setView, setTimeout, document";
-  const gpMk = fnDC(GP_ENV, dgnB === null || npB === null || gpdB === null ? null
-    : `(() => { const notifyPublished = async (ep, period) => {${npB}\n  };\n  const generateAndPublishDone = (period, told) => {${gpdB}\n  };\n  return async () => {${dgnB}\n  }; })()`);
+  // (QW4: generateAndPublishDone also marks the publish's Undo step as told — the REAL markPublishTold, over the history
+  // handed in as scheduleHistoryRef — and takes down an offer to say this period's earlier publish was withdrawn)
+  const mptB = afterDC("  const markPublishTold = (period) => {", "\n  };\n");
+  const GP_ENV = "sessionEpochRef, doGenerate, periodText, mondays, addNotification, sendEmailNotif, justPublished, notifiedRef, setJustPublished, showToast, viewNowRef, setCalMonth, setCalYear, setView, setTimeout, document, scheduleHistoryRef, setWithdrawnOffer";
+  const gpMk = fnDC(GP_ENV, dgnB === null || npB === null || gpdB === null || mptB === null ? null
+    : `(() => { const notifyPublished = async (ep, period) => {${npB}\n  };\n  const markPublishTold = (period) => {${mptB}\n  };\n  const generateAndPublishDone = (period, told) => {${gpdB}\n  };\n  return async () => {${dgnB}\n  }; })()`);
   // o.outcome: what doGenerate resolves; o.saved: the notice's insert; o.tab: the tab as last rendered when it ends;
-  // o.moveDuringGen / o.moveDuringNotice: a sign-out then (the session moves); o.noHeading: no month heading in the page.
+  // o.moveDuringGen / o.moveDuringNotice: a sign-out then (the session moves); o.noHeading: no month heading in the page;
+  // o.hist: the Undo history (its steps are marked in place); o.offer: a "withdrawn" offer up (rec.offer: what it became).
   // Timers run at once; a banner is logged only when one is RAISED (the sender's own setJustPublished(null) is no change).
   const gpRun = async (o = {}) => {
-    const rec = { log: [], timers: [], scrolled: [] };
+    const rec = { log: [], timers: [], scrolled: [], offer: o.offer === undefined ? null : o.offer };
     if (!gpMk) return { threw: "not extractable" };
     const ep = { current: 3 };
     try {
-      await gpMk({ sessionEpochRef: ep, periodText: PT, mondays: FEB.map(H.parse),
+      await gpMk({ sessionEpochRef: ep, periodText: PT, mondays: FEB.map(H.parse), scheduleHistoryRef: { current: o.hist || [] },
+        setWithdrawnOffer: (f) => { rec.offer = typeof f === "function" ? f(rec.offer) : f; },
         doGenerate: async () => { if (o.moveDuringGen) ep.current++; return "outcome" in o ? o.outcome : "published"; },
         addNotification: async (...a) => { rec.log.push(J(["notice", ...a])); if (o.moveDuringNotice) ep.current++; return "saved" in o ? o.saved : true; },
         sendEmailNotif: (...a) => { rec.log.push(J(["e-mail", ...a])); }, justPublished: null, notifiedRef: { current: null }, setJustPublished: (v) => { if (v !== null) rec.log.push("banner " + J(v)); },
@@ -16813,6 +16861,310 @@ await (async () => {
       && !!dgnB && /\n    const told = await notifyPublished\(ep, period\);\n    if \(sessionEpochRef\.current !== ep\) return;\n    generateAndPublishDone\(period, told\);$/.test(dgnB)
       && countDC("generateAndPublishDone(") === 1 && countDC(EFF_A) === 1 && iEff > iAck && iEff - iAck < 1200 && countDC(EFF_Z) === 1,
     J({ iView, iRef, iAck, iEff, calls: countDC("generateAndPublishDone(") }));
+
+  // ── QW4 ──
+  const clone = (o) => JSON.parse(JSON.stringify(o));
+  const lumDC = (hex) => { const n = parseInt(hex.slice(1), 16); const c = [n >> 16, (n >> 8) & 255, n & 255].map((v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); }); return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]; };
+  const crDC = (a, b) => { const x = lumDC(a), y = lumDC(b); return Math.round((Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05) * 100) / 100; };
+
+  // DC4 — publishConfirmText: Generate & Publish's question as main's, byte for byte; ↻ Regenerate's variant
+  let oldPct = null;
+  try { oldPct = vm.runInContext(`(function () { ${fs.readFileSync(path.join(ROOT, "test", "fixtures", "publishConfirmText-main-3200f94.txt"), "utf8")}\n return publishConfirmText; })()`, sandbox, { filename: "publishConfirmText-main-3200f94.js" }); } catch (ex) { oldPct = null; }
+  const newPct = vm.runInContext('typeof publishConfirmText === "function" ? publishConfirmText : null', sandbox);
+  const NOTE_G = "If it publishes straight away, everyone is notified by push and email (per their notification settings). If anything needs your OK, the preview opens instead — after ✓ Accept & Publish there, you choose whether to notify everyone.";
+  const NOTE_R = "Nobody is notified by itself: once it is published, the Calendar offers 📣 Notify everyone. If anything needs your OK, it opens in the preview on the Generate tab instead.";
+  const PCT_GRID = [];
+  for (const [m0, n] of [["2026-05-04", 14], ["2026-11-02", 2], ["2027-02-22", 14], ["2027-03-08", 1], ["2026-12-28", 3], ["2027-02-15", 28], [null, 0]]) {
+    const ms = m0 ? weeksFrom(m0, n) : [], held = (ks, dc) => Object.fromEntries(ks.map((m) => [m, { dayCall: dc }]));
+    for (const schedule of [{}, held(ms, "s1"), held(ms.slice(0, 1), "s2"), held(ms.slice(-1), "s3"), Object.assign({ meta: { x: 1 } }, ms.length ? { [ms[0]]: null } : {})])
+      for (const today of [undefined, "2026-05-04", "2026-11-02", "2027-03-01", "2027-06-01", "2030-01-01"]) { PCT_GRID.push([ms, { schedule, today }]); PCT_GRID.push([ms.map(H.parse), { schedule, today }]); }
+  }
+  const pctBad = !oldPct || !newPct ? ["missing: " + J({ old: !!oldPct, now: !!newPct })] : PCT_GRID.map(([ms, o], k) => {
+    const was = oldPct(ms, o), now = newPct(ms, o), off = newPct(ms, Object.assign({}, o, { regenerate: false })), re = newPct(ms, Object.assign({}, o, { regenerate: true }));
+    const want = was.replace(/^Generate and publish /, "Regenerate and publish ").split(NOTE_G).join(NOTE_R);
+    return now === was && off === was && re === want && was.endsWith(NOTE_G) && !re.includes(NOTE_G) ? null : k + ": " + J({ was, now, re });
+  }).filter(Boolean);
+  check(`DC4 (QW4) the real publishConfirmText: Generate & Publish's question is main's, byte for byte (the frozen copy at 3200f94), over ${PCT_GRID.length} inputs — periods of 0 to 28 weeks across years and the DST weeks, nothing / all / the first / the last week published, a key holding nothing, today before / on / after, Mondays as strings and Dates; regenerate: false is the same; ↻ Regenerate's is that very question with its own first words and last line`,
+    PCT_GRID.length === 420 && pctBad.length === 0, pctBad.slice(0, 2).join(" | "));
+  const FEBPUB = Object.fromEntries(FEB.map((m) => [m, { dayCall: "s1" }])), MAY = weeksFrom("2026-05-04", 14), MAYPUB = Object.fromEntries(MAY.map((m) => [m, { dayCall: "s2" }]));
+  const reg = (ms, o) => (newPct ? newPct(ms, Object.assign({ regenerate: true }, o)) : null);
+  const DC4 = [
+    ["every week published, not started", reg(FEB, { schedule: FEBPUB, today: "2026-11-02" }), `Regenerate and publish Feb 22, 2027 → May 30, 2027 (14 weeks)?\n\n⚠ All 14 weeks are already published and will be replaced.\n\n${NOTE_R}`],
+    ["the audit's case: the saved May 4 – Aug 9, 2026, wholly over and published", reg(MAY, { schedule: MAYPUB, today: "2026-11-02" }), `Regenerate and publish May 4, 2026 → Aug 9, 2026 (14 weeks)?\n\n⚠ All 14 weeks are already published and will be replaced.\n⚠ This whole period is already over — publishing it changes past call history, counts and billing.\n\n${NOTE_R}`],
+    ["3 of 14 published, started", reg(FEB, { schedule: Object.fromEntries(FEB.slice(0, 3).map((m) => [m, { dayCall: "s1" }])), today: "2027-03-01" }), `Regenerate and publish Feb 22, 2027 → May 30, 2027 (14 weeks)?\n\n⚠ 3 of the 14 weeks are already published and will be replaced.\n⚠ This period has already started.\n\n${NOTE_R}`],
+    ["nothing published", reg(FEB, { schedule: {}, today: "2026-11-02" }), `Regenerate and publish Feb 22, 2027 → May 30, 2027 (14 weeks)?\n\n${NOTE_R}`],
+    ["no weeks", reg([], { schedule: {} }), `Regenerate and publish the schedule?\n\n${NOTE_R}`],
+  ];
+  const dc4Bad = DC4.filter(([, got, want]) => got !== want);
+  check("DC4 (QW4) ↻ Regenerate's question, exact strings: it names the period and the published weeks it replaces, warns when the period has started or is wholly over (the audit's May 4 – Aug 9, 2026 on Nov 2), and its last line says nobody is notified by itself — 📣 on the Calendar — never that everyone is",
+    dc4Bad.length === 0 && DC4.every(([, got]) => typeof got === "string" && !/everyone is notified/.test(got)), dc4Bad.map(([what, got]) => what + ": " + J(got)).join(" | "));
+
+  // DC5 — the REAL doRegenerate asks first
+  const rgB = afterDC("  const doRegenerate = async (e) => {", "\n  };\n");
+  const rgMk = fnDC("confirm, mondays, scheduleRef, sessionEpochRef, periodText, doGenerate, setJustPublished, setView, setTimeout, window, document", rgB === null ? null : "async (e) => {" + rgB + "\n  }");
+  const rgRun = async (answer) => {
+    const rec = { asked: [], gen: [], jp: [], timers: [], views: [] };
+    if (!rgMk) return { threw: "not extractable" };
+    try {
+      await rgMk({ confirm: (m) => { rec.asked.push(m); return answer; }, mondays: MAY.map(H.parse), scheduleRef: { current: MAYPUB }, sessionEpochRef: { current: 2 }, periodText: "May 4 – Aug 9, 2026",
+        doGenerate: async (...a) => { rec.gen.push(a); return "published"; }, setJustPublished: (v) => rec.jp.push(v), setView: (v) => rec.views.push(v), setTimeout: (fn, ms) => { rec.timers.push(ms); return 0; },
+        window: { scrollY: 0 }, document: { querySelector: () => null } })({ currentTarget: { isConnected: true, getBoundingClientRect: () => ({ top: 100 }) } });
+    } catch (ex) { rec.threw = String(ex).slice(0, 160); }
+    return rec;
+  };
+  const dc5 = { cancel: await rgRun(false), ok: await rgRun(true) };
+  const wantQ = newPct ? newPct(MAY, { schedule: MAYPUB, today: H.fmt(new Date()), regenerate: true }) : null;
+  check("DC5 (QW4) the REAL ↻ Regenerate asks ONE question first — Cancel runs nothing: no search, no publish, no banner, no tab switch, no timer",
+    !dc5.cancel.threw && dc5.cancel.asked.length === 1 && dc5.cancel.gen.length === 0 && dc5.cancel.jp.length === 0 && dc5.cancel.views.length === 0 && dc5.cancel.timers.length === 0, J(dc5.cancel));
+  check("DC5 (QW4) …OK goes on exactly as before (doGenerate once — publish, as \"↻ Regenerate\" — then the banner for the tap's period and session); the question is publishConfirmText's regenerate variant for the period on screen, the weeks the mirror holds and today — here the saved May 4 – Aug 9, 2026: all 14 weeks replaced, wholly over, nobody told until 📣",
+    !dc5.ok.threw && dc5.ok.asked.length === 1 && J(dc5.ok.gen) === J([[false, "↻ Regenerate"]]) && J(dc5.ok.jp) === J([{ label: "May 4 – Aug 9, 2026", ep: 2 }])
+      && dc5.ok.asked[0] === wantQ && /^Regenerate and publish May 4, 2026 → Aug 9, 2026 \(14 weeks\)\?\n\n⚠ All 14 weeks are already published and will be replaced\.\n⚠ This whole period is already over/.test(dc5.ok.asked[0] || "") && (dc5.ok.asked[0] || "").endsWith(NOTE_R),
+    J({ ok: dc5.ok, wantQ }));
+
+  // DC6 — undoWords
+  const uwB = afterDC("  const undoWords = (step) => {", "\n  };\n");
+  const uwMk = fnDC("", uwB === null ? null : "(step) => {" + uwB + "\n  }"), uw = uwMk ? uwMk({}) : null;
+  const W6 = uw ? [
+    [{ counts: {}, what: "publish", period: "Dec 14 – Dec 27, 2026" }, { kind: "publish", what: "the publish of Dec 14 – Dec 27, 2026" }], [{ counts: {} }, { kind: "publish", what: "the publish" }],
+    [{ clear: true }, { kind: "clear", what: "the clear" }], [{ what: "edit" }, { kind: "edit", what: "the week edit" }], [{ what: "swap" }, { kind: "swap", what: "the swap" }],
+    [{ what: "trade" }, { kind: "trade", what: "the trade" }], [{ what: "restore" }, { kind: "restore", what: "the restore" }], [{}, { kind: "", what: "the last change" }],
+  ].map(([s, want]) => [uw(s), want]) : [];
+  check("DC6 (QW4) the REAL undoWords: a publish names its period (\"the publish of Dec 14 – Dec 27, 2026\"; a step carrying counts with no kind is a publish too), a clear, a week edit, a swap, a trade, a restore — and a step with no kind is \"the last change\"",
+    W6.length === 8 && W6.every(([got, want]) => J(got) === J(want)), J(W6.map(([got]) => got)));
+
+  // DC7 — the REAL undoTap over the REAL Undo history, publish and clear (CW's slices, and markPublishTold)
+  const onceDC = (a) => { const i = nsrcDC.indexOf(a); return i >= 0 && nsrcDC.indexOf(a, i + 1) === -1 ? i : -1; };
+  const endDC = (b, from) => { if (from < 0) return -1; const j = nsrcDC.indexOf(b, from); return j < 0 ? -1 : j + b.length; };
+  const iU = onceDC("  const pushUndo = useCallback((counts) => {"), eU = iU < 0 ? -1 : nsrcDC.indexOf("\n  // ─── What-If Preview ───", iU);
+  const iC = onceDC("  const countsOfWeeks = (weeks, pick) => {"), kUn = onceDC("  const uncountWeeks = useCallback((weeks, from) => {"), eC = endDC("\n  }, [surgeons]);", kUn);
+  const iP = onceDC("  const publishWeeks = (newWeeks, how) => {"), eP = iP < 0 ? -1 : nsrcDC.indexOf("\n\n  // ─── Load a schedule from JSON", iP);
+  const iA = onceDC("  const runAuthoritativeSchedule = async (target, what, undoStep, before, late) => {"), eA = endDC("\n  };", iA);
+  const iL = onceDC("  const clearSchedule = async () => {"), eL = iL < 0 ? -1 : endDC("\n  };", nsrcDC.indexOf("\n  };\n\n  // ─── Snapshot restore", iL));
+  const iT = onceDC("  const markPublishTold = (period) => {"), eT = endDC("\n  };", iT);
+  const NAMES7 = "surgeons, parse, Date, useCallback, scheduleRef, commitSchedule, schedSyncRef, schedEditable, showToast, priorCounts, year1Counts, setPriorCounts, setYear1Counts, scheduleHistory, setScheduleHistory, scheduleHistoryRef, logAudit, setJustPublished, publishUndoneRef, sessionEpochRef, confirm, snapshots, setSaveStatus, setTimeout, lastSyncRef, stateBundleRef, setupReadRef, auth, supabase, console, setupBaseRef, flipGate, setWithdrawnOffer";
+  const mkFac = (ctx) => { if (![iU, eU, iC, kUn, eC, iP, eP, iA, eA, iL, eL, iT, eT].every((x) => x >= 0)) return null; try { return vm.runInContext(`(function (env) { const { ${NAMES7} } = env;
+${nsrcDC.slice(iU, eU)}
+${nsrcDC.slice(iC, eC)}
+${nsrcDC.slice(iP, eP)}
+${nsrcDC.slice(iA, eA)}
+${nsrcDC.slice(iL, eL)}
+${nsrcDC.slice(iT, eT)}
+  return { pushUndo, undoLastChange, undoWords, undoTap, publishWeeks, clearSchedule, markPublishTold };
+})`, ctx, { filename: "dc-undo.js" }); } catch (ex) { return null; } };
+  const facDC = mkFac(sandbox), facOld = mkFac(OLD_SB);
+  const Nov2 = class extends Date { constructor(...a) { if (a.length) super(...a); else super(2026, 10, 2, 12, 0, 0); } };
+  const SURG7 = [{ id: "s1", name: "S1" }, { id: "s2", name: "S2" }, { id: "s3", name: "S3" }];
+  const C7 = { s1: { dc: 30, nights: 150, wknd: 30, off: 20, dcB: 2, nightsB: 10, wkndB: 2, offB: 1, totalDays: 390, totalDaysB: 30 }, s2: { dc: 29, nights: 145, wknd: 29, off: 18, dcB: 1, nightsB: 12, wkndB: 1, offB: 2, totalDays: 380, totalDaysB: 22 },
+    s3: { dc: 28, nights: 148, wknd: 28, off: 21, dcB: 2, nightsB: 9, wkndB: 3, offB: 0, totalDays: 385, totalDaysB: 32 } };
+  const wk7 = (dc, off, n) => ({ dayCall: dc, off, nights: { mon: n[0], tue: n[1], wed: n[2], thu: n[3], wknd: n[4] }, isBackup: false });
+  const BASE7 = { "2026-11-30": wk7("s3", "s1", ["s1", "s1", "s2", "s2", "s3"]) };
+  const PUB7 = { "2026-12-14": wk7("s1", "s2", ["s2", "s3", "s1", "s2", "s3"]), "2026-12-21": wk7("s2", "s3", ["s3", "s1", "s2", "s3", "s1"]) };
+  const PERIOD7 = vm.runInContext("periodLabel", sandbox)("2026-12-14", "2026-12-21");
+  // one session: its state and a render (the REAL slices with that render's values — a tap uses the render it was made
+  // from); o.answers: the questions' answers in turn (OK when they run out); o.base: the schedule at the start; o.fac
+  const world7 = (o = {}) => {
+    const st = { schedule: clone(o.base || BASE7), prior: clone(C7), y1: clone(C7), history: [], toasts: [], asked: [], offers: [], jp: [], ep: { current: 7 }, undone: { current: 0 }, blocked: [], answers: (o.answers || []).slice() };
+    const ref = { current: st.schedule };
+    const commit = (v) => { st.schedule = v; ref.current = v; };
+    const upd = (k) => (f) => { st[k] = typeof f === "function" ? f(st[k]) : f; };
+    const sync = { current: { epochNow: () => 3, undoPlan: (snap) => ({ next: clone(snap), touched: [...new Set([...Object.keys(snap), ...Object.keys(st.schedule)])].filter((k) => J(snap[k]) !== J(st.schedule[k])).sort(), blocked: st.blocked.slice() }),
+      knownSchedule: () => clone(st.schedule), pending: () => [], jobPending: () => null, authoritative: async () => { await null; return { ok: true, wrote: true }; } } };
+    const render = () => (o.fac || facDC)({ surgeons: SURG7, parse: H.parse, Date: Nov2, useCallback: (f) => f, scheduleRef: ref, commitSchedule: commit, schedSyncRef: sync, schedEditable: () => true, flipGate: () => null,
+      showToast: (m, t) => st.toasts.push((t || "info") + ": " + m), priorCounts: st.prior, year1Counts: st.y1, setPriorCounts: upd("prior"), setYear1Counts: upd("y1"),
+      scheduleHistory: st.history, setScheduleHistory: upd("history"), scheduleHistoryRef: { get current() { return st.history; } }, logAudit: () => {}, setJustPublished: (v) => st.jp.push(v), publishUndoneRef: st.undone,
+      sessionEpochRef: st.ep, confirm: (m) => { st.asked.push(m); return st.answers.length ? st.answers.shift() : true; }, setSaveStatus: () => {}, setTimeout: () => 0, lastSyncRef: { current: null },
+      snapshots: { capture: async () => ({ ok: true }) }, stateBundleRef: { current: (x) => Object.assign({ priorCounts: st.prior, year1Counts: st.y1 }, x || {}) }, setupReadRef: { current: true },
+      auth: { getSession: () => ({ access_token: "TOK" }) }, supabase: { from: () => ({ upsert: async () => ({ error: null }) }) }, console: { error() {}, log() {}, warn() {}, info() {} }, setupBaseRef: { current: null },
+      setWithdrawnOffer: (v) => st.offers.push(v) });
+    const state = () => J({ schedule: st.schedule, prior: st.prior, y1: st.y1, steps: st.history.length, jp: st.jp, undone: st.undone.current });
+    return { st, render, state, commit };
+  };
+  // the setups: a publish over BASE7 (o.told: the group told of it — the REAL markPublishTold), a clear after it, an edit
+  const pub7 = async (o = {}) => { const w = world7(o); w.render().publishWeeks(clone(PUB7), { label: "dc", meta: {} }); if (o.told) w.render().markPublishTold(PERIOD7); return w; };
+  const clr7 = async (o = {}) => { const w = await pub7(o); await w.render().clearSchedule(); for (let i = 0; i < 4; i++) await null; w.st.asked.length = 0; return w; };
+  const edit7 = async (o = {}) => { const w = world7(o); const s = w.render().pushUndo(); s.what = "edit"; w.commit(Object.assign({}, w.st.schedule, { "2026-11-30": wk7("s1", "s1", ["s2", "s1", "s2", "s2", "s3"]) })); return w; };
+  // main's ↩ Undo on the same setup — undoLastChange alone — and ours: undoTap
+  const ref7 = async (setup, o) => { const w = await setup(o); w.render().undoLastChange(); return w.state(); };
+  const tap7 = async (setup, o = {}) => {
+    try {
+      const w = await setup(o); const before = w.state(), n0 = w.st.toasts.length, step = w.st.history[w.st.history.length - 1];
+      if (o.blocked) w.st.blocked = o.blocked;
+      const r = w.render(); r.undoTap(); if (o.twice) r.undoTap();
+      return { before, after: w.state(), asked: w.st.asked.slice(), toasts: w.st.toasts.slice(n0), offers: w.st.offers.slice(), undone: !!(step && step.undone), step: step ? { what: step.what, period: step.period, first: step.first, told: !!step.told } : null };
+    } catch (ex) { return { threw: String(ex).slice(0, 200) }; }
+  };
+  const ASK_TOLD = `Undo the publish of ${PERIOD7}?\n\nIts weeks go back to what they were before it, and the counts with them.\n\nEveryone was notified of this publish. They are told it was withdrawn only if you choose to — the Calendar then offers 📣.`;
+  const ASK_UNTOLD = `Undo the publish of ${PERIOD7}?\n\nIts weeks go back to what they were before it, and the counts with them.\n\nNobody was notified of this publish.`;
+  const ASK_CLEAR = "Undo the clear?\n\nThe schedule comes back as it was before it (3 weeks), and so do the counts it took off.";
+  const dc7 = facDC ? {
+    told: await tap7(pub7, { told: true }), toldRef: await ref7(pub7, { told: true }), toldCancel: await tap7(pub7, { told: true, answers: [false] }),
+    untold: await tap7(pub7), untoldRef: await ref7(pub7), clear: await tap7(clr7), clearRef: await ref7(clr7), clearCancel: await tap7(clr7, { answers: [true, false] }),
+    edit: await tap7(edit7), editRef: await ref7(edit7), blocked: await tap7(pub7, { told: true, blocked: ["2026-12-14"] }), twiceEdit: await tap7(edit7, { twice: true }), twicePub: await tap7(pub7, { told: true, twice: true }),
+  } : null;
+  check("DC7 (QW4) the REAL ↩ Undo of a publish the group was told of: it asks first — what comes back, that everyone was notified and that they are told it was withdrawn only if the scheduler chooses — and on OK it ends EXACTLY as main's Undo (undoLastChange alone): the schedule, both counts, the history, the 📣 banner taken down, publishUndoneRef; then ONE toast \"↩ Undone: the publish of Dec 14 – Dec 27, 2026.\" and the \"withdrawn\" offer { label: the period, week: its first Monday, ep: this session }",
+    !!dc7 && !dc7.told.threw && J(dc7.told.asked) === J([ASK_TOLD]) && dc7.told.after === dc7.toldRef && dc7.told.after !== dc7.told.before && dc7.told.undone
+      && J(dc7.told.toasts) === J([`info: ↩ Undone: the publish of ${PERIOD7}.`]) && J(dc7.told.offers) === J([{ label: PERIOD7, week: "2026-12-14", ep: 7 }]) && PERIOD7 === "Dec 14 – Dec 27, 2026",
+    J(dc7 && { told: dc7.told, ref: dc7.toldRef }).slice(0, 900));
+  check("DC7 (QW4) …Cancel at that question changes NOTHING (schedule, counts, history, banner, no toast, no offer); a publish nobody was told of asks with \"Nobody was notified of this publish.\" and, undone, raises no offer",
+    !!dc7 && !dc7.toldCancel.threw && J(dc7.toldCancel.asked) === J([ASK_TOLD]) && dc7.toldCancel.after === dc7.toldCancel.before && !dc7.toldCancel.undone && dc7.toldCancel.toasts.length === 0 && dc7.toldCancel.offers.length === 0
+      && !dc7.untold.threw && J(dc7.untold.asked) === J([ASK_UNTOLD]) && dc7.untold.after === dc7.untoldRef && J(dc7.untold.toasts) === J([`info: ↩ Undone: the publish of ${PERIOD7}.`]) && dc7.untold.offers.length === 0,
+    J(dc7 && { toldCancel: dc7.toldCancel, untold: dc7.untold }).slice(0, 900));
+  check("DC7 (QW4) ↩ Undo of a ✕ Clear asks first (\"Undo the clear? … (3 weeks), and so do the counts it took off.\") — on OK the weeks and the counts come back exactly as main's Undo brings them, and \"↩ Undone: the clear.\"; Cancel changes nothing",
+    !!dc7 && !dc7.clear.threw && J(dc7.clear.asked) === J([ASK_CLEAR]) && dc7.clear.after === dc7.clearRef && J(dc7.clear.toasts) === J(["info: ↩ Undone: the clear."]) && dc7.clear.offers.length === 0
+      && !dc7.clearCancel.threw && J(dc7.clearCancel.asked) === J([ASK_CLEAR]) && dc7.clearCancel.after === dc7.clearCancel.before && dc7.clearCancel.toasts.length === 0,
+    J(dc7 && { clear: dc7.clear, ref: dc7.clearRef, cancel: dc7.clearCancel }).slice(0, 900));
+  check("DC7 (QW4) ↩ Undo of a week edit asks nothing and ends exactly as main's (\"↩ Undone: the week edit.\"); an Undo the engine refuses (a week changed by someone else since) says why — and NOT \"Undone\", no offer, nothing changed; a second tap from the same render does nothing (one step, one question, one toast)",
+    !!dc7 && !dc7.edit.threw && dc7.edit.asked.length === 0 && dc7.edit.after === dc7.editRef && J(dc7.edit.toasts) === J(["info: ↩ Undone: the week edit."])
+      && !dc7.blocked.threw && J(dc7.blocked.asked) === J([ASK_TOLD]) && dc7.blocked.toasts.length === 1 && /^error: Can't undo — the week of 2026-12-14 was changed by someone else since\. Nothing was changed\.$/.test(dc7.blocked.toasts[0]) && dc7.blocked.after === dc7.blocked.before && !dc7.blocked.undone && dc7.blocked.offers.length === 0
+      && !dc7.twiceEdit.threw && JSON.parse(dc7.twiceEdit.after).steps === JSON.parse(dc7.twiceEdit.before).steps - 1 && dc7.twiceEdit.toasts.length === 1 && dc7.twiceEdit.after === dc7.editRef
+      && !dc7.twicePub.threw && dc7.twicePub.asked.length === 1 && dc7.twicePub.after === dc7.toldRef && dc7.twicePub.offers.length === 1,
+    J(dc7 && { edit: dc7.edit.toasts, blocked: dc7.blocked, twiceEdit: dc7.twiceEdit.toasts, twicePub: dc7.twicePub.asked.length }).slice(0, 900));
+
+  // DC8 — each step says what it is
+  const emptyPub = facDC ? await (async () => { const w = world7({ base: {} }); w.render().publishWeeks(clone(PUB7), { label: "dc", meta: {} }); return w.st.history.length; })() : null;
+  const oldLabel = facOld ? (await pub7({ fac: facOld })).st.history.slice(-1).map((s) => s.period)[0] : null;
+  const LINE7 = (k) => `const undoStep = pushUndo(); if (undoStep) undoStep.what = "${k}";`;
+  const accB = afterDC("  const acceptTradeRequest = useCallback(async (req) => {", "\n  }, [schedule, surgeons, pushUndo,"), swB = afterDC("  const swapShift = (mStr, shift, newId, expectOldId) => {", "\n  };\n");
+  const sw2B = afterDC("  const executeTwoWaySwap = useCallback(", "\n  }, ["), weB = afterDC("  const saveWeekEdits = useCallback((openAfter) => {", "\n  }, [editWeekModal,"), rsB = afterDC("  const restoreSnapshot = async (snap) => {", "\n  };\n");
+  const pwB = iP >= 0 ? nsrcDC.slice(iP, eP) : "";
+  check("DC8 (QW4) each Undo step says what it is: the REAL publishWeeks labels its step { what: \"publish\", period: the publish's own period (periodLabel — an OLD cached helpers.js: the plain weeks, as runPublish says them), first: its first Monday } and still pushes none for a publish into an empty schedule; the trade, both swaps, the week editor and the restore label theirs at the one pushUndo each already had; nothing else sets a kind",
+    !!dc7 && J(dc7.told.step) === J({ what: "publish", period: PERIOD7, first: "2026-12-14", told: true }) && emptyPub === 0 && oldLabel === "weeks of 2026-12-14 – 2026-12-21"
+      && countDC(LINE7("trade")) === 1 && !!accB && accB.includes(LINE7("trade")) && countDC(LINE7("swap")) === 2 && !!swB && swB.includes(LINE7("swap")) && !!sw2B && sw2B.includes(LINE7("swap"))
+      && countDC(LINE7("edit")) === 1 && !!weB && weB.includes(LINE7("edit")) && countDC('if (undoStep) undoStep.what = "restore";') === 1 && !!rsB && rsB.includes('if (undoStep) undoStep.what = "restore";')
+      && countDC('step.what = "publish";') === 1 && pwB.includes('step.what = "publish";') && countDC(".what = ") === 6,
+    J({ step: dc7 && dc7.told.step, emptyPub, oldLabel, what: countDC(".what = ") }));
+
+  // DC9 — who was told: markPublishTold, 📣 Notify everyone, Generate & Publish's end
+  const histT = () => [{ what: "publish", period: "P" }, { what: "swap" }, { what: "publish", period: "P" }, { what: "publish", period: "Q" }];
+  const toldOf = (h) => h.map((s) => (s.told ? 1 : 0)).join("");
+  const mt = facDC ? (() => { const run = (h, p) => { const w = world7(); w.st.history = h; w.render().markPublishTold(p); return toldOf(h); };
+    const und = histT(); und[2].undone = true;
+    return { newest: run(histT(), "P"), other: run(histT(), "R"), undone: run(und, "P"), empty: run([], "P") }; })() : null;
+  const njB = afterDC("  const notifyJustPublished = async () => {", "\n  };\n");
+  const njMkDC = fnDC("justPublished, notifiedRef, setJustPublished, notifyPublished, sessionEpochRef, showToast, document, setTimeout, markPublishTold", njB === null ? null : "async () => {" + njB + "\n  }");
+  // o.saved: what the sender resolves; o.jpEp: the banner's session (stale when not 4); o.move: the session moves during the send
+  const njRun = async (o = {}) => {
+    const rec = { marked: [], toasts: [], sent: [] }, ep = { current: 4 }, jp = { label: "Dec 14 – Dec 27, 2026", ep: "jpEp" in o ? o.jpEp : 4 };
+    if (!njMkDC) return { threw: "not extractable" };
+    try {
+      await njMkDC({ justPublished: jp, notifiedRef: { current: null }, setJustPublished: () => {}, sessionEpochRef: ep, document: { querySelector: () => null }, setTimeout: () => 0,
+        notifyPublished: async (e, label) => { if (ep.current !== e) return false; rec.sent.push(label); if (o.move) ep.current++; return "saved" in o ? o.saved : true; },
+        showToast: (m, t) => rec.toasts.push(t + ": " + m), markPublishTold: (p) => rec.marked.push(p) })();
+    } catch (ex) { rec.threw = String(ex).slice(0, 160); }
+    return rec;
+  };
+  const dc9 = { sent: await njRun(), unsaved: await njRun({ saved: false }), stale: await njRun({ jpEp: 3 }), moved: await njRun({ move: true }),
+    gp: await gpRun({ hist: [{ what: "publish", period: PT }, { what: "edit" }] }), gpSame: await gpRun({ offer: { label: PT, week: FEB[0], ep: 1 } }), gpOther: await gpRun({ offer: { label: "Nov 30 – Dec 13, 2026", ep: 1 } }) };
+  check("DC9 (QW4) the REAL markPublishTold marks the NEWEST Undo step of that period still standing (not an older one, not an undone one, not another period's); nothing to mark → nothing, no throw",
+    !!mt && mt.newest === "0010" && mt.other === "0000" && mt.undone === "1000" && mt.empty === "", J(mt));
+  check("DC9 (QW4) the REAL 📣 Notify everyone marks its publish as told once the send went in the publish's session — also when the notice wasn't saved (the e-mail went: no \"Everyone has been notified.\" then) — and never for a stale tap or a session that changed during the send",
+    !dc9.sent.threw && J(dc9.sent.marked) === J(["Dec 14 – Dec 27, 2026"]) && J(dc9.sent.toasts) === J(["success: Everyone has been notified."])
+      && !dc9.unsaved.threw && J(dc9.unsaved.marked) === J(["Dec 14 – Dec 27, 2026"]) && dc9.unsaved.toasts.length === 0
+      && ["stale", "moved"].every((k) => !dc9[k].threw && dc9[k].marked.length === 0 && dc9[k].toasts.length === 0) && dc9.stale.sent.length === 0, J(dc9).slice(0, 700));
+  check("DC9 (QW4) the REAL Generate & Publish end marks its publish's step as told (the newest of its period) and takes down an offer to say this period's earlier publish was withdrawn — not one for another period",
+    !dc9.gp.threw && dc9.gp.offer === null && J(dc9.gp.log.slice(-4)) === J(["toast success: Published Feb 22 – May 30, 2027 — everyone was notified.", "month 1", "year 2027", "view calendar"])
+      && !dc9.gpSame.threw && dc9.gpSame.offer === null && !dc9.gpOther.threw && J(dc9.gpOther.offer) === J({ label: "Nov 30 – Dec 13, 2026", ep: 1 }), J({ gp: dc9.gp.offer, same: dc9.gpSame.offer, other: dc9.gpOther.offer }));
+  {
+    const h = [{ what: "publish", period: PT }, { what: "edit" }];
+    await gpRun({ hist: h });
+    check("DC9 (QW4) …the step it marks is the one in the history handed in (scheduleHistoryRef), in place", h[0].told === true && !h[1].told, J(h));
+  }
+
+  // DC10 — 📣 Tell everyone it was withdrawn: the sender, the banner, its effects; ✕ Clear's question; the Calendar's line
+  const nwB = afterDC("  const notifyWithdrawn = async () => {", "\n  };\n");
+  const nwMk = fnDC("withdrawnOffer, withdrawnSentRef, setWithdrawnOffer, setTimeout, document, sessionEpochRef, addNotification, showToast", nwB === null ? null : "async () => {" + nwB + "\n  }");
+  const WD = { label: "Dec 14 – Dec 27, 2026", week: "2026-12-14", ep: 7 };
+  const MSG_W = "The call schedule published for Dec 14 – Dec 27, 2026 was withdrawn — the Calendar shows the schedule now in place.";
+  const TOAST_W = "success: Everyone has been told it was withdrawn — in the app and by push (no e-mail goes out for this).";
+  // one component: o.saved (the notice's insert), o.ep (the session now), o.hold (its await held open), o.offer
+  const nwComp = (o = {}) => {
+    const c = { log: [], sent: { current: null }, ep: { current: "ep" in o ? o.ep : 7 }, focus: [] };
+    c.tap = (offer) => nwMk({ withdrawnOffer: offer, withdrawnSentRef: c.sent, setWithdrawnOffer: (v) => c.log.push("offer " + J(v)), setTimeout: (fn, ms) => { fn(); return 0; },
+      document: { querySelector: (sel) => ({ focus: () => c.focus.push(sel) }) }, sessionEpochRef: c.ep,
+      addNotification: async (...a) => { c.log.push(J(["notice", ...a])); if (o.hold) await o.hold; return "saved" in o ? o.saved : true; }, showToast: (m, t) => c.log.push(t + ": " + m) })();
+    return c;
+  };
+  let dc10 = null;
+  if (nwMk) {
+    try {
+      const one = nwComp(); await one.tap(WD); const oneLog = one.log.slice(); await one.tap(WD);
+      let open; const held = new Promise((r) => { open = r; }), dbl = nwComp({ hold: held }); const t1 = dbl.tap(WD), t2 = dbl.tap(WD); open(); await Promise.all([t1, t2]);
+      const stale = nwComp({ ep: 8 }); await stale.tap(WD);
+      const unsaved = nwComp({ saved: false }); await unsaved.tap(WD);
+      const noWeek = nwComp(); await noWeek.tap({ label: WD.label, week: null, ep: 7 });
+      const none = nwComp(); await none.tap(null);
+      dc10 = { one: oneLog, late: one.log, focus: one.focus, dbl: dbl.log, stale: stale.log, unsaved: unsaved.log, noWeek: noWeek.log, none: none.log };
+    } catch (ex) { dc10 = { threw: String(ex).slice(0, 160) }; }
+  }
+  const NOTICE_W = (data) => J(["notice", "schedule_changed", "Schedule Withdrawn", MSG_W, data, null, 7]);
+  check("DC10 (QW4) the REAL 📣 Tell everyone it was withdrawn: the banner goes on the tap, then ONE notice to everyone — \"Schedule Withdrawn\", \"The call schedule published for Dec 14 – Dec 27, 2026 was withdrawn — …\", type schedule_changed (in everyone's bell, with its push — no target list, as the \"Schedule Published\" notice's), opening the Calendar on its first week — then the toast (which says no e-mail goes out); the focus to the month heading; a late second tap sends nothing more",
+    !!dc10 && !dc10.threw && J(dc10.one) === J(["offer null", NOTICE_W({ week: "2026-12-14" }), TOAST_W]) && J(dc10.late) === J(dc10.one) && J(dc10.focus) === J(['[data-cal-month="1"]']), J(dc10));
+  check("DC10 (QW4) …one send per offer: a double tap (the second while the first is out) sends once; a tap from another session than the Undo's closes the banner and sends and says nothing; the notice not saved → no toast (addNotification says what failed); no week → no link data; no offer → nothing at all",
+    !!dc10 && !dc10.threw && dc10.dbl.filter((x) => x.startsWith('["notice"')).length === 1 && dc10.dbl.filter((x) => x === TOAST_W).length === 1 && J(dc10.stale) === J(["offer null"])
+      && J(dc10.unsaved) === J(["offer null", NOTICE_W({ week: "2026-12-14" })]) && J(dc10.noWeek) === J(["offer null", NOTICE_W({}), TOAST_W]) && dc10.none.length === 0, J(dc10));
+  check("DC10 (QW4) the withdrawal goes ONLY through that tap: notifyWithdrawn is the banner's alone and sends no e-mail, push or publish notice of its own (addNotification's push is the one); the group's \"Schedule Published\" notice is still sent from one place; nothing sends it by itself",
+    !!nwB && !/sendEmailNotif\(|sendPushNotif\(|notifyPublished\(/.test(nwB) && (nwB.match(/addNotification\(/g) || []).length === 1 && countDC("notifyWithdrawn(") === 0 && countDC("onClick={notifyWithdrawn}") === 1
+      && countDC("  const notifyWithdrawn = async () => {") === 1 && countDC('addNotification("schedule_published",') === 1 && countDC('addNotification("schedule_changed", "Schedule Withdrawn",') === 1,
+    J({ calls: countDC("notifyWithdrawn("), taps: countDC("onClick={notifyWithdrawn}") }));
+  // the banner (JSX can't run: its gate, colours and Not now are run, the rest pinned)
+  const W_OPEN = "\n          {isScheduler && withdrawnOffer && (\n", wAt = nsrcDC.indexOf(W_OPEN), wEnd = wAt < 0 ? -1 : nsrcDC.indexOf("\n          )}", wAt + W_OPEN.length);
+  const banW = wAt < 0 || wEnd < 0 || nsrcDC.indexOf(W_OPEN, wAt + 1) !== -1 ? "" : nsrcDC.slice(wAt + W_OPEN.length, wEnd);
+  const gateW = (nsrcDC.match(/\n {10}\{([^\n{}]*\bwithdrawnOffer\b[^\n{}]*) && \(\n {12}<div role="status" aria-live="polite" data-withdrawn="1"/) || [])[1] || null;
+  let showsW = null; try { showsW = gateW ? vm.runInContext(`(function (isScheduler, withdrawnOffer) { return !!(${gateW}); })`, sandbox) : null; } catch (ex) { showsW = null; }
+  const bgW = banW.match(/background:dk\?"(#[0-9a-f]{6})":"(#[0-9a-f]{6})"/), fgW = banW.match(/\bcolor:dk\?"(#[0-9a-f]{6})":"(#[0-9a-f]{6})"/);
+  const crW = bgW && fgW ? { dark: crDC(fgW[1], bgW[1]), light: crDC(fgW[2], bgW[2]) } : null;
+  const btnsW = banW.match(/<button [^\n]*<\/button>/g) || [];
+  const nnW = (banW.match(/<button onClick=\{(\(\)=>[^}]*)\}/) || [])[1] || null;
+  let nn10 = null; try { if (nnW) { const r = { set: [], sends: 0 }; vm.runInContext(`(function (env) { const { setWithdrawnOffer, notifyWithdrawn, addNotification, sendEmailNotif } = env; return (${nnW}); })`, sandbox)({ setWithdrawnOffer: (v) => r.set.push(v), notifyWithdrawn: () => { r.sends++; }, addNotification: () => { r.sends++; }, sendEmailNotif: () => { r.sends++; } })(); nn10 = r; } } catch (ex) { nn10 = { threw: String(ex).slice(0, 120) }; }
+  const jpOpen = nsrcDC.indexOf("\n          {isScheduler && justPublished && (\n"), jpEnd = jpOpen < 0 ? -1 : nsrcDC.indexOf("\n          )}", jpOpen + 10), iToday = nsrcDC.indexOf("{/* ─── On Call Today Banner ─── */}");
+  check("DC10 (QW4) the \"↩ … was undone\" banner: scheduler-only (its gate, evaluated — never a member, nothing without an offer); its words name the period and say everyone had been notified and nobody told it was withdrawn; 4.5:1 or more in light and dark (its own colours by theme, computed); two ≥44px buttons in a row that wraps — 📣 Tell everyone it was withdrawn (notifyWithdrawn, white on the 📣 gradient) and Not now (executed: closes it, sends nothing); no write path of its own; right after the \"✓ Published\" banner (still the first thing in the Calendar view), above On Call Today",
+    !!showsW && showsW(true, WD) === true && showsW(false, WD) === false && showsW(true, null) === false
+      && banW.includes("↩ The publish of {withdrawnOffer.label} was undone. Everyone had been notified of it, and nobody has been told it was withdrawn.") && !!crW && crW.dark >= 4.5 && crW.light >= 4.5
+      && btnsW.length === 2 && btnsW.every((b) => /minHeight:44\b/.test(b)) && (banW.match(/flexWrap:"wrap"/g) || []).length === 2
+      && btnsW[0].startsWith("<button onClick={notifyWithdrawn} ") && btnsW[0].includes('background:"linear-gradient(135deg,#155a8a,#1a6fa8)"') && btnsW[0].endsWith(">📣 Tell everyone it was withdrawn</button>")
+      && btnsW[1].startsWith("<button onClick={()=>setWithdrawnOffer(null)} ") && btnsW[1].endsWith(">Not now</button>") && !!nn10 && !nn10.threw && J(nn10.set) === J([null]) && nn10.sends === 0
+      && !/fetch\(|db\.|supabase|localStorage|addNotification|sendEmailNotif|sendPushNotif|notifyPublished\(|logAudit/.test(banW)
+      && jpOpen >= 0 && jpEnd < wAt && /^\n {10}\)\}\n {10}\{\/\*[^]*?\*\/\}$/.test(nsrcDC.slice(jpEnd, wAt)) && wEnd < iToday,
+    J({ gateW, crW, btns: btnsW.length, nn10, order: [jpOpen, jpEnd, wAt, wEnd, iToday] }));
+  // its effects: the session (isScheduler) and a publish of the same period since (its banner)
+  const E1 = "  useEffect(() => { if (!isScheduler) setWithdrawnOffer(null); }, [isScheduler]);", E2 = "  useEffect(() => { if (justPublished) setWithdrawnOffer(w => (w && w.label === justPublished.label ? null : w)); }, [justPublished]);";
+  const runE = (line, names, env) => { const m = line.match(/^  useEffect\((\(\) => \{[^]*\}), \[[^\]]*\]\);$/); try { let v = env.offer; const fn = vm.runInContext(`(function (env) { const { ${names} } = env; return (${m[1]}); })`, sandbox)(Object.assign({}, env, { setWithdrawnOffer: (f) => { v = typeof f === "function" ? f(v) : f; } })); fn(); return J(v); } catch (ex) { return "threw " + String(ex).slice(0, 80); } };
+  const effW = { out: runE(E1, "isScheduler, setWithdrawnOffer", { isScheduler: false, offer: WD }), stays: runE(E1, "isScheduler, setWithdrawnOffer", { isScheduler: true, offer: WD }),
+    same: runE(E2, "justPublished, setWithdrawnOffer", { justPublished: { label: WD.label, ep: 7 }, offer: WD }), other: runE(E2, "justPublished, setWithdrawnOffer", { justPublished: { label: "Feb 22 – May 30, 2027", ep: 7 }, offer: WD }),
+    noBanner: runE(E2, "justPublished, setWithdrawnOffer", { justPublished: null, offer: WD }) };
+  check("DC10 (QW4) the offer's two effects, executed: it goes when the scheduler's session ends (isScheduler false — the boundary clears it) and when a \"✓ Published\" banner for the SAME period goes up (that publish is what is in place now); another period's banner, or none, leaves it; each declared once, after what it lists (§P)",
+    countDC(E1) === 1 && countDC(E2) === 1 && effW.out === "null" && effW.stays === J(WD) && effW.same === "null" && effW.other === J(WD) && effW.noBanner === J(WD)
+      && nsrcDC.indexOf(E1) > nsrcDC.indexOf("  const [isScheduler, setIsScheduler] = useState(false);") && nsrcDC.indexOf(E2) > nsrcDC.indexOf("  const [withdrawnOffer, setWithdrawnOffer] = useState(null);"), J(effW));
+  // ✕ Clear's question, and the Calendar's line right after a clear
+  const clB = iL >= 0 ? nsrcDC.slice(iL, eL) : "";
+  const clQ = (() => { const m = clB.match(/if \(!confirm\(("(?:[^"\\]|\\.)*")\)\) return;/); try { return m ? JSON.parse(m[1]) : null; } catch (ex) { return null; } })();
+  check("DC10 (QW4) ✕ Clear's question no longer says it \"cannot be undone\": the cleared weeks' counts as before, then \"↩ Undo brings it back until something new is published or you sign out; after that, restore its \\\"Before schedule clear\\\" snapshot in Settings.\" — the snapshot's own name in the list, the one ↩ Undo's refusal points to",
+    clQ === "Clear the entire generated schedule? Holiday assignments and setup data will be kept. The cleared weeks from May 4, 2026 on come off the running totals.\n\n↩ Undo brings it back until something new is published or you sign out; after that, restore its \"Before schedule clear\" snapshot in Settings."
+      && (clB.match(/confirm\(/g) || []).length === 1 && countDC('clear_schedule: "Before schedule clear",') === 1 && countDC('restore its "Before schedule clear" snapshot in Settings.`') === 1, J(clQ));
+  const LS = 'const st = loaded && typeof calMonthStatus === "function" ? calMonthStatus(schedule, calYear, calMonth) : null;', LE = "if (!text) return null;";
+  const lsI = nsrcDC.indexOf(LS), leI = lsI < 0 ? -1 : nsrcDC.indexOf(LE, lsI);
+  let lineDC = null; try { lineDC = lsI >= 0 && leI > lsI ? vm.runInContext(`(function (env) { const { loaded, schedule, calYear, calMonth, scheduleHistory } = env; ${nsrcDC.slice(lsI, leI)} return { text, goTo }; })`, sandbox) : null; } catch (ex) { lineDC = null; }
+  const LN = (loaded, schedule, y, m, hist) => { try { const r = lineDC({ loaded, schedule, calYear: y, calMonth: m, scheduleHistory: hist }); return J([r.text, r.goTo]); } catch (ex) { return "threw " + String(ex).slice(0, 100); } };
+  const CLEARED = "The schedule was cleared — ↩ Undo clear, at the top of the screen, brings it back.", EMPTY = "No call schedule to show — it may not be published yet; if you expected one, reload the app.";
+  const WKS = { "2026-11-30": { dayCall: "s1" }, "2026-12-07": { dayCall: "s2" } };
+  const ln = lineDC ? { cleared: LN(true, {}, 2026, 11, [{ what: "edit" }, { clear: true }]), member: LN(true, {}, 2026, 11, []), editTop: LN(true, {}, 2026, 11, [{ clear: true }, { what: "edit" }]), pubTop: LN(true, {}, 2026, 11, [{ clear: true }, { counts: {}, what: "publish" }]),
+    loading: LN(false, {}, 2026, 11, [{ clear: true }]), withCall: LN(true, WKS, 2026, 11, [{ clear: true }]), later: LN(true, WKS, 2027, 2, [{ clear: true }]), laterMember: LN(true, WKS, 2027, 2, []) } : null;
+  check("DC10 (QW4) the Calendar's line, run as written: right after this scheduler's ✕ Clear (the newest Undo step is the clear's, the schedule empty) it says \"The schedule was cleared — ↩ Undo clear, at the top of the screen, brings it back.\" — not \"reload the app\"; with no Undo step (a member — everyone else), or a newer step on top, the empty line is main's word for word; loading, a month with call and a month past the end read exactly as without the clear's step",
+    !!ln && ln.cleared === J([CLEARED, null]) && ln.member === J([EMPTY, null]) && ln.editTop === J([EMPTY, null]) && ln.pubTop === J([EMPTY, null]) && ln.loading === J(["Loading the schedule…", null])
+      && ln.withCall === J(["", null]) && ln.later === ln.laterMember && JSON.parse(ln.later)[0].startsWith("No surgeon call scheduled for March 2027 yet"), J(ln));
+
+  // DC11 — the ↩ Undo button
+  const ubM = nsrcDC.match(/\n {10}\{scheduleHistory\.length > 0 && \(\(\) => \{\n([^]*?)\n {10}\}\)\(\)\}/);
+  const ub = ubM ? ubM[1] : "";
+  const unB = afterDC("  const undoLastChange = () => {", "\n  };\n"), tapB = afterDC("  const undoTap = () => {", "\n  };\n");
+  const faces = uw ? [{ counts: {}, what: "publish", period: PERIOD7 }, { clear: true }, { what: "swap" }, { what: "edit" }, {}].map((s) => { const w = uw(s); return ["↩ Undo" + (w.kind ? " " + w.kind : ""), "Undo " + w.what]; }) : [];
+  check("DC11 (QW4) the ↩ Undo button says what it takes back — \"↩ Undo publish\" / \"↩ Undo clear\" / \"↩ Undo swap\" / \"↩ Undo edit\" / \"↩ Undo\", its spoken name and title \"Undo the publish of Dec 14 – Dec 27, 2026\" (the hover title \"Undo (1 steps)\" is gone) — from the newest step through undoWords; its ink #8a6410 reads at 4.5:1 or more on the header's light ends (#c09030 was 2.8:1); its tap is undoTap, and undoTap is the one caller of undoLastChange",
+    J(faces) === J([["↩ Undo publish", `Undo the publish of ${PERIOD7}`], ["↩ Undo clear", "Undo the clear"], ["↩ Undo swap", "Undo the swap"], ["↩ Undo edit", "Undo the week edit"], ["↩ Undo", "Undo the last change"]])
+      && ub.includes("const w = undoWords(scheduleHistory[scheduleHistory.length - 1]);") && ub.includes("<button onClick={undoTap} aria-label={`Undo ${w.what}`} title={`Undo ${w.what}`} ")
+      && ub.includes('color:"#8a6410"') && ub.includes('↩ Undo{w.kind ? " " + w.kind : ""}') && countDC("Undo (${scheduleHistory.length} steps)") === 0
+      && crDC("#8a6410", "#ffffff") >= 4.5 && crDC("#8a6410", "#f8f9fb") >= 4.5 && crDC("#c09030", "#ffffff") < 3
+      && countDC("onClick={undoLastChange}") === 0 && countDC("undoLastChange()") === 1 && !!tapB && tapB.includes("    undoLastChange();\n    if (!step.undone) return;") && countDC("onClick={undoTap}") === 1 && !!unB,
+    J({ faces, ub: ub.slice(0, 300), calls: countDC("undoLastChange()"), cr: [crDC("#8a6410", "#ffffff"), crDC("#8a6410", "#f8f9fb")] }));
 })().catch(ex => check("DC harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
 
 // ─── CA. Requests: only the requester or a scheduler edits or withdraws a request (owner decision 2026-10-20) ───
