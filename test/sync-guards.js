@@ -17537,8 +17537,9 @@ await (async () => {
 //       Night"), "Service day Mon 11/2", "APP Mon 11/2" — and the Reason box by its label; the ids are unique
 //   DD9 (QW16) Save says "Saved — DJA and ARW were notified" (the people whose shifts changed, in the order of the
 //       changes); the save itself — the week written, Undo, the APP days, the audit line, the notices and e-mails, the
-//       confirm, Save & Next — is 3200f94's exactly, on every path; nothing more is said when nothing changed, when
-//       the save is refused or when its 3+ change question is answered Cancel
+//       confirm, Save & Next — is the code before QW16 exactly (the fixture's saveWeekEdits: 3200f94's with ↩ Undo's
+//       step label and DF2's dated notices), on every path; nothing more is said when nothing changed, when the save
+//       is refused or when its 3+ change question is answered Cancel
 console.log("\nDD. Setup asks first; Setup's lists; the week editor's close, names and Save");
 await (async () => {
   const nsrcD = src.replace(/\r\n/g, "\n"), JD = JSON.stringify, cloneD = (o) => JSON.parse(JSON.stringify(o));
@@ -18119,12 +18120,13 @@ await (async () => {
     }
   }
 
-  // ── DD9 — Save says who was told; the save itself is 3200f94's ──
+  // ── DD9 — Save says who was told; the save itself is the code before QW16 ──
+  // (changed ON PURPOSE 2026-11-02, integration: OLD.saveWeekEdits re-frozen with ↩ Undo's step label and DF2's dated notices)
   {
     const WE = "editWeekModal, schedule, appShifts, appShiftsLoaded, openWeekEditor, setEditWeekModal, silvisActive, silvisFakId, silvisDays, silvisBlock, silvisRefuse, sfSlotDays, confirm, pushUndo, updateSchedule, scheduleRef, schedEditable, schedSyncRef, mergeEditorEdits, SHIFT_LABELS, backupMondaySet, fierceBackupSet, surgeons, showToast, APP_SHIFTS_NOT_LOADED, setAppShifts, saveAppShifts, logAudit, nameOf, aMap, sMap, schedulerAdminIds, addNotification, sendEmailNotif, setTimeout"; // AB2's list
     const weN = compileD(WE, fnOf("(openAfter) => {", cutD("  const saveWeekEdits = useCallback((openAfter) => {", "\n  }, [editWeekModal,")), "dd-save.js"), weO = compileD(WE, fnOf("(openAfter) => {", OLD.saveWeekEdits), "dd-save-old.js");
     let mergeD = null; try { const se = require("./sync-engine-se.js"); mergeD = se.compileMerge(se.extractEngine(src)); } catch (ex) { mergeD = null; }
-    if (!weN || !weO || !mergeD) check("DD9 saveWeekEdits (today's and 3200f94's) and mergeEditorEdits are extractable and compile", false, JD({ now: !!weN, old: !!weO, merge: !!mergeD }));
+    if (!weN || !weO || !mergeD) check("DD9 saveWeekEdits (today's and the fixture's) and mergeEditorEdits are extractable and compile", false, JD({ now: !!weN, old: !!weO, merge: !!mergeD }));
     else {
       const MON = "2026-10-12", DAYS = ["2026-10-12", "2026-10-13", "2026-10-14", "2026-10-15", "2026-10-16", "2026-10-17", "2026-10-18"];
       const WK = { dayCall: "s1", nights: { mon: "s2", tue: "s3", wed: "s4", thu: "s5", wknd: "s6" }, off: "s7" };
@@ -18171,7 +18173,7 @@ await (async () => {
         const closeAt = n.findIndex((e) => e[0] === "modal" && e[1] === null), toastAt = n.findIndex((e) => e[0] === "toast" && e[2] === "success");
         if (JD(restN) !== JD(d) || JD(okToasts) !== JD(want) || (line && !(toastAt > n.findIndex((e) => e[0] === "email") && toastAt < closeAt))) bad.push(`${label}: ${JD(okToasts)} / ${JD(restN).slice(0, 200)} vs ${JD(d).slice(0, 200)}`);
       }
-      check("DD9 after Save, ONE success toast names the people whose shifts changed, in the order of the changes — \"Saved — DJA and ARW were notified\", \"Saved — KJH was notified\", \"Saved — DJA, ARW, RPC and MCC were notified\", an APP day's APPs (\"MA and MS\"), on Save & Next too — after the notices and e-mails, before the editor closes; everything else on every path is 3200f94's exactly (the week written, Undo, the APP days and their save, the audit line, the notices and e-mails, the 3+ change question, Save & Next's reopen, the refusals' own toasts); nothing more when nothing changed, when it is refused, or when the question is answered Cancel",
+      check("DD9 after Save, ONE success toast names the people whose shifts changed, in the order of the changes — \"Saved — DJA and ARW were notified\", \"Saved — KJH was notified\", \"Saved — DJA, ARW, RPC and MCC were notified\", an APP day's APPs (\"MA and MS\"), on Save & Next too — after the notices and e-mails, before the editor closes; everything else on every path is the code before QW16's exactly — 3200f94's with ↩ Undo's step label and DF2's dated notices (the week written, Undo, the APP days and their save, the audit line, the notices and e-mails, the 3+ change question, Save & Next's reopen, the refusals' own toasts); nothing more when nothing changed, when it is refused, or when the question is answered Cancel",
         bad.length === 0, bad.slice(0, 3).join(" | "));
     }
   }

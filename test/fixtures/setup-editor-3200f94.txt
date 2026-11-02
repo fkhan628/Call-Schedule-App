@@ -1,6 +1,9 @@
 // The code before the UX audit's QW7 / QW15 / QW16 (branch ux/quick-wins-d, at 3200f94), byte-for-byte: the "old"
 // reference for sync-guards DD (a path these items do not change must do exactly what it did). Nine pieces of
 // index-source.html, each after a line "//@@ <name> — <where>".
+// (re-frozen ON PURPOSE 2026-11-02, integration: saveWeekEdits is this branch's code without QW16 — 3200f94's plus the
+// two other changes it has here, ↩ Undo's step label (QW4, DC8) and the notices that say the day (DF2) — so DD9 still
+// compares QW16's toast alone. The other eight pieces are 3200f94's, unchanged.)
 //@@ generateHolidayAssignments — after "  const generateHolidayAssignments = useCallback((year) => {", up to "\n  }, [surgeons, vacations, noCallDays, holidayAssignments, silvisActive, silvisFakId, silvisDays]);"
 
     setHolidayLockWarning(""); // a healthy run clears any stale lock warning
@@ -316,15 +319,16 @@
     const appRefused = appEdits.length > 0 && !appShiftsLoaded;
 
     // Build diff list of changes: the week as written vs as it is now
-    const changes = []; // { slotLabel, oldId, newId, isApp, date }
+    // (key: the slot, for the notices' dated labels — UX audit 2026-11-01; the audit keeps slotLabel)
+    const changes = []; // { slotLabel, oldId, newId, isApp, key, date }
     if ((oldWk.dayCall || "") !== (next.dayCall || "")) {
-      changes.push({ slotLabel: `Service Week`, oldId: oldWk.dayCall || "", newId: next.dayCall || "", isApp: false });
+      changes.push({ slotLabel: `Service Week`, oldId: oldWk.dayCall || "", newId: next.dayCall || "", isApp: false, key: "dayCall" });
     }
     ["mon","tue","wed","thu","wknd"].forEach(nk => {
       const oldId = oldWk.nights?.[nk] || "";
       const newId = next.nights?.[nk] || "";
       if (oldId !== newId) {
-        changes.push({ slotLabel: SHIFT_LABELS[nk] || nk, oldId, newId, isApp: false });
+        changes.push({ slotLabel: SHIFT_LABELS[nk] || nk, oldId, newId, isApp: false, key: nk });
       }
     });
     // Single-day service coverage overrides
@@ -336,7 +340,7 @@
         const oldId = oldOv[ds] || (oldWk.dayCall || "");
         const newId = newOv[ds] || (next.dayCall || "");
         if (oldId !== newId) {
-          changes.push({ slotLabel: `Service Day ${ds}`, oldId, newId, isApp: false, date: ds });
+          changes.push({ slotLabel: `Service Day ${ds}`, oldId, newId, isApp: false, key: "override", date: ds });
         }
       });
     }
@@ -344,7 +348,7 @@
     if (!appRefused) appEdits.forEach(([ds, newAppId]) => {
       const oldAppId = appShifts[ds] || "";
       if (oldAppId !== (newAppId || "")) {
-        changes.push({ slotLabel: `APP ${ds}`, oldId: oldAppId, newId: newAppId, isApp: true, date: ds });
+        changes.push({ slotLabel: `APP ${ds}`, oldId: oldAppId, newId: newAppId, isApp: true, key: "app", date: ds });
       }
     });
 
@@ -391,7 +395,7 @@
     // included). Only when a surgeon slot changed: an APP-only save writes the
     // APP map, never a schedule week (it used to create an empty one).
     if (changes.some(c => !c.isApp)) {
-      pushUndo();
+      const undoStep = pushUndo(); if (undoStep) undoStep.what = "edit"; // (↩ Undo names what it takes back — QW4)
       updateSchedule(p => ({ ...p, [mondayStr]: next }));
     }
     // APP changes (2026-10-11): only the days edited in this editor, applied to
@@ -418,9 +422,10 @@
     // produces 1 notification set per affected person instead of 4. Massive
     // reduction in email/push noise on multi-shift edits.
     //
-    // Email uses the existing schedule_changed template; for n>=2 we pass a
-    // summarized payload that fits the template shape. The in-app title+body
-    // (which we control fully) carries the detailed per-shift breakdown.
+    // Email uses the existing schedule_changed template, whose data.detail
+    // (v17) now carries every change with its day, as the in-app title+body
+    // does (UX audit 2026-11-01 — below); before, n>=2 sent a summarized
+    // payload ("multiple → open app for details").
     const reasonSuffix = draft.reason ? ` (${draft.reason})` : "";
 
     // Build per-person change list: every affected person gets their own set
@@ -433,6 +438,8 @@
       newId: c.newId,
       oldName: c.isApp ? (aMap[c.oldId]?.name || "—") : (sMap[c.oldId]?.name || "—"),
       newName: c.isApp ? (aMap[c.newId]?.name || "—") : (sMap[c.newId]?.name || "—"),
+      key: c.key,
+      date: c.date,
     }));
     enrichedChanges.forEach(ec => {
       [ec.oldId, ec.newId].filter(Boolean).forEach(pid => {
@@ -463,7 +470,13 @@
     // person plus schedulers, so we reuse it for push/email targeting.)
     const allTargets = [...perPerson.keys()].filter(Boolean);
     let title, msg, emailPayload;
-    if (enrichedChanges.length === 1) {
+    // Each change says its day (UX audit 2026-11-01 — helpers.js weekChangeNotice, guarded as every newer helper):
+    // "Thu Dec 17 — Night: DJA → RPC" in the notice and the push, and the e-mail lists every change (its detail),
+    // its subject the one change's slot or "2 shifts, week of Jan 4". An old cached helpers.js: as before.
+    const told = typeof weekChangeNotice === "function" ? weekChangeNotice(mondayStr, enrichedChanges, draft.reason) : null;
+    if (told) {
+      title = told.title; msg = told.message; emailPayload = told.email;
+    } else if (enrichedChanges.length === 1) {
       const c = enrichedChanges[0];
       title = "Schedule Change";
       msg = `${c.slotLabel}: ${c.oldName} → ${c.newName}${reasonSuffix}`;
