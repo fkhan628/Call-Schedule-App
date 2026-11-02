@@ -20818,10 +20818,12 @@ await (async () => {
       ["e-mail", "vacation_revoked", Object.assign({ surgeon_name: "MCC", surgeon_id: "s2", start_date: req.start_date, end_date: req.end_date, request_type: req.request_type }, extra), ["s2", "s6"]]];
     if (!rvNew || !rvOld) check("DF6 revokeApprovedVac is extractable (its deps list what it reads: sendEmailNotif, userProfile, surgeons, mySurgeon)", false, "anchors not found");
     else {
+      // (changed ON PURPOSE 2026-11-02, on main after #109: QW18 says the revoke's toast dates as Mine does — "Mon 10/26 →
+      // Fri 10/30", one day "Tue 12/1" — mineRangeLabel, which an old cached helpers.js has too; the rest is this commit's)
       const vac = await revokeRun(rvNew, VAC), one = await revokeRun(rvNew, ONE);
       check("DF6 the REAL revokeApprovedVac: its notice (\"Vacation Revoked\" — the push says the same) reads \"MCC's approved vacation Mon Oct 26 – Fri Oct 30 was revoked by FAK — those days are back on the call schedule\" (one no-call day: \"…no-call day Tue Dec 1 was revoked by FAK — that day is back…\"), then ONE e-mail like approve's and deny's: vacation_revoked to the same people (the surgeon and the schedulers), with the dates in words, who revoked it and the notice's own sentence (detail; message for a server before v18) — after the toast, the time off and the notice",
-        J(vac) === J(steps("toast success: Revoked — MCC's vacation, 2026-10-26 to 2026-10-30.", "Vacation Revoked", MSG, VAC, { dates: "Mon Oct 26 – Fri Oct 30", revoked_by: "FAK", detail: MSG, message: MSG }))
-          && J(one) === J(steps("toast success: Revoked — MCC's no-call days, 2026-12-01 to 2026-12-01.", "No-Call Revoked", MSG1, ONE, { dates: "Tue Dec 1", revoked_by: "FAK", detail: MSG1, message: MSG1 })),
+        J(vac) === J(steps("toast success: Revoked — MCC's vacation, Mon 10/26 → Fri 10/30.", "Vacation Revoked", MSG, VAC, { dates: "Mon Oct 26 – Fri Oct 30", revoked_by: "FAK", detail: MSG, message: MSG }))
+          && J(one) === J(steps("toast success: Revoked — MCC's no-call days, Tue 12/1.", "No-Call Revoked", MSG1, ONE, { dates: "Tue Dec 1", revoked_by: "FAK", detail: MSG1, message: MSG1 })),
         J({ vac, one }).slice(0, 1600));
       const byRoster = await revokeRun(rvNew, VAC, { userProfile: {} }), byNobody = await revokeRun(rvNew, VAC, { userProfile: null, mySurgeon: "admin" });
       const nb = byNobody[5] && byNobody[5][2] || {};
@@ -20835,7 +20837,7 @@ await (async () => {
         J({ crossStatus, crossNotice }).slice(0, 1200));
       const old = await revokeRun(rvOld, VAC), OLDMSG = "MCC's vacation 2026-10-26 → 2026-10-30 was revoked";
       check("DF6 …with an OLD cached helpers.js: main's notice text (\"MCC's vacation 2026-10-26 → 2026-10-30 was revoked\"), and the e-mail still goes, carrying those words (no dates in words); nothing thrown",
-        oldLacks && J(old) === J(steps("toast success: Revoked — MCC's vacation, 2026-10-26 to 2026-10-30.", "Vacation Revoked", OLDMSG, VAC, { revoked_by: "FAK", detail: OLDMSG, message: OLDMSG })), J(old).slice(0, 1200));
+        oldLacks && J(old) === J(steps("toast success: Revoked — MCC's vacation, Mon 10/26 → Fri 10/30.", "Vacation Revoked", OLDMSG, VAC, { revoked_by: "FAK", detail: OLDMSG, message: OLDMSG })), J(old).slice(0, 1200));
       // its push: still under each person's vacation PUSH switch (the REAL filterPushTargetsByType, unchanged) and still
       // opening Requests (the REAL buildDeepLink, unchanged); the e-mail's switch is the server's (v18: VACATION_TYPES)
       const fpCode = afterDF("  const filterPushTargetsByType = useCallback(", ", []);");
