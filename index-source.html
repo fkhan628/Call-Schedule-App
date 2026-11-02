@@ -924,6 +924,9 @@ function CallSchedule() {
   const [authMode, setAuthMode] = useState("login");     // "login" | "signup" | "reset" | "newpassword"
   const [resetEmail, setResetEmail] = useState("");
   const [resetSent, setResetSent] = useState(false);
+  // The app was opened from a reset link that no longer works — expired, or already used (UX audit 2026-11-01): the
+  // "Reset your password" form says so (set by the app-open auth check, cleared by Back to Sign In)
+  const [resetLinkExpired, setResetLinkExpired] = useState(false);
   const [newPassword, setNewPassword] = useState("");
   const [newPasswordConfirm, setNewPasswordConfirm] = useState("");
   const [authError, setAuthError] = useState("");
@@ -1245,6 +1248,14 @@ function CallSchedule() {
             setAuthLoading(false);
             return;
           }
+        }
+        // A reset link that no longer works — expired, or already used (UX audit 2026-11-01): GoTrue sends it back here
+        // as #error=access_denied&error_code=otp_expired&error_description=…, and the plain sign-in card asked for the
+        // password the person had just said they forgot. Take it out of the address bar and, with no sign-in on this
+        // phone, open "Reset your password" saying why; signed in, the app opens as usual.
+        if (hash && /(?:^#|&)error(?:_code)?=/.test(hash)) {
+          window.history.replaceState(null, "", window.location.pathname + window.location.search);
+          if (!auth.getSession()) { setAuthMode("reset"); setResetLinkExpired(true); }
         }
 
         const bioResult = await biometric.isAvailable();
@@ -9266,15 +9277,22 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 {resetSent ? (
                   <>
                     <div style={{fontSize:13,color:"#1a6030",padding:"12px 14px",background:"#e8f8e8",borderRadius:8,border:"1px solid #a0d8a0",lineHeight:1.5}}>
-                      Password reset email sent! Check your inbox for a link to reset your password.
+                      Password reset email sent! Check your inbox for a link to reset your password. The link works once, within an hour — if you ask for another, use the newest e-mail.
                     </div>
-                    <button onClick={()=>{setAuthMode("login");setResetSent(false);setResetEmail("");setAuthError("");}}
+                    <button onClick={()=>{setAuthMode("login");setResetSent(false);setResetEmail("");setAuthError("");setResetLinkExpired(false);}}
                       style={{background:"none",border:"none",color:"#1a6fa8",fontSize:12,cursor:"pointer",fontFamily:font,textDecoration:"underline",textAlign:"center"}}>
                       Back to Sign In
                     </button>
                   </>
                 ) : (
                   <>
+                    {/* Opened from a reset link that no longer works (the app-open auth check): say so first. The amber
+                        of the "No connection" note above; readable in dark mode too (its own fill). */}
+                    {resetLinkExpired && (
+                      <div role="status" style={{background:"#fdf0e0",color:"#7a4a00",border:"1px solid #e0b070",borderRadius:8,padding:"10px 12px",fontSize:13,fontWeight:600,lineHeight:1.45,fontFamily:font}}>
+                        That link has expired or was already used — enter your e-mail for a new one.
+                      </div>
+                    )}
                     <p style={{fontSize:13,color:"#5a6a78",margin:0}}>Enter the email address you signed up with. We'll send you a link to reset your password.</p>
                     <input type="email" placeholder="Email address" value={resetEmail} onChange={e=>setResetEmail(e.target.value)}
                       autoComplete="username" inputMode="email" autoCapitalize="none" autoCorrect="off"
@@ -9301,7 +9319,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                       {authBusy ? "Sending…" : "Send Reset Link"}
                     </button>
                     <div style={{textAlign:"center",marginTop:4}}>
-                      <button onClick={()=>{setAuthMode("login");setAuthError("");setResetEmail("");}}
+                      <button onClick={()=>{setAuthMode("login");setAuthError("");setResetEmail("");setResetLinkExpired(false);}}
                         style={{background:"none",border:"none",color:"#1a6fa8",fontSize:12,cursor:"pointer",fontFamily:font,textDecoration:"underline"}}>
                         Back to Sign In
                       </button>
@@ -9370,8 +9388,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             <div style={{textAlign:"center",marginBottom:16}}>
               <h2 style={{fontSize:18,fontWeight:700,color:dkText,margin:"0 0 4px"}}>Welcome!</h2>
               <p style={{fontSize:12,color:"#7a8a98",margin:0}}>Select your name to complete setup</p>
+              {/* Which account this is (UX audit 2026-11-01: nothing on this screen said who was signed in) */}
+              <p style={{fontSize:12,color:dk?"#9aa0b8":"#5a6a78",margin:"8px 0 0",overflowWrap:"anywhere"}}>Signed in as <strong style={{color:dkText}}>{authUser?.email || "this account"}</strong></p>
             </div>
-            <select value={signupPersonId} onChange={e=>setSignupPersonId(e.target.value)}
+            <select aria-label="Your name" value={signupPersonId} onChange={e=>setSignupPersonId(e.target.value)}
               style={{...css.inp,width:"100%",padding:"10px 12px",fontSize:14,marginBottom:10}}>
               <option value="">Select your name…</option>
               {/* ADMIN not self-selectable here either — see the signup screen. */}
@@ -9382,11 +9402,23 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 {apps.map(a=><option key={a.id} value={a.id}>{a.name}</option>)}
               </optgroup>
             </select>
-            {authError && <div style={{fontSize:12,color:"#c04040",padding:"6px 10px",background:"#fce8e8",borderRadius:6,border:"1px solid #e8c0c0",marginBottom:8}}>{authError}</div>}
+            {/* Announced as it appears, and #a83232 on its fill (5.6:1) — as the sign-in card's lines (it was #c04040, 4.4:1, and silent) */}
+            {authError && <div role="alert" style={{fontSize:12,color:"#a83232",padding:"6px 10px",background:"#fce8e8",borderRadius:6,border:"1px solid #e8c0c0",marginBottom:8}}>{authError}</div>}
             <button onClick={handleSetProfile} disabled={authBusy||!signupPersonId}
               style={{...css.btn(true),width:"100%",padding:"11px 16px",fontSize:14,fontWeight:700,opacity:authBusy||!signupPersonId?0.6:1}}>
               {authBusy ? "Saving…" : "Continue"}
             </button>
+            {/* The ways out (UX audit 2026-11-01): anyone not on the list was stuck here — the Clinic Manager too, whose
+                "admin" is not offered — and so was anyone a brief server error sent here (a profile read that fails
+                reads as no profile). Try again opens the app again: the app-open sign-in reads the profile afresh, as
+                the "No connection" note's Retry does. Sign out is Settings' own. */}
+            <p style={{fontSize:12,color:dk?"#9aa0b8":"#5a6a78",margin:"14px 0 0",lineHeight:1.5,textAlign:"center"}}>
+              Used the app before? Tap Try again.<br/>Not on the list? Ask the scheduler to add you.
+            </p>
+            <div style={{display:"flex",gap:8,marginTop:10}}>
+              <button type="button" onClick={()=>window.location.reload()} style={{...css.btn(false),flex:1,minHeight:44,fontSize:14,fontWeight:600}}>Try again</button>
+              <button type="button" onClick={handleSignOut} style={{...css.btn(false),flex:1,minHeight:44,fontSize:14,fontWeight:600}}>Sign out</button>
+            </div>
           </div>
         </div>
       ) : <>

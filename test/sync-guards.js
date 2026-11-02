@@ -17701,6 +17701,11 @@ await (async () => {
 //   DE3 (QW13) Setup's No-Call Days card is the scheduler's and the Clinic Manager's (main's card, byte for byte) — MS
 //       gets nothing above APP Call Shifts, so Setup opens there; Requests' trade note tells MS "You assign APP shifts
 //       in Setup → APP Call Shifts." (any other APP: main's note)
+//   DE4 (QW14) the app-open auth check (CI's slice) on GoTrue's answer for a dead reset link clears the address bar and,
+//       signed out, opens "Reset your password" with "That link has expired or was already used — enter your e-mail for
+//       a new one."; every other open runs main's steps exactly. The "sent" box says the link works once, within an
+//       hour; every other card state is main's. The Welcome screen names the account and has Try again (a reload) and
+//       Sign out (handleSignOut) and "Not on the list? Ask the scheduler to add you."; its error is announced
 console.log("\nDE. Settings' developer tools, the Clinic Manager's notifications, MS's Setup and Requests, the reset link, the Welcome screen");
 await (async () => {
   const nsrcD = src.replace(/\r\n/g, "\n"), J = JSON.stringify;
@@ -18130,6 +18135,104 @@ await (async () => {
       noteText(vNoteNew, "ms") === "🔄 Shift TradesShift trades are for the surgeon call schedule. You assign APP shifts in Setup → APP Call Shifts." && plainSame
         && noteText(vNoteNew, "app") === "🔄 Shift TradesShift trades are for the surgeon call schedule. For an APP shift change, ask the scheduler.",
       J({ ms: noteText(vNoteNew, "ms"), app: noteText(vNoteNew, "app"), plainSame }));
+  }
+
+  // ── DE4 (QW14) — a reset link that no longer works; the Welcome screen's ways out ──
+  {
+    // the REAL app-open auth check (CI's / CS's slice), today's and main's, on one stubbed auth
+    const MA = "  // ─── Auth: Check session on mount ───\n  useEffect(";
+    const mountNew = (() => { const s = cutD(MA, "\n  }, []);\n"); return s === null ? null : s + "\n  }"; })(), mountOld = OLD.mount + "\n  }";
+    const MOUNT_NAMES = "isPublicMode, setAuthLoading, window, URLSearchParams, auth, setAuthMode, setResetLinkExpired, biometric, setBiometricAvail, setBiometricReason, setBiometricEnrolled, setBiometricPending, dbAuth, setAuthUser, setUserProfile, setMySurgeon, setNeedsProfile, setReloadTrigger, setAuthNetErr, console, isNoConnectionError";
+    const nceD = vm.runInContext("typeof isNoConnectionError === 'function' ? isNoConnectionError : undefined", sandbox);
+    const mkMount = (code) => { try { return code ? vm.runInContext(`(function (env) { const { ${MOUNT_NAMES} } = env; return (${code}); })`, vm.createContext({}), { filename: "de-mount.js" }) : null; } catch (ex) { return null; } };
+    const mNew = mkMount(mountNew), mOld = mkMount(mountOld);
+    const openApp = async (mk, o = {}) => {
+      const log = [], st = { loading: true };
+      const env = { isPublicMode: false, URLSearchParams, isNoConnectionError: nceD,
+        window: { location: { hash: o.hash || "", pathname: "/Call-Schedule-App/", search: o.search || "" }, history: { replaceState: (a, b, u) => log.push("replaceState:" + u) } },
+        auth: { getSession: () => (o.session ? { access_token: "TOK", refresh_token: "REF" } : null), getUser: async () => ({ user: { id: "u-1", email: "rpc@dsg.test" } }), bindUser: (id) => log.push("bind:" + id), _saveSession: (s) => log.push("saveSession:" + s.access_token) },
+        biometric: { isAvailable: async () => ({ available: !!o.bio, reason: "" }), isEnrolled: () => !!o.bio },
+        dbAuth: { getProfile: async (id) => { log.push("getProfile:" + id); return { person_id: "s3", display_name: "RPC", role: "member" }; } },
+        setAuthLoading: (v) => { st.loading = v; log.push("authLoading:" + v); }, setAuthMode: (v) => log.push("authMode:" + v), setResetLinkExpired: (v) => log.push("expired:" + v),
+        setBiometricAvail: () => {}, setBiometricReason: () => {}, setBiometricEnrolled: () => {}, setBiometricPending: (v) => log.push("biometricPending:" + v),
+        setAuthUser: (u) => log.push("authUser:" + (u ? u.id : null)), setUserProfile: () => log.push("profile"), setMySurgeon: () => {}, setNeedsProfile: (v) => log.push("needsProfile:" + v),
+        setReloadTrigger: () => log.push("reloadTrigger"), setAuthNetErr: (v) => log.push("authNetErr:" + v), console: { error: (...a) => log.push("console.error"), warn() {}, log() {} } };
+      try { mk(env)(); } catch (ex) { log.push("threw " + String(ex).slice(0, 100)); }
+      for (let i = 0; i < 200 && st.loading; i++) await new Promise((r) => setTimeout(r, 0));
+      return log;
+    };
+    const EXPIRED = "#error=access_denied&error_code=otp_expired&error_description=Email+link+is+invalid+or+has+expired";
+    const m4 = mNew && mOld ? {
+      dead: await openApp(mNew, { hash: EXPIRED }), deadCode: await openApp(mNew, { hash: "#error_code=otp_expired&error_description=x" }), deadSearch: await openApp(mNew, { hash: EXPIRED, search: "?tab=requests" }),
+      deadSignedIn: await openApp(mNew, { hash: EXPIRED, session: true }), deadSignedInMain: await openApp(mOld, { hash: EXPIRED, session: true }),
+      deadMain: await openApp(mOld, { hash: EXPIRED }),
+    } : null;
+    const SAME_CASES = [["no hash, signed out", {}], ["no hash, signed in", { session: true }], ["no hash, Face ID", { session: true, bio: true }], ["a recovery link", { hash: "#access_token=AT&refresh_token=RT&type=recovery" }],
+      ["a hash that isn't an error", { hash: "#section-error=1" }], ["a hash naming something else", { hash: "#foo=bar&errorx=1" }]];
+    const sameBad = [];
+    if (mNew && mOld) for (const [what, o] of SAME_CASES) { const a = await openApp(mNew, o), b = await openApp(mOld, o); if (J(a) !== J(b)) sameBad.push({ what, today: a, main: b }); }
+    check("DE4a the REAL app-open auth check, run on GoTrue's answer for a dead reset link (#error=access_denied&error_code=otp_expired…; or error_code alone; a ?tab kept): the hash taken out of the address bar, then — nobody signed in on this phone — \"Reset your password\" with its note (authMode reset, expired), loading ends; main showed the plain sign-in card with the error left in the address bar",
+      !!m4 && J(m4.dead) === J(["replaceState:/Call-Schedule-App/", "authMode:reset", "expired:true", "authLoading:false"]) && J(m4.deadCode) === J(m4.dead)
+        && J(m4.deadSearch) === J(["replaceState:/Call-Schedule-App/?tab=requests", "authMode:reset", "expired:true", "authLoading:false"]) && J(m4.deadMain) === J(["authLoading:false"]),
+      J(m4));
+    check("DE4a …signed in on this phone, the same link only clears the address bar and the app opens as main opens it (the sign-in, the profile, the reload); every other open — no hash (signed out, signed in, Face ID), a recovery link, a hash that isn't GoTrue's error — runs exactly main's steps",
+      !!m4 && J(m4.deadSignedIn) === J(["replaceState:/Call-Schedule-App/"].concat(m4.deadSignedInMain)) && !m4.deadSignedIn.some((x) => /^authMode|^expired/.test(x)) && sameBad.length === 0 && SAME_CASES.length === 6,
+      J({ deadSignedIn: m4 && m4.deadSignedIn, sameBad: sameBad.slice(0, 2) }));
+
+    // the sign-in card, rendered (today's and main's): reset mode with the note; the "sent" box; every other mode as main
+    const CARD_NAMES = "authNetErr, authMode, window, css, font, dkText, newPassword, setNewPassword, newPasswordConfirm, setNewPasswordConfirm, setAuthError, setAuthBusy, auth, setAuthMode, alert, authErrorText, authError, authBusy, "
+      + "resetSent, setResetSent, resetEmail, setResetEmail, authEmail, setAuthEmail, startSignIn, authPassword, setAuthPassword, signupPersonId, setSignupPersonId, surgeons, apps, resetLinkExpired, setResetLinkExpired";
+    const cardNew = cutD(") : !authUser && !isPublicMode ? (", ") : needsProfile ? (");
+    const vCardNew = viewD(CARD_NAMES, cardNew, "de-signin.js"), vCardOld = viewD(CARD_NAMES, OLD.signInCard, "de-signin-main.js");
+    const cardEnv = (o = {}) => Object.assign({ authNetErr: false, authMode: "login", window: { location: { reload: stubD("reload") } }, css: CSSD, font: "F", dkText: "#2c3e50", newPassword: "", newPasswordConfirm: "", auth: {}, authErrorText: null,
+      authError: "", authBusy: false, resetSent: false, resetEmail: "", authEmail: "", authPassword: "", signupPersonId: "", surgeons: SURGD, apps: APPSD, resetLinkExpired: false },
+      Object.fromEntries(["setNewPassword", "setNewPasswordConfirm", "setAuthError", "setAuthBusy", "setAuthMode", "alert", "setResetSent", "setResetEmail", "setAuthEmail", "startSignIn", "setAuthPassword", "setSignupPersonId", "setResetLinkExpired"].map((n) => [n, stubD(n)])), o);
+    // "Back to Sign In" also drops the note now: its handler compared by its calls below, set aside here
+    const backD = (n) => (n && typeof n === "object" && Array.isArray(n.kids) ? Object.assign({}, n, { props: textD(n).trim() === "Back to Sign In" && typeof n.props.onClick === "function" ? Object.assign({}, n.props, { onClick: "<back>" }) : n.props, kids: n.kids.map(backD) }) : n);
+    const cardBad = [];
+    if (vCardNew && vCardOld) for (const authMode of ["login", "signup", "newpassword", "reset"]) for (const authError of ["", "User not found"]) for (const authNetErr of [false, true]) {
+      const e = { authMode, authError, authNetErr }, nw = vCardNew(cardEnv(e)), od = vCardOld(cardEnv(e));
+      if (nw.threw || od.threw || sigD(backD(nw)) !== sigD(backD(od))) cardBad.push({ authMode, authError, authNetErr, nw: nw.threw || null, od: od.threw || null });
+    }
+    const dead = vCardNew ? vCardNew(cardEnv({ authMode: "reset", resetLinkExpired: true })) : null;
+    const deadNote = dead && !dead.threw ? findD(dead, (n) => n.props.role === "status")[0] : null;
+    const deadCol = deadNote ? findD(dead, (n) => n.kids.includes(deadNote))[0] : null;
+    const sent = vCardNew ? vCardNew(cardEnv({ authMode: "reset", resetSent: true, resetLinkExpired: true })) : null, sentOld = vCardOld ? vCardOld(cardEnv({ authMode: "reset", resetSent: true })) : null;
+    const backCalls = (t) => { const b = t && !t.threw ? findD(t, (n) => n.tag === "button" && textD(n).trim() === "Back to Sign In")[0] : null; callsD.length = 0; if (b) tryD(() => b.props.onClick()); const c = callsD.slice(); callsD.length = 0; return c; };
+    const SENT_OLD = "Password reset email sent! Check your inbox for a link to reset your password.";
+    check("DE4b the sign-in card: \"Reset your password\" opened by a dead link says first, in the card's amber, \"That link has expired or was already used — enter your e-mail for a new one.\" (role=status), above main's form; Back to Sign In drops the note (and does what it did)",
+      !!deadNote && textD(deadNote) === "That link has expired or was already used — enter your e-mail for a new one." && deadNote.props.style.background === "#fdf0e0" && deadNote.props.style.color === "#7a4a00"
+        && !!deadCol && deadCol.kids[0] === deadNote && textD(dead).includes("Reset your password") && findD(dead, (n) => n.tag === "input" && n.props.type === "email").length === 1
+        && J(backCalls(dead)) === J([["setAuthMode", "login"], ["setAuthError", ""], ["setResetEmail", ""], ["setResetLinkExpired", false]])
+        && J(backCalls(sent)) === J([["setAuthMode", "login"], ["setResetSent", false], ["setResetEmail", ""], ["setAuthError", ""], ["setResetLinkExpired", false]]),
+      J({ note: deadNote && textD(deadNote), dead: dead && (dead.threw || null), back: backCalls(dead), backSent: backCalls(sent) }));
+    check("DE4b …the \"sent\" box adds that the link works once, within an hour (the newest e-mail), and no note under it; with no dead link every mode — sign-in, sign-up, new password, reset — with or without an error or the \"No connection\" note, is main's card byte for byte (16 renders, Back to Sign In's handler aside)",
+      !!sent && !sent.threw && textD(sent).includes(SENT_OLD + " The link works once, within an hour — if you ask for another, use the newest e-mail.") && !textD(sent).includes("That link has expired")
+        && !!sentOld && textD(sentOld).includes(SENT_OLD) && cardBad.length === 0,
+      J({ cardBad: cardBad.slice(0, 3), sent: sent && (sent.threw || textD(sent).slice(0, 260)) }));
+
+    // the Welcome screen, rendered: the account, Try again, Sign out, the note; the error announced; Continue as main's
+    const WEL_NAMES = "css, dk, dkText, authUser, signupPersonId, setSignupPersonId, surgeons, apps, authError, handleSetProfile, authBusy, handleSignOut, window";
+    const welNew = cutD(") : needsProfile ? (", "\n      ) : <>\n");
+    const vWel = viewD(WEL_NAMES, welNew, "de-welcome.js"), vWelOld = viewD(WEL_NAMES, OLD.welcome, "de-welcome-main.js");
+    const welEnv = (o = {}) => Object.assign({ css: CSSD, dk: false, dkText: "#2c3e50", authUser: { id: "u-cm", email: "office.manager@dsg.test" }, signupPersonId: "", surgeons: SURGD, apps: APPSD, authError: "", authBusy: false,
+      window: { location: { reload: stubD("reload") } } }, Object.fromEntries(["setSignupPersonId", "handleSetProfile", "handleSignOut"].map((n) => [n, stubD(n)])), o);
+    const w0 = vWel ? vWel(welEnv()) : null, wErr = vWel ? vWel(welEnv({ authError: "This name is already registered to another account", dk: true })) : null, wOld = vWelOld ? vWelOld(welEnv()) : null;
+    const wBtn = (t) => (w0 && !w0.threw ? findD(w0, (n) => n.tag === "button" && textD(n).trim() === t)[0] : null);
+    const sel = w0 && !w0.threw ? findD(w0, (n) => n.tag === "select")[0] : null;
+    callsD.length = 0; const tryB = wBtn("Try again"); if (tryB) tryD(() => tryB.props.onClick()); const tryCalls = callsD.slice(); callsD.length = 0;
+    const alertN = wErr && !wErr.threw ? findD(wErr, (n) => n.props.role === "alert")[0] : null;
+    const hspNew = declD("handleSetProfile");
+    check("DE4c the Welcome screen names the account (\"Signed in as office.manager@dsg.test\") and has its ways out: \"Used the app before? Tap Try again.\" / \"Not on the list? Ask the scheduler to add you.\", Try again (opens the app again — a reload, the sign-in's own profile read) and Sign out (Settings' handleSignOut), each a 44-px button after Continue; the name picker is labelled \"Your name\" and still offers no \"admin\"",
+      !!w0 && !w0.threw && textD(w0).includes("Signed in as office.manager@dsg.test") && textD(w0).includes("Used the app before? Tap Try again.Not on the list? Ask the scheduler to add you.")
+        && J(findD(w0, (n) => n.tag === "button").map((b) => textD(b).trim())) === J(["Continue", "Try again", "Sign out"]) && J(tryCalls) === J([["reload"]]) && STUBS.get(wBtn("Sign out").props.onClick) === "handleSignOut"
+        && ["Try again", "Sign out"].every((t) => wBtn(t).props.style.minHeight === 44) && STUBS.get(wBtn("Continue").props.onClick) === "handleSetProfile"
+        && !!sel && sel.props["aria-label"] === "Your name" && findD(sel, (n) => n.tag === "option").length === 13 && !findD(sel, (n) => n.tag === "option" && /admin/i.test(String(n.props.value))).length
+        && !!wOld && !wOld.threw && J(findD(wOld, (n) => n.tag === "button").map((b) => textD(b).trim())) === J(["Continue"]),
+      J({ w0: w0 && (w0.threw || textD(w0).slice(0, 300)), tryCalls, sel: sel && sel.props["aria-label"] }));
+    check("DE4c …its error is announced (role=\"alert\") in #a83232 (5.6:1 on its fill; #c04040 was 4.4:1), as the sign-in card's lines; Continue is main's handleSetProfile, unchanged",
+      !!alertN && alertN.props.style.color === "#a83232" && textD(alertN) === "This name is already registered to another account" && hspNew !== null && hspNew === OLD.handleSetProfile,
+      J({ alert: alertN && alertN.props.style, same: hspNew === OLD.handleSetProfile }));
   }
 })().catch(ex => check("DE harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
 
