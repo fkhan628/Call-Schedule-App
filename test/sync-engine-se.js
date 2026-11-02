@@ -4991,7 +4991,7 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
     // the weeks push effect (its 800-ms debounce)
     pushFx: fnX("loaded, isPublicMode, schedSyncRef, setTimeout, clearTimeout", wrap("() => {", after("  // for edits (the pull and the authoritative jobs request their own).\n  useEffect(() => {", "\n  }, [loaded, schedule]);"), "\n  }")),
     // the session boundary + sign-out, and the re-auth that can land on another account (P4)
-    boundary: sess(fnX("searchRef, setSearching, setSearchStats, setPreviewSchedule, setShowPreview, schedSyncRef, setScheduleHistory, setEditWeekModal, setReauthNeeded, setStaleTokenWarn, setIsScheduler, setupReadRef, lastSyncRef, confirm, auth, biometric, setAuthUser, setUserProfile, setNeedsProfile, setMySurgeon, setBiometricEnrolled, setBiometricPending, sessionEpochRef, forgetDayOffs, setJustPublished",
+    boundary: sess(fnX("searchRef, setSearching, setSearchStats, setPreviewSchedule, setShowPreview, schedSyncRef, setScheduleHistory, setEditWeekModal, setReauthNeeded, setStaleTokenWarn, setIsScheduler, setupReadRef, lastSyncRef, confirm, auth, biometric, setAuthUser, setUserProfile, setNeedsProfile, setMySurgeon, setBiometricEnrolled, setBiometricPending, sessionEpochRef, forgetDayOffs, setJustPublished, window, localStorage",
       wrap("(() => { const sessionBoundary = () => {", after("  const sessionBoundary = () => {", "\n  // ════"), "\n  return { sessionBoundary, handleSignOut }; })()"))),
     reauth: fnX("schedSyncRef, authUser, setReauthNeeded, setStaleTokenWarn, showToast, sessionBoundary, biometric, setBiometricEnrolled, setBiometricPending, setAuthUser, dbAuth, setUserProfile, setMySurgeon, setNeedsProfile, setIsScheduler, setReloadTrigger, pendingSaveRef, setSetupSaveNudge, auth",
       decl("reauthLanded", "\n  };\n")),
@@ -5546,7 +5546,9 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
   const bEnv = (A, c) => { const noop = () => {}; return { searchRef: { current: null }, setSearching: noop, setSearchStats: noop, setPreviewSchedule: noop, setShowPreview: noop, schedSyncRef: A.schedSyncRef,
     setScheduleHistory: A.setScheduleHistory, setEditWeekModal: A.setModal, setReauthNeeded: noop, setStaleTokenWarn: noop, setIsScheduler: c.set("isScheduler"), setupReadRef: c.setupReadRef, lastSyncRef: c.lastSyncRef,
     confirm: () => true, auth: A.auth, biometric: { unenroll: noop }, setAuthUser: c.set("authUser"), setUserProfile: c.set("userProfile"), setNeedsProfile: noop, setMySurgeon: noop, setBiometricEnrolled: noop, setBiometricPending: noop,
-    pendingSaveRef: c.pendingSaveRef, setSetupSaveNudge: c.set("setupSaveNudge"), forgetDayOffs: c.forgetDayOffs || noop }; }; // (23/n: the boundary's day-off forget — review r6 fix-3)
+    pendingSaveRef: c.pendingSaveRef, setSetupSaveNudge: c.set("setupSaveNudge"), forgetDayOffs: c.forgetDayOffs || noop, // (23/n: the boundary's day-off forget — review r6 fix-3)
+    // (the quick wins' review, 2026-11-02: sign-out drops the browser's push identity and the remembered name — no OneSignal here)
+    window: {}, localStorage: { removeItem: noop } }; };
   // …and "Sign in again" landing on the SAME account (a renewed session — the real reauthLanded's same-account branch).
   const sameAccount = (A, c) => Object.assign(bEnv(A, c), { authUser: { id: "auth-a" }, showToast: A.showToast, dbAuth: { getProfile: async () => null }, setReloadTrigger: () => { c.reloads++; } });
   // …and "Sign in again" landing on ANOTHER account, a scheduler (the real reauthLanded, crossing that boundary).

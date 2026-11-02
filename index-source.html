@@ -556,20 +556,58 @@ function CallSchedule() {
   // the Calendar's "↩ … was undone" banner, whose 📣 tells everyone it was
   // withdrawn — never sent by itself (notifyWithdrawn). A tap from a render
   // that still shows a step already undone does nothing (it took two steps).
+  //
+  // Review of the quick wins (2026-11-02): ↩ Undo is the scheduler's (and the
+  // Clinic Manager's) alone, and never takes back a trade or a restore — the
+  // header shows no ↩ Undo while one of those is the newest step (undoable).
+  // A trade's Undo put both shifts back while the request stayed accepted and
+  // nobody was told (a member's phone offered it too); a restore's put back
+  // the weeks alone, not the counts, roster and marks the restore wrote — its
+  // own "Before restore" snapshot is its undo. Their steps stay in the history,
+  // so an older step can't be undone past them (it would revert them too). An
+  // edit or a swap is asked about first: the people it moved were just told of
+  // it, so they are told it was undone (undoTellNotice) — the APP days an edit
+  // saved stay as they are, and the question says so.
+  const undoable = (step) => !!step && step.what !== "trade" && step.what !== "restore";
+  const undoTellNotice = (tell) => {
+    const back = (tell.parts || []).map(p => ({ week: p.week, changes: p.changes.map(c => ({ ...c, oldId: c.newId, newId: c.oldId, oldName: c.newName, newName: c.oldName })) }));
+    const said = back.map(p => typeof weekChangeNotice === "function" ? weekChangeNotice(p.week, p.changes, "") : null);
+    const lines = back.flatMap((p, i) => said[i] ? said[i].message.split("; ") : p.changes.map(c => `${SHIFT_LABELS[c.key] || c.key} (wk of ${p.week}): ${c.oldName} → ${c.newName}`));
+    const esc = t => String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const one = said.length === 1 && said[0] && back[0].changes.length === 1;
+    return {
+      lines,
+      title: "Change Undone",
+      message: lines.join("; ") + " (undone)",
+      email: one ? { ...said[0].email, detail: said[0].email.detail + esc(" (undone)") }
+        : { shift: `${lines.length} shift${lines.length === 1 ? "" : "s"}`, week: back[0] ? back[0].week : "", old_surgeon: "multiple", new_surgeon: "open app for details", detail: lines.map(esc).join("<br>") + esc(" (undone)") },
+    };
+  };
   const undoTap = () => {
     const step = scheduleHistory[scheduleHistory.length - 1];
-    if (!step || step.undone) return;
+    if (!step || step.undone || !undoable(step)) return;
     const w = undoWords(step);
+    const tell = step.tell && step.tell.targets && step.tell.targets.length ? step.tell : null;
+    const told = tell ? undoTellNotice(tell) : null;
+    const names = tell ? tell.names || [] : [];
+    const who = names.length > 1 ? names.slice(0, -1).join(", ") + " and " + names[names.length - 1] : names[0] || "";
     if (w.kind === "publish" || w.kind === "clear") {
       const n = Object.keys(step.sched || {}).length;
       const ask = w.kind === "clear"
         ? `Undo the clear?\n\nThe schedule comes back as it was before it (${n} week${n === 1 ? "" : "s"}), and so do the counts it took off.`
         : `Undo ${w.what}?\n\nIts weeks go back to what they were before it, and the counts with them.\n\n${step.told ? "Everyone was notified of this publish. They are told it was withdrawn only if you choose to — the Calendar then offers 📣." : "Nobody was notified of this publish."}`;
       if (!confirm(ask)) return;
+    } else if (w.kind === "edit" || w.kind === "swap") {
+      const ask = `Undo ${w.what}?\n\n${told ? told.lines.join("\n") : "The shifts it changed go back to who had them before."}${step.tell && step.tell.apps ? "\n\nThe APP days saved with it stay as they are." : ""}\n\n${who ? `${who} ${names.length > 1 ? "were" : "was"} notified of the change — they're told it was undone (push and e-mail, per their settings).` : "Nobody was notified of the change."}`;
+      if (!confirm(ask)) return;
     }
     undoLastChange();
     if (!step.undone) return;
-    showToast(`↩ Undone: ${w.what}.`, "info");
+    if (told) {
+      addNotification("schedule_changed", told.title, told.message, { week: tell.parts[0] ? tell.parts[0].week : undefined }, tell.targets);
+      sendEmailNotif("schedule_changed", told.email, tell.targets);
+    }
+    showToast(`↩ Undone: ${w.what}${who ? ` — ${who} ${names.length > 1 ? "were" : "was"} told` : ""}.${step.tell && step.tell.apps ? " The APP days stay as saved." : ""}`, "info");
     if (w.kind === "publish" && step.told) setWithdrawnOffer({ label: step.period || "", week: step.first || null, ep: sessionEpochRef.current });
   };
 
@@ -966,15 +1004,39 @@ function CallSchedule() {
 
   // Person IDs that should receive notifications for scheduler-relevant events
   // (manual shift edits, vacation requests, vacation revocations, trade cascades).
-  // Derived from user_profiles: anyone with role "scheduler" or person_id "admin".
+  // Derived from user_profiles: anyone with role "scheduler" or "admin".
   // Declared early so it's available to useCallback dependency arrays below.
+  // staffProfiles is read at sign-in on EVERY device (review of the quick
+  // wins, 2026-11-02): allProfiles fills only when Settings loads its user
+  // list, which a member's or an APP's device never does — so their new
+  // requests, vacation changes and trade cascades were addressed to nobody (no
+  // push, no e-mail), and the scheduler's own approvals left the Clinic
+  // Manager out until Settings had been opened.
+  const [staffProfiles, setStaffProfiles] = useState([]);
   const schedulerAdminIds = useMemo(() => {
     const ids = new Set();
-    allProfiles.forEach(p => {
+    [...allProfiles, ...staffProfiles].forEach(p => {
       if (p?.role === "scheduler" || p?.role === "admin") ids.add(p.person_id);
     });
     return [...ids];
-  }, [allProfiles]);
+  }, [allProfiles, staffProfiles]);
+  // Any signed-in user may read user_profiles; only person_id and role are
+  // asked for. A failed read leaves the list as it was (logged): the next
+  // sign-in pass (reloadTrigger) reads it again.
+  useEffect(() => {
+    if (!authUser || !userProfile) { setStaffProfiles([]); return; }
+    const ep = sessionEpochRef.current;
+    let live = true;
+    (async () => {
+      try {
+        const res = await fetch(`${SUPABASE_URL}/rest/v1/user_profiles?select=person_id,role`, { headers: dbAuthHeaders() });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const rows = await res.json();
+        if (live && sessionEpochRef.current === ep && Array.isArray(rows)) setStaffProfiles(rows.filter(p => p?.role === "scheduler" || p?.role === "admin"));
+      } catch (e) { console.warn("Couldn't read who gets the scheduler's notices:", e); }
+    })();
+    return () => { live = false; };
+  }, [authUser?.id, userProfile?.person_id, reloadTrigger]);
 
   // ─── Scheduler Mode (role-based via user_profiles.role) ───
   const [isScheduler, setIsScheduler] = useState(false);
@@ -1105,7 +1167,8 @@ function CallSchedule() {
   // The bell's panel closes when the tab changes (UX audit 2026-11-01, QW8): it stayed open over the top of the next
   // tab. While it is open, a tap outside it (not on the panel, not on the bell — the bell's own tap toggles it) closes
   // it, and so does Escape, which hands focus back to the bell; opening it moves focus into it (role=dialog), so
-  // VoiceOver and a keyboard start there.
+  // VoiceOver and a keyboard start there. A notice's row, tapped, leaves focus on the month it opened (a Calendar
+  // notice) or on the bell — it fell to the top of the page (review of the quick wins, 2026-11-02).
   const notifFocusBell = () => { try { const b = document.querySelector("[data-notif-bell]"); if (b) b.focus(); } catch (e) { /* focus only */ } };
   useEffect(() => { setShowNotifs(false); }, [view]);
   useEffect(() => {
@@ -1113,9 +1176,13 @@ function CallSchedule() {
     try { const p = document.querySelector("[data-notif-panel]"); if (p) p.focus({ preventScroll: true }); } catch (e) { /* focus only */ }
     const outside = (e) => { const t = e.target; if (!(t && t.closest && t.closest("[data-notif-panel],[data-notif-bell]"))) setShowNotifs(false); };
     const onKey = (e) => { if (e.key === "Escape") { setShowNotifs(false); notifFocusBell(); } };
+    // Focus that moves past it closes it too (review of the quick wins, 2026-11-02): a Tab after the last notice went to
+    // a control under the open panel (the Calendar's share button), focused where no one could see it.
+    const focusOut = (e) => { const t = e.target; if (t && t.closest && !t.closest("[data-notif-panel],[data-notif-bell]")) setShowNotifs(false); };
     document.addEventListener("pointerdown", outside);
     document.addEventListener("keydown", onKey);
-    return () => { document.removeEventListener("pointerdown", outside); document.removeEventListener("keydown", onKey); };
+    document.addEventListener("focusin", focusOut);
+    return () => { document.removeEventListener("pointerdown", outside); document.removeEventListener("keydown", onKey); document.removeEventListener("focusin", focusOut); };
   }, [showNotifs]);
 
   // ─── Browser Push & Email Notification Preferences ───
@@ -1268,11 +1335,20 @@ function CallSchedule() {
         // A reset link that no longer works — expired, or already used (UX audit 2026-11-01): GoTrue sends it back here
         // as #error=access_denied&error_code=otp_expired&error_description=…, and the plain sign-in card asked for the
         // password the person had just said they forgot. Take it out of the address bar and, with no sign-in on this
-        // phone, open "Reset your password" saying why; signed in, the app opens as usual.
+        // phone, open "Reset your password" saying why. Decided once this check has run (review of the quick wins,
+        // 2026-11-02): a stored session whose refresh is refused, or that has no refresh token, is cleared by getUser
+        // below — it skipped the note, and the app opened on the plain sign-in card. Still signed in at the end, a
+        // toast says the link failed and how to change the password; no signal, neither (the card says so).
+        let deadLink = false, netErr = false;
         if (hash && /(?:^#|&)error(?:_code)?=/.test(hash)) {
           window.history.replaceState(null, "", window.location.pathname + window.location.search);
-          if (!auth.getSession()) { setAuthMode("reset"); setResetLinkExpired(true); }
+          deadLink = true;
         }
+        const deadLinkSaid = () => {
+          if (!deadLink) return;
+          if (!auth.getSession()) { setAuthMode("reset"); setResetLinkExpired(true); }
+          else showToast("That reset link has expired or was already used. To change your password, sign out, then use \"Forgot your password?\".", "info");
+        };
 
         const bioResult = await biometric.isAvailable();
         setBiometricAvail(bioResult.available);
@@ -1285,6 +1361,7 @@ function CallSchedule() {
           // Has biometric + stored session — require biometric to unlock
           setBiometricPending(true);
           setAuthLoading(false);
+          deadLinkSaid();
           return; // Don't auto-login; wait for biometric prompt
         }
 
@@ -1328,8 +1405,10 @@ function CallSchedule() {
             // stored session, so nothing is signed out — the card says so,
             // with Retry, instead of a plain "Sign in to your account".
             setAuthNetErr(true);
+            netErr = true;
           }
         }
+        if (!netErr) deadLinkSaid();
       } catch(e) { console.error("Auth check error:", e); }
       setAuthLoading(false);
     })();
@@ -1653,6 +1732,11 @@ function CallSchedule() {
     await auth.signOut(); // (this tab's session only — another account's, stored by another tab, is left alone: review r4 branch-4)
     auth.bindUser(null);  // …and unbound: the sign-in form's requests run as nobody's
     biometric.unenroll();
+    // This browser stops getting this person's pushes, and no longer signs itself back in as them on its next open
+    // (review of the quick wins, 2026-11-02 — a shared front-desk PC kept the Clinic Manager's): OneSignal's identity
+    // is dropped, and the remembered name with it (its persist effect writes a name, never the empty one).
+    try { if (window.OneSignal?.logout) Promise.resolve(window.OneSignal.logout()).catch(e => console.warn("OneSignal.logout:", e)); } catch (e) { console.warn("OneSignal.logout:", e); }
+    try { localStorage.removeItem("dsg-my-surgeon"); } catch (e) { /* storage blocked: nothing was kept */ }
     setAuthUser(null); setUserProfile(null); setNeedsProfile(false); setMySurgeon("");
     setBiometricEnrolled(false); setBiometricPending(false);
   };
@@ -4516,14 +4600,19 @@ function CallSchedule() {
   // new requests and approvals are pushed to schedulerAdminIds, which holds
   // "admin", but that device was never signed in, so none of them arrived.
   // person_id is unique (the DB's unique index), so "admin" is one person.
+  // Only for the account signed in here, as itself (review of the quick wins,
+  // 2026-11-02): the name remembered from an earlier sign-in signed a
+  // signed-out browser — a shared front-desk PC, the public view — back in
+  // as that person on every open, so it kept getting their pushes.
+  // handleSignOut drops the identity.
   useEffect(() => {
-    if (!oneSignalReady || !mySurgeon) return;
+    if (!oneSignalReady || !mySurgeon || !authUser || isPublicMode || userProfile?.person_id !== mySurgeon) return;
     try {
       if (window.OneSignal?.login) {
         window.OneSignal.login(mySurgeon).catch(e => console.error("OneSignal.login error:", e));
       }
     } catch(e) { console.error("OneSignal external id set error:", e); }
-  }, [oneSignalReady, mySurgeon]);
+  }, [oneSignalReady, mySurgeon, authUser?.id, userProfile?.person_id, isPublicMode]);
 
   // Request push permission via OneSignal.
   // Robust version: detects common failure modes (iOS non-PWA, SDK not loaded,
@@ -5026,7 +5115,19 @@ function CallSchedule() {
     // The question Generate & Publish asks (helpers.js publishConfirmText):
     // the period's dates, the published weeks it replaces, a period started or
     // over — its last line that nobody is told until 📣. Cancel: nothing runs.
-    if (!confirm(publishConfirmText(mondays, { schedule: scheduleRef.current, today: fmt(new Date()), regenerate: true }))) return;
+    // An old cached helpers.js ignores { regenerate } and says Generate &
+    // Publish's words, "everyone is notified by push and email", though ↻
+    // Regenerate notifies nobody by itself (review of the quick wins,
+    // 2026-11-02): its verb and its last paragraph are then said here.
+    const regenNotify = "Nobody is notified by itself: once it is published, the Calendar offers 📣 Notify everyone. If anything needs your OK, it opens in the preview on the Generate tab instead.";
+    let regenAsk = typeof publishConfirmText === "function" ? publishConfirmText(mondays, { schedule: scheduleRef.current, today: fmt(new Date()), regenerate: true }) : `Regenerate and publish the schedule?\n\n${regenNotify}`;
+    if (!/^Regenerate and publish/.test(regenAsk)) {
+      const paras = String(regenAsk).split("\n\n");
+      paras[0] = paras[0].replace(/^Generate and publish/, "Regenerate and publish");
+      if (paras.length > 1) paras[paras.length - 1] = regenNotify; else paras.push(regenNotify);
+      regenAsk = paras.join("\n\n");
+    }
+    if (!confirm(regenAsk)) return;
     // This session, at the tap (review r3 regress-3): a sign-out / another
     // account meanwhile → no banner on the next session's screen.
     const ep = sessionEpochRef.current;
@@ -6101,8 +6202,10 @@ function CallSchedule() {
     const ep = sessionEpochRef.current;
     if (!schedEditable("job")) return; // the edit gate first — before even asking (and no other clear / reset / restore / publish queued or running — P7)
     // (Its last line said "This cannot be undone." — ↩ Undo brings a clear back, until undoLastChange refuses it: something
-    // published since, or the history gone with a sign-out; then the snapshot taken below. UX audit 2026-11-01, QW4.)
-    if (!confirm("Clear the entire generated schedule? Holiday assignments and setup data will be kept. The cleared weeks from May 4, 2026 on come off the running totals.\n\n↩ Undo brings it back until something new is published or you sign out; after that, restore its \"Before schedule clear\" snapshot in Settings.")) return;
+    // published since, or the history gone with a sign-out; then the snapshot taken below. UX audit 2026-11-01, QW4.
+    // The history lives only while the app stays open, and keeps 10 steps — a reload loses it too, so the question says
+    // so: review of the quick wins, 2026-11-02.)
+    if (!confirm("Clear the entire generated schedule? Holiday assignments and setup data will be kept. The cleared weeks from May 4, 2026 on come off the running totals.\n\n↩ Undo brings it back while the app stays open — not after it reloads, you sign out, something new is published or 10 more changes are made. After that, restore its \"Before schedule clear\" snapshot in Settings → 📼 Restore from Snapshot.")) return;
     // Preserve pre-clear state; if the snapshot can't be written, refuse to clear.
     const clearSnap = await snapshots.capture("clear_schedule", { minWeeks: Object.keys(schedSyncRef.current.knownSchedule()).length ? 1 : 0 });
     if (sessionEpochRef.current !== ep) return;
@@ -7243,6 +7346,8 @@ function CallSchedule() {
     const newName = sMap[newId]?.name || "—";
     const shiftLabel = SHIFT_LABELS[shift] || shift;
     const editTargets = [...new Set([oldId, newId, ...schedulerAdminIds].filter(Boolean))];
+    // What ↩ Undo asks and whom it tells (review of the quick wins, 2026-11-02 — see undoTap)
+    if (undoStep) undoStep.tell = { parts: [{ week: mStr, changes: [{ key: shift, oldId, newId, oldName, newName }] }], targets: editTargets, names: [oldId, newId].filter(Boolean).map(id => sMap[id]?.name || id) };
     // Said with its day, as the week editor's (UX audit 2026-11-01 — helpers.js weekChangeNotice, guarded):
     // "Thu Dec 17 — Night: DJA → RPC", in the notice, the push and the e-mail (its detail and subject).
     const told = typeof weekChangeNotice === "function" ? weekChangeNotice(mStr, [{ key: shift, oldName, newName }], "") : null;
@@ -7505,6 +7610,12 @@ function CallSchedule() {
     const newName = sMap[candId]?.name || "—";
     const shiftLabel = SHIFT_LABELS[targetShift] || targetShift;
     const swapTargets = [...new Set([targetOldId, candId, ...schedulerAdminIds].filter(Boolean))];
+    // What ↩ Undo asks and whom it tells (review of the quick wins, 2026-11-02 — see undoTap): both legs
+    if (undoStep) undoStep.tell = {
+      parts: [{ week: targetMon, changes: [{ key: targetShift, oldId: targetOldId, newId: candId, oldName, newName }] }]
+        .concat(returnMon && returnShift ? [{ week: returnMon, changes: [{ key: returnShift, oldId: candId, newId: targetOldId, oldName: newName, newName: oldName }] }] : []),
+      targets: swapTargets, names: [targetOldId, candId].filter(Boolean).map(id => sMap[id]?.name || id),
+    };
     // ONE composition for in-app + push + email (helpers.js): both legs,
     // each dated via slotLabel; one-way swaps say so explicitly.
     const swapDetail = swapMsg({ targetMon, targetShift, oldName, newName, returnMon, returnShift });
@@ -7653,8 +7764,9 @@ function CallSchedule() {
     // backup / fierce flags from the sets; 'off' recomputed, coverers
     // included). Only when a surgeon slot changed: an APP-only save writes the
     // APP map, never a schedule week (it used to create an empty one).
+    let undoStep = null;
     if (changes.some(c => !c.isApp)) {
-      const undoStep = pushUndo(); if (undoStep) undoStep.what = "edit"; // (↩ Undo names what it takes back — QW4)
+      undoStep = pushUndo(); if (undoStep) undoStep.what = "edit"; // (↩ Undo names what it takes back — QW4)
       updateSchedule(p => ({ ...p, [mondayStr]: next }));
     }
     // APP changes (2026-10-11): only the days edited in this editor, applied to
@@ -7753,6 +7865,13 @@ function CallSchedule() {
     }
     addNotification("schedule_changed", title, msg, { week: mondayStr }, allTargets);
     sendEmailNotif("schedule_changed", emailPayload, allTargets);
+    // What ↩ Undo asks and whom it tells (review of the quick wins, 2026-11-02): the surgeon shifts this edit moved —
+    // the ones its Undo puts back — and the people told of them; the APP days it saved stay if it is undone.
+    if (undoStep) {
+      const moved = enrichedChanges.filter((_, i) => !changes[i].isApp);
+      const ids = [...new Set(moved.flatMap(c => [c.oldId, c.newId]).filter(Boolean))];
+      undoStep.tell = { parts: [{ week: mondayStr, changes: moved }], targets: [...new Set([...ids, ...schedulerAdminIds])], names: ids.map(nameOf), apps: !appRefused && appEdits.length > 0 };
+    }
     // Saved, and who was told (UX audit 2026-11-01, QW16): the editor closed with nothing said, though the people
     // whose shifts changed had just been sent a push and an e-mail. They are named in the order of the changes.
     const notified = [...new Set(changes.flatMap(c => [c.oldId, c.newId]).filter(Boolean))].map(nameOf);
@@ -9064,7 +9183,16 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     const dow = today.getDay();
     const appTimeLabel = (dow === 0 || dow === 6) ? "7a–7a" : "5p–7a";
     let msg = `🏥 DSG Call — ${dayName} ${mo}/${dy}\n\n`;
-    if (todayCall.holiday) msg += `${todayCall.holiday.emoji} ${todayCall.holiday.label} 24h (7a–7a): ${todayCall.holiday.who || "Unassigned"}\n`;
+    // Before 7a (Central) the people on call NOW are last night's, whom the day's lines below never name — they start
+    // at 7a or 5p — so a text sent at 3 a.m. left out who to call (review of the quick wins, 2026-11-02). The card's
+    // own two lines lead it then, and "Today:" heads the day's.
+    const clk = typeof centralClock === "function" ? centralClock(today) : null;
+    if (clk && clk.h < 7 && (callNowLine || appUntil7a)) {
+      if (callNowLine) msg += `${callNowLine.text}\n`;
+      if (appUntil7a) msg += `👩‍⚕️ APP now: ${appUntil7a}, until 7a\n`;
+      msg += `\nToday:\n`;
+    }
+    if (todayCall.holiday) msg +=`${todayCall.holiday.emoji} ${todayCall.holiday.label} 24h (7a–7a): ${todayCall.holiday.who || "Unassigned"}\n`;
     // Every line says its hours (UX audit 2026-11-01, QW9), as the day sheet does: the service week 7a–5p, its Saturday
     // 7a–Sun 7a (QW1: never the weekend's), the weekend's Friday night 5p–Sat 7a and its Sunday 7a–Mon 7a
     if (todayCall.dayCall) msg += `☀️ Service Week (${dow === 6 ? "Sat 7a–Sun 7a" : "7a–5p"}): ${todayCall.dayCall}\n`;
@@ -9615,11 +9743,14 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           {/* ↩ Undo says what it takes back (UX audit 2026-11-01, QW4): "↩ Undo publish", its spoken name and title "Undo the
               publish of Feb 22 – May 30, 2027" (it had only the hover title "Undo (1 steps)", which an iPhone never shows); its
               text #8a6410, 5.1:1 on the header (#c09030 was 2.8:1). undoTap asks first for a publish or a clear and says what
-              it undid. */}
-          {scheduleHistory.length > 0 && (() => {
+              it undid. The scheduler's (and the Clinic Manager's) alone, and not while a trade or a restore is the newest
+              step (undoable — review of the quick wins, 2026-11-02); its spoken name starts with the words it shows
+              ("Undo publish — the publish of …": WCAG 2.5.3, so "Tap Undo publish" works in Voice Control). */}
+          {isScheduler && scheduleHistory.length > 0 && undoable(scheduleHistory[scheduleHistory.length - 1]) && (() => {
             const w = undoWords(scheduleHistory[scheduleHistory.length - 1]);
+            const name = w.kind ? `Undo ${w.kind} — ${w.what}` : `Undo ${w.what}`;
             return (
-              <button onClick={undoTap} aria-label={`Undo ${w.what}`} title={`Undo ${w.what}`} style={{...css.tab(false),fontSize:12,padding:"4px 10px",color:"#8a6410"}}>
+              <button onClick={undoTap} aria-label={name} title={name} style={{...css.tab(false),fontSize:12,padding:"4px 10px",color:"#8a6410"}}>
                 ↩ Undo{w.kind ? " " + w.kind : ""}
               </button>
             );
@@ -9665,7 +9796,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                 {targetTab && <span aria-hidden="true" style={{fontSize:11,color:"#1a6fa8",marginTop:3,display:"inline-block"}}>Tap to view →</span>}
               </>;
               return targetTab ? (
-              <button key={n.id} type="button" aria-label={notifLabel} onClick={()=>{if(targetTab){ if (jumpWeek) { const [y, m] = jumpWeek.split("-").map(Number); setCalMonth(m - 1); setCalYear(y); } setView(targetTab); setShowNotifs(false); markNotifsSeen(); }}}
+              <button key={n.id} type="button" aria-label={notifLabel} onClick={()=>{if(targetTab){ if (jumpWeek) { const [y, m] = jumpWeek.split("-").map(Number); setCalMonth(m - 1); setCalYear(y); } setView(targetTab); setShowNotifs(false); markNotifsSeen(); setTimeout(() => { const h = targetTab === "calendar" ? document.querySelector('[data-cal-month="1"]') : null; if (h && h.focus) h.focus(); else notifFocusBell(); }, 0); }}}
                 style={rowStyle}>{body}</button>
               ) : (
               <div key={n.id} style={rowStyle}>{body}</div>
@@ -10253,9 +10384,11 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               <button onClick={markBackupWeek} style={css.btn(true)}>+ Mark Backup</button>
             </div>
             {(() => { const { upcoming, past } = marksListed(backupMondaySet);
+              // A row wraps, and its week date never breaks (review of the quick wins, 2026-11-02): at 320 px the 44 px ✕
+              // squeezed it to "Wk of 2026-11-" / "30". The Fierce Backup rows below are the same.
               const row = (m, ended) => (
-              <div key={m} style={{display:"flex",alignItems:"center",gap:8,marginBottom:5}}>
-                <span style={{fontFamily:mono,fontSize:12,color:"#5a6a78",textDecoration:ended?"line-through":"none"}} title={ended?"This week has ended":undefined}>Wk of {m}{ended && <span style={SR_TEXT}> (ended)</span>}</span>
+              <div key={m} style={{display:"flex",flexWrap:"wrap",alignItems:"center",gap:8,marginBottom:5}}>
+                <span style={{fontFamily:mono,fontSize:12,color:"#5a6a78",whiteSpace:"nowrap",textDecoration:ended?"line-through":"none"}} title={ended?"This week has ended":undefined}>Wk of {m}{ended && <span style={SR_TEXT}> (ended)</span>}</span>
                 <span style={css.backupBanner}>⚡ BACKUP — Fierce Primary</span>
                 <button onClick={()=>askUnmark("backup", m)} aria-label={`Remove the Backup mark from the week of ${m}`} style={{background:"none",border:"none",color:"#904040",cursor:"pointer",fontSize:14,minWidth:44,minHeight:44,padding:0}}>✕</button>
               </div>
@@ -10274,8 +10407,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               </div>
               {(() => { const { upcoming, past } = marksListed(fierceBackupSet);
                 const row = (m, ended) => (
-                <div key={m} style={{display:"flex",alignItems:"center",gap:8,marginBottom:5}}>
-                  <span style={{fontFamily:mono,fontSize:12,color:"#5a6a78",textDecoration:ended?"line-through":"none"}} title={ended?"This week has ended":undefined}>Wk of {m}{ended && <span style={SR_TEXT}> (ended)</span>}</span>
+                <div key={m} style={{display:"flex",flexWrap:"wrap",alignItems:"center",gap:8,marginBottom:5}}>
+                  <span style={{fontFamily:mono,fontSize:12,color:"#5a6a78",whiteSpace:"nowrap",textDecoration:ended?"line-through":"none"}} title={ended?"This week has ended":undefined}>Wk of {m}{ended && <span style={SR_TEXT}> (ended)</span>}</span>
                   <span style={{fontSize:11,color:"#1a6fa8",background:"#e8f0fc",border:"1px solid #a8c8e0",borderRadius:6,padding:"3px 8px",fontWeight:600}}>🛡 Fierce Backup</span>
                   <button onClick={()=>askUnmark("fierce", m)} aria-label={`Remove the Fierce Backup mark from the week of ${m}`} style={{background:"none",border:"none",color:"#904040",cursor:"pointer",fontSize:14,minWidth:44,minHeight:44,padding:0}}>✕</button>
                 </div>
@@ -11551,7 +11684,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               {warnShown.silvis.slice(0,10).map((c,i) => (
                 <div key={c.key || `s${i}`} data-warn-line="1" style={{display:"flex",flexWrap:"wrap",alignItems:"center",gap:8,padding:"4px 8px",marginBottom:3,fontSize:12,color:lineInk(c.severity==="error"?"error":"info"),background:c.severity==="error"?(dk?"#2a0a0a":"#fce8e8"):dk?"#1a1a2a":"#f0f8ff",borderRadius:4,border:`1px solid ${c.severity==="error"?"#e0b0b0":"#c0d8f0"}`}}>
                   <span style={{fontWeight:700}}>{c.severity==="error"?"🔴":"🔵"}</span>
-                  <span style={{fontFamily:mono,fontSize:11,color:weekInk,whiteSpace:"nowrap"}}>{weekTag(c.week)}</span>
+                  <span style={{fontSize:11,color:weekInk}}>{weekTag(c.week)}</span>
                   <span style={{flex:"1 1 0",minWidth:0,overflowWrap:"anywhere"}}>{c.message}</span>
                   {dismissBtn(c)}
                   {warnChoice(c)}
@@ -11560,7 +11693,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               {warnShown.conflicts.slice(0,10).map((c,i) => (
                 <div key={c.key || `c${i}`} data-warn-line="1" style={{display:"flex",flexWrap:"wrap",alignItems:"center",gap:8,padding:"4px 8px",marginBottom:3,fontSize:12,color:lineInk(c.severity),background:c.severity==="error"?(dk?"#2a0a0a":"#fce8e8"):dk?"#2a1a0a":"#fef8e8",borderRadius:4,border:`1px solid ${c.severity==="error"?"#e0b0b0":"#e8d0b0"}`}}>
                   <span style={{fontWeight:700}}>{c.severity==="error"?"🔴":c.severity==="warning"?"🟡":"🔵"}</span>
-                  <span style={{fontFamily:mono,fontSize:11,color:weekInk,whiteSpace:"nowrap"}}>{weekTag(c.week)}</span>
+                  <span style={{fontSize:11,color:weekInk}}>{weekTag(c.week)}</span>
                   <span style={{flex:"1 1 0",minWidth:0,overflowWrap:"anywhere"}}>{c.message}</span>
                   {dismissBtn(c)}
                   {warnChoice(c)}
@@ -11590,7 +11723,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               call shows nothing here. Past the last published week, a button goes back
               to that week's month. Right after this scheduler's ✕ Clear (the newest
               Undo step is the clear's) it says ↩ Undo brings it back — it said "reload
-              the app" (UX audit 2026-11-01, QW4); everyone else's line is as before. */}
+              the app" (UX audit 2026-11-01, QW4). With no clear step left (a reload, a sign-out), a scheduler's line
+              points to the clear's snapshot (review of the quick wins, 2026-11-02); everyone else's line is as before. */}
           {(() => {
             const st = loaded && typeof calMonthStatus === "function" ? calMonthStatus(schedule, calYear, calMonth) : null;
             const ym = (ds) => Number(ds.slice(0, 4)) * 12 + Number(ds.slice(5, 7)) - 1, here = calYear * 12 + calMonth;
@@ -11602,6 +11736,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               : !st || st.kind === "ok" ? ""
               : st.kind === "empty" ? (scheduleHistory.length && scheduleHistory[scheduleHistory.length - 1].clear
                 ? "The schedule was cleared — ↩ Undo clear, at the top of the screen, brings it back."
+                : isScheduler ? "No call schedule to show — if it was cleared, restore its \"Before schedule clear\" snapshot in Settings → 📼 Restore from Snapshot; otherwise it isn't published yet."
                 : "No call schedule to show — it may not be published yet; if you expected one, reload the app.")
               : `No surgeon call scheduled for ${MO[calMonth]} ${calYear}${(st.from && here < ym(st.from)) || inRange ? "" : " yet"}${st.from && !inRange ? ` — the published schedule runs ${dated(st.from)} → ${dated(st.to)}` : ""}.`;
             const goTo = st && st.kind === "unscheduled" && st.to && here > ym(st.to) ? { y: Number(st.to.slice(0, 4)), m: Number(st.to.slice(5, 7)) - 1 } : null;
@@ -12913,8 +13048,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           {statsTabShown==="app" && (
           <div style={css.card}>
             <div style={css.cardT}>APP Distribution{appStatsSpan ? <span style={{fontWeight:400,fontSize:11,color:"#7a8a98",textTransform:"none",letterSpacing:0}}>{" — every assigned shift, "}{appStatsSpan}</span> : null}</div>
+            {/* Empty, it says why (review of the quick wins, 2026-11-02 — QW11's honest empty lines, which an APP, landing
+                here, never saw): still loading, the APP-shift read failed (the poll reads it again), or really none */}
             {!Object.values(appStats).some(v=>v>0) ? (
-              <p style={{color:"#7a8a98",fontSize:13}}>No APP shifts assigned yet.</p>
+              <p role="status" style={{color:"#7a8a98",fontSize:13}}>{!loaded ? "Loading the APP shifts…" : !appShiftsLoaded ? "The APP shifts didn't load — they'll show once they do." : "No APP shifts assigned yet."}</p>
             ) : (
               <div style={{overflowX:"auto"}}>
                 <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
@@ -14630,7 +14767,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                           ["schedule_changes", "Schedule changes & swaps"],
                           ["vacation_updates", "Vacation requests & approvals"],
                           ["shift_reminders", "Shift reminders"],
-                        ].map(([key, label]) => (
+                        ].filter(([key]) => !(mySurgeon === "admin" && key === "shift_reminders")).map(([key, label]) => (
                           <React.Fragment key={key}>
                             <span style={{fontSize:12,color:"#3a4a58"}}>{label}</span>
                             <label style={{display:"flex",justifyContent:"center",cursor:"pointer"}}>
@@ -14652,12 +14789,15 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                       <span style={{fontSize:12,color:"#3a4a58"}}>Show pop-up alerts on <strong>this device</strong> <span style={{color:"#8a94a0"}}>— the in-app/browser notification banner while the app is open. Separate from the cross-device Push and Email categories above.</span></span>
                     </label>
 
-                    <div style={{fontSize:11,fontWeight:600,color:"#5a6a78",marginBottom:6}}>Reminder Times (Central time)</div>
-                    {hourPicker("daily_reminder_hour", "Daily call reminder")}
-                    {hourPicker("vac_deadline_hour", "Vacation deadline reminder")}
-                    <p style={{fontSize:10,color:"#8a94a0",margin:"4px 0 0",fontStyle:"italic"}}>
+                    {/* The Clinic Manager holds no shifts (review of the quick wins, 2026-11-02): no Shift reminders row above and
+                        no reminder times — the daily reminder goes only to people on call, the deadline reminder only to the
+                        surgeons — so nothing here promises what never comes */}
+                    {mySurgeon !== "admin" && <div style={{fontSize:11,fontWeight:600,color:"#5a6a78",marginBottom:6}}>Reminder Times (Central time)</div>}
+                    {mySurgeon !== "admin" && hourPicker("daily_reminder_hour", "Daily call reminder")}
+                    {mySurgeon !== "admin" && hourPicker("vac_deadline_hour", "Vacation deadline reminder")}
+                    {mySurgeon !== "admin" && <p style={{fontSize:10,color:"#8a94a0",margin:"4px 0 0",fontStyle:"italic"}}>
                       Reminders fire only on days you're on call (for call reminder) or 2 days before the vacation deadline.
-                    </p>
+                    </p>}
                     {/* "Saved ✓" for this person's own prefs only; readable in dark mode too (review fix 2026-10-19) */}
                     <div aria-live="polite" style={{fontSize:10,color:dk?"#8ad0a0":"#1a8040",marginTop:6,minHeight:14}}>{notifPrefsSaving ? "Saving…" : notifPrefsSaved && notifPrefsSaved.id === mySurgeon ? "Saved ✓" : ""}</div>
                   </div>
