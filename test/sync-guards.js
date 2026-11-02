@@ -1645,8 +1645,9 @@ console.log("\nBD. Generate: one period label, the period's seam, holidays with 
     !!override && emailOf(override) === J({ period: "Jan 4 – Apr 11, 2027" }) && emailOf(midweek) === emailOf(override) && override.first === "2027-01-04" && override.n === 14, J({ override, midweek }));
   check("BD2 without an override (the selects: November 2026 × 14) the period names its end year too: \"Nov 2, 2026 – Feb 7, 2027\" (main: \"November – February 2026\")",
     emailOf(selects) === J({ period: "Nov 2, 2026 – Feb 7, 2027" }), J(selects));
-  check("BD2 the notice is unchanged — sent first, the same text — and the e-mail goes to everyone (no target list)",
-    !!override && !!override.sent && override.sent.length === 2 && J(override.sent[0]) === J(["notice", "schedule_published", "A new call schedule has been generated. Check the Schedule or Calendar tab."]) && override.sent[1][3] === null, J(override));
+  // (changed ON PURPOSE 2026-11-02 — DF5: the notice now names the published period, the same one the e-mail carries)
+  check("BD2 the notice is sent first and names the published period (\"Call schedule published for Jan 4 – Apr 11, 2027 — tap to see your shifts.\" — DF5), and the e-mail goes to everyone (no target list)",
+    !!override && !!override.sent && override.sent.length === 2 && J(override.sent[0]) === J(["notice", "schedule_published", "Call schedule published for Jan 4 – Apr 11, 2027 — tap to see your shifts."]) && override.sent[1][3] === null, J(override));
   // The office e-mail's prefill — the REAL computePeriodLabel, after a period was published on top of 28 earlier weeks
   const cplSrc = after("  const computePeriodLabel = ", "\n  const openPublishDialog = ");
   const mkCpl = cplSrc && mk(`(function (env) { const { schedule, mondays, parse, MO, periodLabel } = env; const computePeriodLabel = ${cplSrc}\n return computePeriodLabel; })`, sandbox, "bd-cpl.js");
@@ -12669,8 +12670,10 @@ await (async () => {
   const bodyCH = (start, end) => { const i = nsrcCH.indexOf(start); if (i < 0 || nsrcCH.indexOf(start, i + 1) !== -1) return null; const e = nsrcCH.indexOf(end, i + start.length); return e < 0 ? null : nsrcCH.slice(i + start.length, e); };
   const fnCH = (names, code, ctx) => { if (code === null) return null; try { return vm.runInContext(`(function (env) { const { ${names} } = env; return (${code}); })`, ctx || sandbox, { filename: "ch-slice.js" }); } catch (ex) { return null; } };
   const J = (o) => JSON.stringify(o);
-  const MSG = "A new call schedule has been generated. Check the Schedule or Calendar tab.";
-  const NOTICE = (ep) => J(["notice", "schedule_published", "Schedule Published", MSG, {}, null, ep]);
+  // (changed ON PURPOSE 2026-11-02 — DF5: the notice names its period, and its week is the period's first day: here
+  // always Regenerate's PT, from MONS[0], both defined just below)
+  const MSG = (period) => `Call schedule published for ${period} — tap to see your shifts.`;
+  const NOTICE = (ep) => J(["notice", "schedule_published", "Schedule Published", MSG(PT), { week: MONS[0] }, null, ep]);
   const EMAIL = (period, ep) => J(["e-mail", "schedule_published", { period }, null, ep]);
   const TOAST = "toast success: Everyone has been notified.";
   // the two weeks published below, and their period through the component's REAL period line (and with an OLD cached helpers.js)
@@ -13041,8 +13044,10 @@ await (async () => {
   const fnCD = (names, code, ctx) => { if (code === null) return null; try { return vm.runInContext(`(function (env) { const { ${names} } = env; return (${code}); })`, ctx || sandbox, { filename: "cd-slice.js" }); } catch (ex) { return null; } };
   const J = (o) => JSON.stringify(o);
   const gate = () => { let open; const p = new Promise((r) => { open = r; }); return { p, open }; };
-  const MSG = "A new call schedule has been generated. Check the Schedule or Calendar tab.";
+  // (changed ON PURPOSE 2026-11-02 — DF5: the notice names its period, and its week is the period's first day)
+  const MSG = (period) => `Call schedule published for ${period} — tap to see your shifts.`;
   const P1 = "Nov 16 – Nov 29, 2026", P2 = "Nov 30 – Dec 13, 2026";
+  const FIRST = { [P1]: "2026-11-16", [P2]: "2026-11-30", "Nov 16, 2026 – Feb 21, 2027": "2026-11-16" };
   const npBody = afterCD("  const notifyPublished = async (ep, period) => {", "\n  };\n");
   // (review fix 2026-10-20, on purpose: the sender also takes down a pending banner — it reads justPublished and
   // notifiedRef and calls setJustPublished; CD7 runs that)
@@ -13059,7 +13064,7 @@ await (async () => {
     w.np = w.npWith(o.jp, o.notifiedRef, o.setJP);
     return w;
   };
-  const NOTICE = (ep) => J(["notice", "schedule_published", "Schedule Published", MSG, {}, null, ep]);
+  const NOTICE = (ep, period = P1) => J(["notice", "schedule_published", "Schedule Published", MSG(period), { week: FIRST[period] }, null, ep]); // (P1 unless named — DF5)
   const EMAIL = (period, ep) => J(["e-mail", "schedule_published", { period }, null, ep]);
   const notices = (log) => log.filter((x) => x.startsWith('["notice"')).length, emails = (log) => log.filter((x) => x.startsWith('["e-mail"')).length;
 
@@ -13090,7 +13095,7 @@ await (async () => {
       const r = { pushes: 0, toasts: [], emails: 0, listed: 0 }, ep = { current: 0 };
       const an = anMk({ db: { insert }, showToast: (m) => r.toasts.push(String(m)), setNotifications: () => { r.listed++; }, buildDeepLink: () => "#calendar", filterPushTargetsByType: (t, ids) => ids,
         sendPushNotif: () => { r.pushes++; }, console: { error() {}, log() {}, warn() {} }, sessionEpochRef: ep });
-      r.saved = await an("schedule_published", "Schedule Published", MSG, {}, null, 0);
+      r.saved = await an("schedule_published", "Schedule Published", MSG(P1), {}, null, 0);
       r.sent = await npMk({ sessionEpochRef: ep, addNotification: an, sendEmailNotif: () => { r.emails++; }, justPublished: null, notifiedRef: { current: null }, setJustPublished: () => {} })(0, P1);
       return r;
     };
@@ -13206,7 +13211,7 @@ await (async () => {
     !!cd3 && !cd3.threw && J(cd3.one) === J(["banner null", NOTICE(0), EMAIL(P1, 0), TOAST]), J(cd3));
   check("CD3 one send per publish: a double tap (the second while the first is still out) sends once; a late second tap on the same publish sends nothing more; the NEXT publish's tap sends again — and so does a re-publish of the SAME period (a new publish, the same label: the one-send guard is the publish, never its label)",
     !!cd3 && !cd3.threw && notices(cd3.dbl) === 1 && emails(cd3.dbl) === 1 && cd3.dbl.filter((x) => x === TOAST).length === 1
-      && J(cd3.late) === J(cd3.one) && J(cd3.next) === J(cd3.one.concat(["banner null", NOTICE(0), EMAIL(P2, 0), TOAST]))
+      && J(cd3.late) === J(cd3.one) && J(cd3.next) === J(cd3.one.concat(["banner null", NOTICE(0, P2), EMAIL(P2, 0), TOAST]))
       && J(cd3.again) === J(cd3.one.concat(["banner null", NOTICE(0), EMAIL(P1, 0), TOAST])), J(cd3));
   check("CD3 (review fix 2026-10-20 — PH-8) the banner unmounts with the focus in it, so the tap moves the focus to the Calendar's month heading ([data-cal-month=\"1\"], tabIndex -1 — focusable, not in the tab order) once it is gone (a 0 ms timer); no banner → no move",
     !!cd3 && !cd3.threw && J(cd3.oneFocus) === J(['[data-cal-month="1"]']) && J(cd3.oneTimers) === J([0]) && cd3.noneFocus.length === 0
@@ -13232,7 +13237,7 @@ await (async () => {
   };
   const cd4 = dgnMk && npMk ? { published: await gp("published"), moved: await gp("published", true), review: await gp("review"), refused: await gp("refused"), busy: await gp("busy"), notPub: await gp("not-published"), cancelled: await gp("cancelled"), undone: await gp("undone") } : null;
   check("CD4 the REAL doGenerateAndNotify through the REAL notifyPublished: published → exactly one notice and one e-mail with the Generate period, as before; sent to the preview, refused, busy, not landed, cancelled, ↩ Undone while it ran (\"undone\" — CR4, 2026-10-26), or the session gone meanwhile → nothing",
-    !!cd4 && J(cd4.published) === J([NOTICE(0), EMAIL(PT, 0)]) && ["moved", "review", "refused", "busy", "notPub", "cancelled", "undone"].every((k) => cd4[k].length === 0), J(cd4));
+    !!cd4 && J(cd4.published) === J([NOTICE(0, PT), EMAIL(PT, 0)]) && ["moved", "review", "refused", "busy", "notPub", "cancelled", "undone"].every((k) => cd4[k].length === 0), J(cd4));
   check("CD4 the two sends exist ONCE in the app — in notifyPublished — and both publish paths reach them only through it: doGenerateAndNotify calls it once, the banner's tap once, acceptPreview never",
     count('addNotification("schedule_published",') === 1 && count('sendEmailNotif("schedule_published", { period }, null, ep);') === 1
       && !!npBody && npBody.includes('addNotification("schedule_published",') && npBody.includes('sendEmailNotif("schedule_published", { period }, null, ep);')
@@ -20239,6 +20244,362 @@ await (async () => {
     hBad.length === 0 && Object.keys(LIVE).length === 46 && liveHands >= 35 && hN.detail >= 150 && hN.taker >= 150 && hN.coverNote >= 3 && hN.takerWasOff >= 3 && hN.inert >= 7 * 80,
     hBad.slice(0, 2).join(" | ") || J(hN));
 })().catch(ex => check("CZ3 harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
+
+// ─── DF. Notices say the day; the publish notice opens on its period (2026-11-02) ───
+// UX audit 2026-11-01, QW3 (owner 2026-11-02: "work through your list"). A schedule change's notice read "Thu Night:
+// DJA → RPC" in the bell and the push — which Thursday? — and its e-mail added only "week of 2026-12-14"; a two-shift
+// e-mail said "multiple → open app for details"; the swap tool's one-way reassignment said "Thu Night (wk of
+// 2026-12-14)"; a service day read "Service Day 2026-12-09" and a request "2026-12-14 to 2026-12-18"; the "Schedule
+// Published" push said "Check the Schedule or Calendar tab" (there is no Schedule tab) and opened today's month. Now
+// each change is said with its own day through slotLabel — "Thu Dec 17 — Night: DJA → RPC" — in the bell, the push and
+// the e-mail (whose detail lists every change and whose subject names the slot); request notices say "Mon Dec 14 –
+// Fri Dec 18" (their e-mails carry those words as `dates`: send-notification v18 shows them, an older one ignores the
+// field); the publish notice says "Call schedule published for Feb 22 – May 30, 2027 — tap to see your shifts." and its
+// week is the period's first day, so the push link and a bell tap open there. The new helpers.js composers are called
+// behind typeof, as every newer helper is. The REAL handlers, sliced, run in the page's context (helpers.js +
+// config.js) and in one whose helpers.js lacks the new composers (an old cached copy: main's words exactly, never a throw):
+//   DF1 the composers, exact strings: every slot kind, one change and several (escaped, the reason last); the request
+//       notices (a vacation, one no-call day, no-call days across a new year); requestDates; periodLabelStart, and
+//       periodLabel read back for 1,500 periods; no night or weekend line carries its week's Monday, no ISO date leaks
+//   DF2 the REAL saveWeekEdits (the REAL mergeEditorEdits): one change, two with a reason, a weekend + a service day +
+//       an APP day, the service week — the notice (title, message, data, who) and the e-mail exact; an old helpers.js:
+//       main's words; everything else it does (the week written, the APP map, the audit line, toasts, the confirm, the
+//       Undo step, the editor closed) byte-identical either way
+//   DF3 the REAL swapShift: "Shift Reassigned" with its day (a night, the weekend, the service week), the e-mail's
+//       subject and detail; an old helpers.js: main's "Thu Night (wk of 2026-12-14): …"; the write identical either way
+//   DF4 the REAL submit / approve / deny: the notices say the dates in words (no-call days counted), the e-mails carry
+//       `dates`; an old helpers.js: main's notice text, and main's e-mail data byte for byte (no `dates` key)
+//   DF5 the REAL notifyPublished: "Call schedule published for <period> — tap to see your shifts.", its week the
+//       period's first day; its e-mail exactly { period }, as before; then the REAL buildDeepLink (?tab=calendar&week=),
+//       the REAL deep-link effect and the bell's REAL row tap open that month (across a new year too); no period, or an
+//       old helpers.js: no week, as before
+//   the section runs inside its own catch (a throw fails one named check, never the run)
+console.log("\nDF. Notices say the day; the publish notice opens on its period (2026-11-02)");
+await (async () => {
+  const J = JSON.stringify;
+  const nsrcDF = src.replace(/\r\n/g, "\n");
+  const afterDF = (start, end) => { const i = nsrcDF.indexOf(start); if (i < 0 || nsrcDF.indexOf(start, i + 1) !== -1) return null; const e = nsrcDF.indexOf(end, i + start.length); return e < 0 ? null : nsrcDF.slice(i + start.length, e); };
+  // The page's modules, and the same with an OLD cached helpers.js: each new composer renamed away
+  const NEW_DF = ["noticeDay", "changeSlotText", "weekChangeNotice", "requestDates", "requestNoticeText", "periodLabelStart"];
+  const OLD_DF = (() => {
+    let h = fs.readFileSync(path.join(ROOT, "helpers.js"), "utf8");
+    for (const n of NEW_DF) h = h.split(`function ${n}(`).join(`function __preDF_${n}(`);
+    const sb = { console, window: {}, document: undefined, navigator: { userAgent: "node-test" }, localStorage: { getItem: () => null, setItem() {}, removeItem() {} }, fetch: () => { throw new Error("no fetch in OLD_DF"); }, setTimeout, clearTimeout };
+    sb.globalThis = sb; vm.createContext(sb);
+    vm.runInContext(h, sb, { filename: "helpers-before-df.js" });
+    vm.runInContext(fs.readFileSync(path.join(ROOT, "config.js"), "utf8"), sb, { filename: "config.js" });
+    return sb;
+  })();
+  const fnDF = (names, code, ctx, pre) => { if (!code) return null; try { return vm.runInContext(`(function () { ${pre || ""}\n return function (env) { const { ${names} } = env; return (${code}); }; })()`, ctx, { filename: "df-slice.js" }); } catch (ex) { return null; } };
+  const H = vm.runInContext(`({ ${NEW_DF.join(", ")}, periodLabel, SHIFT_LABELS, fmt, parse, addD })`, sandbox);
+  const oldLacks = vm.runInContext(`[${NEW_DF.map((n) => `typeof ${n}`).join(", ")}]`, OLD_DF).every((t) => t === "undefined") && vm.runInContext("typeof slotLabel === 'function' && typeof rangeSummary === 'function' && typeof periodLabel === 'function'", OLD_DF);
+  const quietDF = { error() {}, warn() {}, log() {}, info() {} };
+  const SURG = ["DJA", "MCC", "RPC", "KJH", "REH", "FAK", "ARW"].map((name, i) => ({ id: "s" + (i + 1), name }));
+  const sMap = Object.fromEntries(SURG.map((s) => [s.id, s]));
+  const aMap = { a1: { id: "a1", name: "MA" }, a2: { id: "a2", name: "SJ" } };
+
+  // DF1 — the composers
+  {
+    const M = "2026-12-14"; // a Monday
+    const one = (c) => H.weekChangeNotice(M, [Object.assign({ oldName: "DJA", newName: "RPC" }, c)], "");
+    const KINDS = [
+      [{ key: "dayCall" }, "Service Wk of Dec 14"], [{ key: "mon" }, "Mon Dec 14 — Night"], [{ key: "tue" }, "Tue Dec 15 — Night"], [{ key: "wed" }, "Wed Dec 16 — Night"],
+      [{ key: "thu" }, "Thu Dec 17 — Night"], [{ key: "wknd" }, "Wknd — Fri Dec 18"], [{ key: "dc" }, "Service Wk of Dec 14"],
+      [{ key: "override", date: "2026-12-16" }, "Service day Wed Dec 16"], [{ key: "app", date: "2026-12-19" }, "APP Sat Dec 19"], [{ key: "bogus", slotLabel: "Mystery slot" }, "Mystery slot"],
+    ];
+    const kindBad = KINDS.filter(([c, slot]) => J(one(c)) !== J({ title: "Schedule Change", message: `${slot}: DJA → RPC`,
+      email: { shift: slot, week: M, old_surgeon: "DJA", new_surgeon: "RPC", detail: `${slot}: DJA → RPC` } }));
+    const many = H.weekChangeNotice("2027-01-04", [{ key: "mon", oldName: "DJA", newName: "RPC" }, { key: "tue", oldName: "MCC", newName: "FAK" }], "Dr <A> & B's call");
+    const MANY = { title: "2 Shifts Updated", message: "Mon Jan 4 — Night: DJA → RPC; Tue Jan 5 — Night: MCC → FAK (Dr <A> & B's call)",
+      email: { shift: "2 shifts, week of Jan 4", week: "2027-01-04", old_surgeon: "multiple", new_surgeon: "open app for details", detail: "Mon Jan 4 — Night: DJA → RPC<br>Tue Jan 5 — Night: MCC → FAK (Dr &lt;A&gt; &amp; B's call)" } };
+    const withWhy = H.weekChangeNotice(M, [{ key: "thu", oldName: "DJA", newName: "RPC" }], "Covering");
+    check("DF1 weekChangeNotice (helpers.js, executed): each slot said with its own day — \"Service Wk of Dec 14\", \"Mon Dec 14 — Night\" … \"Thu Dec 17 — Night\", \"Wknd — Fri Dec 18\", \"Service day Wed Dec 16\", \"APP Sat Dec 19\" (the legacy \"dc\" too; an unknown slot keeps its label); one change: \"Schedule Change\" / \"Thu Dec 17 — Night: DJA → RPC\", the e-mail's subject (data.shift) the slot and its detail the same words; several: \"2 Shifts Updated\", the lines joined by \"; \" and the reason last, the e-mail listing each on its own line (<br>, escaped) under \"2 shifts, week of Jan 4\"",
+      kindBad.length === 0 && J(many) === J(MANY) && withWhy.message === "Thu Dec 17 — Night: DJA → RPC (Covering)" && withWhy.email.detail === withWhy.message,
+      J({ kindBad: kindBad.map(([c]) => one(c)), many, withWhy }).slice(0, 1500));
+    // every slot of 120 weeks (2026–2028, both DST changes): a night / the weekend never carries its week's Monday
+    // (only Mon nights and the service week are dated by it), and no ISO date reaches a notice or an e-mail
+    const sweepBad = [];
+    let sweepN = 0;
+    for (let w = 0; w < 120; w++) {
+      const m = H.fmt(H.addD(H.parse("2026-01-05"), 7 * w)), md = new RegExp(`\\b${["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][H.parse(m).getMonth()]} ${H.parse(m).getDate()}\\b`);
+      const t = H.weekChangeNotice(m, ["dayCall", "mon", "tue", "wed", "thu", "wknd"].map((key) => ({ key, oldName: "A", newName: "B" })), "");
+      t.message.split("; ").forEach((line, i) => { sweepN++; if ((i >= 2) === md.test(line) || /\d{4}-\d\d-\d\d/.test(line)) sweepBad.push(m + ": " + line); });
+      if (/\d{4}-\d\d-\d\d/.test(t.email.detail + t.email.shift)) sweepBad.push(m + ": e-mail " + t.email.shift);
+    }
+    check(`DF1 negative control, every slot of 120 weeks (${sweepN} lines, 2026–2028): Tue–Thu nights and the weekend never carry their week's Monday date (the Mon night and the service week do — it is theirs), and no ISO date reaches a notice line or the e-mail`,
+      sweepBad.length === 0 && sweepN === 720, sweepBad.slice(0, 4).join(" | "));
+    const RQ = (s, e, t) => ({ surgeon_name: "RPC", start_date: s, end_date: e, request_type: t || "vacation" });
+    const RN = [
+      [["submitted", RQ("2099-03-02", "2099-03-06")], "RPC requested vacation Mon Mar 2 – Fri Mar 6"],
+      [["approved", RQ("2099-03-02", "2099-03-06")], "RPC's vacation Mon Mar 2 – Fri Mar 6 was approved"],
+      [["denied", RQ("2099-03-02", "2099-03-06"), { note: "Too many out that week" }], "RPC's vacation Mon Mar 2 – Fri Mar 6 was denied: Too many out that week"],
+      [["denied", RQ("2099-03-02", "2099-03-06"), { note: "" }], "RPC's vacation Mon Mar 2 – Fri Mar 6 was denied"],
+      [["approved", RQ("2099-03-03", "2099-03-03")], "RPC's vacation Tue Mar 3 was approved"],
+      [["submitted", RQ("2099-03-03", "2099-03-03", "nocall")], "RPC requested a no-call day Tue Mar 3"],
+      [["approved", RQ("2099-03-03", "2099-03-03", "nocall")], "RPC's no-call day Tue Mar 3 was approved"],
+      [["submitted", RQ("2099-12-28", "2100-01-01", "nocall")], "RPC requested no-call days Mon Dec 28, 2099 – Fri Jan 1, 2100"],
+      [["approved", RQ("2099-12-28", "2100-01-01", "nocall")], "RPC's no-call days Mon Dec 28, 2099 – Fri Jan 1, 2100 were approved"],
+      [["denied", RQ("2099-12-28", "2100-01-01", "nocall"), { note: "Holiday" }], "RPC's no-call days Mon Dec 28, 2099 – Fri Jan 1, 2100 were denied: Holiday"],
+    ];
+    const rnBad = RN.filter(([a, want]) => H.requestNoticeText(...a) !== want).map(([a]) => H.requestNoticeText(...a));
+    const RD = [[["2099-03-02", "2099-03-06"], "Mon Mar 2 – Fri Mar 6"], [["2099-03-03", "2099-03-03"], "Tue Mar 3"], [["2099-12-28", "2100-01-01"], "Mon Dec 28, 2099 – Fri Jan 1, 2100"],
+      [["2099-03-06", "2099-03-02"], "2099-03-06 → 2099-03-02"]];
+    const rdBad = RD.filter(([a, want]) => H.requestDates(...a) !== want).map(([a]) => H.requestDates(...a));
+    check("DF1 requestNoticeText / requestDates (executed): \"RPC requested vacation Mon Mar 2 – Fri Mar 6\", \"…was approved\", \"…was denied: <note>\" (no note: nothing after it); one no-call day \"a no-call day Tue Mar 3\" / \"no-call day … was\"; several across a new year \"no-call days Mon Dec 28, 2099 – Fri Jan 1, 2100 were …\"; an inverted range said as it came",
+      rnBad.length === 0 && rdBad.length === 0, J({ rnBad, rdBad }));
+    const PS = [["Feb 22 – May 30, 2027", "2027-02-22"], ["Dec 28, 2026 – Mar 28, 2027", "2026-12-28"], ["Jan 4 – Apr 11, 2027", "2027-01-04"],
+      ["weeks of 2026-11-16 – 2026-11-23", null], ["2026-11-16 – 2026-11-29", null], ["", null], [null, null], [undefined, null], ["Feb 30 – May 30, 2027", null], ["Foo 2 – May 30, 2027", null], ["Feb 22 – May 30", null]];
+    const psBad = PS.filter(([l, want]) => H.periodLabelStart(l) !== want).map(([l]) => [l, H.periodLabelStart(l)]);
+    const rtBad = [];
+    let rtN = 0;
+    for (let w = 0; w < 150; w++) for (const k of [0, 1, 3, 12, 13, 14, 26, 51, 52, 55]) {
+      const first = H.fmt(H.addD(H.parse("2026-01-05"), 7 * w)), last = H.fmt(H.addD(H.parse(first), 7 * k)), label = H.periodLabel(first, last);
+      rtN++; if (H.periodLabelStart(label) !== first) rtBad.push(`${label} → ${H.periodLabelStart(label)} (want ${first})`);
+    }
+    check(`DF1 periodLabelStart (executed): "Feb 22 – May 30, 2027" → 2027-02-22, "Dec 28, 2026 – Mar 28, 2027" → 2026-12-28; an old copy's "weeks of …", ISO ranges, an impossible date, an unknown month or no year → null; and periodLabel read back for ${rtN} periods (1–56 weeks from every Monday of 2026–2028): always the period's first Monday`,
+      psBad.length === 0 && rtBad.length === 0 && rtN === 1500, J({ psBad, rtBad: rtBad.slice(0, 3) }));
+  }
+
+  // DF2 — the REAL saveWeekEdits
+  {
+    let merge = null; try { const seDF = require("./sync-engine-se.js"); merge = seDF.compileMerge(seDF.extractEngine(src)); } catch (ex) { merge = null; }
+    const weSrc = afterDF("  const saveWeekEdits = useCallback((openAfter) => {", "\n  }, [editWeekModal,");
+    const WE_ENV = "editWeekModal, schedule, appShifts, appShiftsLoaded, openWeekEditor, setEditWeekModal, silvisActive, silvisFakId, silvisDays, silvisBlock, silvisRefuse, sfSlotDays, confirm, pushUndo, updateSchedule, scheduleRef, schedEditable, schedSyncRef, mergeEditorEdits, SHIFT_LABELS, backupMondaySet, fierceBackupSet, surgeons, showToast, APP_SHIFTS_NOT_LOADED, setAppShifts, saveAppShifts, logAudit, nameOf, aMap, sMap, schedulerAdminIds, addNotification, sendEmailNotif, setTimeout";
+    const weCode = weSrc && "(openAfter) => {" + weSrc + "\n  }";
+    const weNew = fnDF(WE_ENV, weCode, sandbox), weOld = fnDF(WE_ENV, weCode, OLD_DF);
+    const MON = "2026-12-14", WK = { dayCall: "s5", nights: { mon: "s2", tue: "s7", wed: "s4", thu: "s1", wknd: "s6" }, off: "s3" }, APPS = { "2026-12-17": "a1" };
+    const runWE = (mk, edit, reason) => {
+      const rec = { notes: [], emails: [], audits: [], writes: [], appSets: [], saves: [], toasts: [], confirms: [], undo: 0, closed: 0 };
+      const week = JSON.parse(J(WK));
+      const appsBase = Object.fromEntries(Array.from({ length: 7 }, (_, i) => { const ds = H.fmt(H.addD(H.parse(MON), i)); return [ds, APPS[ds] || ""]; }));
+      const draft = { dayCall: week.dayCall, nights: Object.assign({}, week.nights), dayCallOverrides: {}, apps: Object.assign({}, appsBase), reason: reason || "" };
+      edit(draft);
+      try {
+        mk({ editWeekModal: { mondayStr: MON, appsBase, appsLoaded: true, openWeek: week, openEpoch: 3, draft }, schedule: { [MON]: week }, appShifts: Object.assign({}, APPS), appShiftsLoaded: true,
+          openWeekEditor: () => {}, setEditWeekModal: (x) => { if (x === null) rec.closed++; }, silvisActive: false, silvisFakId: null, silvisDays: { primary: new Set() }, silvisBlock: () => null, silvisRefuse: () => false,
+          sfSlotDays: () => [], confirm: (q) => { rec.confirms.push(q); return true; }, pushUndo: () => { rec.undo++; }, updateSchedule: (f) => rec.writes.push(f({ [MON]: JSON.parse(J(week)) })),
+          scheduleRef: { current: { [MON]: week } }, schedEditable: () => true, schedSyncRef: { current: { epochOf: () => 0 } }, mergeEditorEdits: merge, SHIFT_LABELS: H.SHIFT_LABELS,
+          backupMondaySet: new Set(), fierceBackupSet: new Set(), surgeons: SURG, showToast: (m, t) => rec.toasts.push((t || "info") + ": " + m), APP_SHIFTS_NOT_LOADED: "APP shifts haven't loaded yet",
+          setAppShifts: (u) => rec.appSets.push(typeof u === "function" ? u(Object.assign({}, APPS)) : u), saveAppShifts: (x) => rec.saves.push(x),
+          logAudit: (a, m, meta) => rec.audits.push([a, m, meta]), nameOf: (id) => (sMap[id] || aMap[id] || {}).name || id, aMap, sMap, schedulerAdminIds: ["s6"],
+          addNotification: (type, title, msg, data, to) => rec.notes.push([type, title, msg, data, (to || []).slice().sort()]),
+          sendEmailNotif: (type, data, to) => rec.emails.push([type, data, (to || []).slice().sort()]), setTimeout: () => {} })(null);
+      } catch (ex) { rec.threw = String(ex).slice(0, 160); }
+      return rec;
+    };
+    const EDITS = {
+      one: [(d) => { d.nights.thu = "s3"; }, ""],
+      two: [(d) => { d.nights.mon = "s3"; d.nights.tue = "s6"; }, "Covering for MCC"],
+      mix: [(d) => { d.nights.wknd = "s1"; d.dayCallOverrides["2026-12-16"] = "s4"; d.apps["2026-12-17"] = "a2"; }, ""],
+      svc: [(d) => { d.dayCall = "s2"; }, ""],
+    };
+    const sc = (title, msg, to) => ["schedule_changed", title, msg, { week: MON }, to];
+    const NOW = {
+      one: { note: sc("Schedule Change", "Thu Dec 17 — Night: DJA → RPC", ["s1", "s3", "s6"]), email: { shift: "Thu Dec 17 — Night", week: MON, old_surgeon: "DJA", new_surgeon: "RPC", detail: "Thu Dec 17 — Night: DJA → RPC" } },
+      two: { note: sc("2 Shifts Updated", "Mon Dec 14 — Night: MCC → RPC; Tue Dec 15 — Night: ARW → FAK (Covering for MCC)", ["s2", "s3", "s6", "s7"]),
+        email: { shift: "2 shifts, week of Dec 14", week: MON, old_surgeon: "multiple", new_surgeon: "open app for details", detail: "Mon Dec 14 — Night: MCC → RPC<br>Tue Dec 15 — Night: ARW → FAK (Covering for MCC)" } },
+      mix: { note: sc("3 Shifts Updated", "Wknd — Fri Dec 18: FAK → DJA; Service day Wed Dec 16: REH → KJH; APP Thu Dec 17: MA → SJ", ["a1", "a2", "s1", "s4", "s5", "s6"]),
+        email: { shift: "3 shifts, week of Dec 14", week: MON, old_surgeon: "multiple", new_surgeon: "open app for details", detail: "Wknd — Fri Dec 18: FAK → DJA<br>Service day Wed Dec 16: REH → KJH<br>APP Thu Dec 17: MA → SJ" } },
+      svc: { note: sc("Schedule Change", "Service Wk of Dec 14: REH → MCC", ["s2", "s5", "s6"]), email: { shift: "Service Wk of Dec 14", week: MON, old_surgeon: "REH", new_surgeon: "MCC", detail: "Service Wk of Dec 14: REH → MCC" } },
+    };
+    // main's words (what a page with an old cached helpers.js still sends)
+    const MAIN = {
+      one: { note: sc("Schedule Change", "Thu Night: DJA → RPC", ["s1", "s3", "s6"]), email: { shift: "Thu Night", week: MON, old_surgeon: "DJA", new_surgeon: "RPC" } },
+      two: { note: sc("2 Shifts Updated", "Week of 2026-12-14 — Mon Night: MCC → RPC; Tue Night: ARW → FAK (Covering for MCC)", ["s2", "s3", "s6", "s7"]),
+        email: { shift: "2 shifts", week: MON, old_surgeon: "multiple", new_surgeon: "open app for details" } },
+      mix: { note: sc("3 Shifts Updated", "Week of 2026-12-14 — Weekend: FAK → DJA; Service Day 2026-12-16: REH → KJH; APP 2026-12-17: MA → SJ", ["a1", "a2", "s1", "s4", "s5", "s6"]),
+        email: { shift: "3 shifts", week: MON, old_surgeon: "multiple", new_surgeon: "open app for details" } },
+      svc: { note: sc("Schedule Change", "Service Week: REH → MCC", ["s2", "s5", "s6"]), email: { shift: "Service Week", week: MON, old_surgeon: "REH", new_surgeon: "MCC" } },
+    };
+    if (!weNew || !weOld || !merge) check("DF2 saveWeekEdits and mergeEditorEdits are extractable", false, J({ weNew: !!weNew, weOld: !!weOld, merge: !!merge }));
+    else {
+      const got = {}, gotOld = {};
+      for (const [k, [edit, why]] of Object.entries(EDITS)) { got[k] = runWE(weNew, edit, why); gotOld[k] = runWE(weOld, edit, why); }
+      const told = (r) => ({ note: r.notes.length === 1 ? r.notes[0] : r.notes, email: r.emails.length === 1 && r.emails[0][0] === "schedule_changed" && J(r.emails[0][2]) === J(r.notes[0] && r.notes[0][4]) ? r.emails[0][1] : r.emails });
+      const bad = Object.keys(EDITS).filter((k) => got[k].threw || J(told(got[k])) !== J(NOW[k]));
+      check("DF2 the REAL saveWeekEdits: one change → \"Schedule Change\" / \"Thu Dec 17 — Night: DJA → RPC\"; two with a reason → \"2 Shifts Updated\" / \"Mon Dec 14 — Night: MCC → RPC; Tue Dec 15 — Night: ARW → FAK (Covering for MCC)\"; a weekend + a service day + an APP day → \"Wknd — Fri Dec 18 …; Service day Wed Dec 16 …; APP Thu Dec 17: MA → SJ\"; the service week → \"Service Wk of Dec 14: REH → MCC\" — each notice's data { week } and recipients as before, ONE e-mail to the same people with its subject (shift) and every change in its detail (<br>)",
+        bad.length === 0, J(Object.fromEntries(bad.map((k) => [k, got[k].threw || told(got[k])]))).slice(0, 1500));
+      const badOld = Object.keys(EDITS).filter((k) => gotOld[k].threw || J(told(gotOld[k])) !== J(MAIN[k]));
+      check("DF2 …with an OLD cached helpers.js (no weekChangeNotice): main's words exactly — \"Thu Night: DJA → RPC\", \"Week of 2026-12-14 — Mon Night: …\", \"Service Day 2026-12-16\", \"APP 2026-12-17\", the e-mail's \"2 shifts\" / \"multiple\" / \"open app for details\" — and nothing thrown",
+        oldLacks && badOld.length === 0, J(Object.fromEntries(badOld.map((k) => [k, gotOld[k].threw || told(gotOld[k])]))).slice(0, 1200));
+      const rest = (r) => J({ audits: r.audits, writes: r.writes, appSets: r.appSets, saves: r.saves, toasts: r.toasts, confirms: r.confirms, undo: r.undo, closed: r.closed });
+      const restBad = Object.keys(EDITS).filter((k) => rest(got[k]) !== rest(gotOld[k]));
+      check("DF2 …everything else the save does is byte-identical with and without the new composers: the week written (one CAS-merged write), the APP map and its save, the audit line (still \"Thu Night\", \"Service Day 2026-12-16\" — what changed, as recorded), the toasts, the 3-shift confirm, the Undo step, the editor closed",
+        restBad.length === 0 && got.one.writes.length === 1 && got.one.writes[0][MON].nights.thu === "s3" && got.mix.saves.length === 1 && got.mix.saves[0]["2026-12-17"] === "a2"
+          && got.mix.confirms.length === 1 && got.one.audits.length === 1 && J(got.one.audits[0][2].changes) === J([{ slot: "Thu Night", from: "DJA", to: "RPC" }]) && got.svc.closed === 1,
+        J(restBad.map((k) => [k, rest(got[k]), rest(gotOld[k])])).slice(0, 1200));
+    }
+  }
+
+  // DF3 — the REAL swapShift (the swap tool's one-way reassignment)
+  {
+    const ssSrc = afterDF("  const swapShift = ", "\n  };\n");
+    const SS_ENV = "schedEditable, schedule, scheduleRef, showToast, silvisActive, silvisBlock, silvisRefuse, pushUndo, updateSchedule, surgeons, setEditShift, setEditingWeek, setSwapSuggestions, setSwapTarget, sMap, SHIFT_LABELS, schedulerAdminIds, addNotification, sendEmailNotif";
+    const ssNew = fnDF(SS_ENV, ssSrc && ssSrc + "\n  }", sandbox), ssOld = fnDF(SS_ENV, ssSrc && ssSrc + "\n  }", OLD_DF);
+    const MON = "2026-12-14", WK = { dayCall: "s5", nights: { mon: "s2", tue: "s7", wed: "s4", thu: "s1", wknd: "s6" }, off: "s3" };
+    const runSS = (mk, shift, newId, expect) => {
+      const rec = { notes: [], emails: [], writes: [], undo: 0, toasts: [] };
+      const week = JSON.parse(J(WK));
+      try {
+        mk({ schedEditable: () => true, schedule: { [MON]: week }, scheduleRef: { current: { [MON]: week } }, showToast: (m) => rec.toasts.push(String(m)), silvisActive: false, silvisBlock: () => null, silvisRefuse: () => false,
+          pushUndo: () => { rec.undo++; }, updateSchedule: (f) => rec.writes.push(f({ [MON]: JSON.parse(J(week)) })), surgeons: SURG, setEditShift: () => {}, setEditingWeek: () => {}, setSwapSuggestions: () => {}, setSwapTarget: () => {},
+          sMap, SHIFT_LABELS: H.SHIFT_LABELS, schedulerAdminIds: ["s6"],
+          addNotification: (type, title, msg, data, to) => rec.notes.push([type, title, msg, data, to.slice().sort()]), sendEmailNotif: (type, data, to) => rec.emails.push([type, data, to.slice().sort()]) })(MON, shift, newId, expect);
+      } catch (ex) { rec.threw = String(ex).slice(0, 160); }
+      return rec;
+    };
+    const CASES = [["thu", "s3", "s1", "Thu Dec 17 — Night", "DJA", "RPC", "Thu Night", ["s1", "s3", "s6"]], ["wknd", "s1", "s6", "Wknd — Fri Dec 18", "FAK", "DJA", "Weekend", ["s1", "s6"]],
+      ["dayCall", "s2", "s5", "Service Wk of Dec 14", "REH", "MCC", "Service Week (incl. Sat)", ["s2", "s5", "s6"]]];
+    if (!ssNew || !ssOld) check("DF3 swapShift is extractable", false, "anchors not found");
+    else {
+      const bad = [], badOld = [], restBad = [];
+      for (const [k, to, from, slot, a, b, lbl, who] of CASES) {
+        const r = runSS(ssNew, k, to, from), o = runSS(ssOld, k, to, from);
+        const want = { notes: [["schedule_changed", "Shift Reassigned", `${slot}: ${a} → ${b}`, { week: MON }, who]], emails: [["schedule_changed", { shift: slot, week: MON, old_surgeon: a, new_surgeon: b, detail: `${slot}: ${a} → ${b}` }, who]] };
+        const wantOld = { notes: [["schedule_changed", "Shift Reassigned", `${lbl} (wk of ${MON}): ${a} → ${b}`, { week: MON }, who]], emails: [["schedule_changed", { shift: lbl, week: MON, old_surgeon: a, new_surgeon: b }, who]] };
+        if (r.threw || J({ notes: r.notes, emails: r.emails }) !== J(want)) bad.push([k, r.threw || { notes: r.notes, emails: r.emails }]);
+        if (o.threw || J({ notes: o.notes, emails: o.emails }) !== J(wantOld)) badOld.push([k, o.threw || { notes: o.notes, emails: o.emails }]);
+        if (J({ w: r.writes, u: r.undo, t: r.toasts }) !== J({ w: o.writes, u: o.undo, t: o.toasts }) || r.writes.length !== 1) restBad.push(k);
+      }
+      check("DF3 the REAL swapShift (the swap tool's one-way reassignment): \"Shift Reassigned\" / \"Thu Dec 17 — Night: DJA → RPC\", \"Wknd — Fri Dec 18: FAK → DJA\", \"Service Wk of Dec 14: REH → MCC\" — the same people as before, and its e-mail's subject the dated slot with the same words as its detail",
+        bad.length === 0, J(bad).slice(0, 1200));
+      check("DF3 …with an OLD cached helpers.js: main's \"Thu Night (wk of 2026-12-14): DJA → RPC\" and its e-mail without a detail, exactly; the write and the Undo step identical either way",
+        oldLacks && badOld.length === 0 && restBad.length === 0, J({ badOld, restBad }).slice(0, 1200));
+    }
+  }
+
+  // DF4 — the REAL submit / approve / deny
+  {
+    const wfrDF = (() => { const a = nsrcDF.indexOf("function writeFailReason(err) {"); const b = a < 0 ? -1 : nsrcDF.indexOf("\n}\n", a); return a < 0 || b < 0 ? "" : nsrcDF.slice(a, b + 2); })();
+    const SUB_ENV = "vacReqSurgeon, vacReqStart, vacReqEnd, vacReqReason, vacReqType, surgeons, apps, showToast, db, setVacRequests, addNotification, schedulerAdminIds, sendEmailNotif, setVacReqStart, setVacReqEnd, setVacReqReason, setVacReqType, vacSubmitBusyRef, sessionEpochRef, setVacSubmitting, console";
+    const subCode = afterDF("  const submitVacRequest = useCallback(", ", [vacReqSurgeon, vacReqStart, vacReqEnd, vacReqReason, vacReqType, surgeons, apps, addNotification, sendEmailNotif, schedulerAdminIds]);");
+    const APR_ENV = "sessionEpochRef, dbAuthHeaders, surgeons, vacations, noCallDays, confirm, userProfile, mySurgeon, fetch, SUPABASE_URL, console, showToast, setBackRequest, setVacRequests, toAdd, logAudit, schedulerAdminIds, addNotification, sendEmailNotif";
+    const aprCode = afterDF("  const approveVacRequest = useCallback(", ", [addNotification, sendEmailNotif, schedulerAdminIds, userProfile, surgeons, mySurgeon, vacations, noCallDays]);");
+    const DENY_ENV = "sessionEpochRef, dbAuthHeaders, logAudit, userProfile, surgeons, mySurgeon, fetch, SUPABASE_URL, console, showToast, setVacRequests, schedulerAdminIds, addNotification, sendEmailNotif";
+    const denyCode = afterDF("  const denyVacRequest = useCallback(", ", [addNotification, sendEmailNotif, schedulerAdminIds, userProfile, surgeons, mySurgeon]);");
+    const MK = (ctx) => ({ submit: fnDF(SUB_ENV, subCode, ctx, wfrDF), approve: fnDF(APR_ENV, aprCode, ctx), deny: fnDF(DENY_ENV, denyCode, ctx) });
+    const mkNew = MK(sandbox), mkOld = MK(OLD_DF);
+    const rec0 = () => ({ notes: [], emails: [], toasts: [] });
+    const senders = (rec) => ({ addNotification: async (type, title, msg, data, to) => { rec.notes.push([type, title, msg, data, to]); }, sendEmailNotif: (type, data, to) => { rec.emails.push([type, J(data), to]); },
+      showToast: (m, t) => rec.toasts.push((t || "info") + ": " + m) });
+    const submitRun = async (mk, start, end, type) => {
+      const rec = rec0();
+      try {
+        await mk(Object.assign({ vacReqSurgeon: "s3", vacReqStart: start, vacReqEnd: end, vacReqReason: "", vacReqType: type, surgeons: SURG, apps: [], db: { insert: async (t, row) => ({ data: Object.assign({ id: 9 }, row), error: null }) },
+          setVacRequests: () => {}, schedulerAdminIds: ["s6"], setVacReqStart: () => {}, setVacReqEnd: () => {}, setVacReqReason: () => {}, setVacReqType: () => {}, vacSubmitBusyRef: { current: false },
+          sessionEpochRef: { current: 0 }, setVacSubmitting: () => {}, console: quietDF }, senders(rec)))();
+      } catch (ex) { rec.threw = String(ex).slice(0, 160); }
+      return rec;
+    };
+    const decideRun = async (mk, req, note) => {
+      const rec = rec0();
+      try {
+        const fn = mk(Object.assign({ sessionEpochRef: { current: 0 }, dbAuthHeaders: () => ({ Authorization: "Bearer A" }), SUPABASE_URL: "https://x.test", console: quietDF, confirm: () => true,
+          fetch: async () => ({ ok: true, status: 200, json: async () => [{ id: 7 }], text: async () => "" }), logAudit: () => {}, setBackRequest: async () => true, setVacRequests: () => {}, toAdd: () => {},
+          surgeons: SURG, vacations: {}, noCallDays: {}, userProfile: { display_name: "FAK" }, mySurgeon: "s6", schedulerAdminIds: ["s6"] }, senders(rec)));
+        await (note === undefined ? fn(Object.assign({}, req)) : fn(Object.assign({}, req), note));
+      } catch (ex) { rec.threw = String(ex).slice(0, 160); }
+      return rec;
+    };
+    const REQ = (s, e, t) => ({ id: 7, surgeon_id: "s3", surgeon_name: "RPC", start_date: s, end_date: e, request_type: t, reason: "", status: "pending" });
+    const runAll = async (mk) => mk.submit && mk.approve && mk.deny ? {
+      subVac: await submitRun(mk.submit, "2099-03-02", "2099-03-06", "vacation"), subNoCall: await submitRun(mk.submit, "2099-03-03", "2099-03-03", "nocall"),
+      aprVac: await decideRun(mk.approve, REQ("2099-03-02", "2099-03-06", "vacation")), aprNoCall: await decideRun(mk.approve, REQ("2099-12-28", "2100-01-01", "nocall")),
+      denyVac: await decideRun(mk.deny, REQ("2099-03-02", "2099-03-06", "vacation"), "Too many out that week"),
+    } : null;
+    const got = await runAll(mkNew), gotOld = await runAll(mkOld);
+    const E = (o) => J(o);
+    const NOW = {
+      subVac: [["vacation_submitted", "Vacation Request", "RPC requested vacation Mon Mar 2 – Fri Mar 6", { surgeon_id: "s3" }, ["s6"]], E({ surgeon_name: "RPC", surgeon_id: "s3", start_date: "2099-03-02", end_date: "2099-03-06", reason: "", request_type: "vacation", dates: "Mon Mar 2 – Fri Mar 6" })],
+      subNoCall: [["vacation_submitted", "No-Call Request", "RPC requested a no-call day Tue Mar 3", { surgeon_id: "s3" }, ["s6"]], E({ surgeon_name: "RPC", surgeon_id: "s3", start_date: "2099-03-03", end_date: "2099-03-03", reason: "", request_type: "nocall", dates: "Tue Mar 3" })],
+      aprVac: [["vacation_approved", "Vacation Approved", "RPC's vacation Mon Mar 2 – Fri Mar 6 was approved", { surgeon_id: "s3" }, ["s3", "s6"]], E({ surgeon_name: "RPC", surgeon_id: "s3", start_date: "2099-03-02", end_date: "2099-03-06", request_type: "vacation", dates: "Mon Mar 2 – Fri Mar 6" })],
+      aprNoCall: [["vacation_approved", "No-Call Approved", "RPC's no-call days Mon Dec 28, 2099 – Fri Jan 1, 2100 were approved", { surgeon_id: "s3" }, ["s3", "s6"]], E({ surgeon_name: "RPC", surgeon_id: "s3", start_date: "2099-12-28", end_date: "2100-01-01", request_type: "nocall", dates: "Mon Dec 28, 2099 – Fri Jan 1, 2100" })],
+      denyVac: [["vacation_denied", "Vacation Denied", "RPC's vacation Mon Mar 2 – Fri Mar 6 was denied: Too many out that week", { surgeon_id: "s3" }, ["s3", "s6"]], E({ surgeon_name: "RPC", surgeon_id: "s3", start_date: "2099-03-02", end_date: "2099-03-06", note: "Too many out that week", request_type: "vacation", dates: "Mon Mar 2 – Fri Mar 6" })],
+    };
+    const MAIN = {
+      subVac: [["vacation_submitted", "Vacation Request", "RPC requested vacation 2099-03-02 to 2099-03-06", { surgeon_id: "s3" }, ["s6"]], E({ surgeon_name: "RPC", surgeon_id: "s3", start_date: "2099-03-02", end_date: "2099-03-06", reason: "", request_type: "vacation" })],
+      subNoCall: [["vacation_submitted", "No-Call Request", "RPC requested no-call days 2099-03-03 to 2099-03-03", { surgeon_id: "s3" }, ["s6"]], E({ surgeon_name: "RPC", surgeon_id: "s3", start_date: "2099-03-03", end_date: "2099-03-03", reason: "", request_type: "nocall" })],
+      aprVac: [["vacation_approved", "Vacation Approved", "RPC's vacation 2099-03-02 to 2099-03-06 was approved", { surgeon_id: "s3" }, ["s3", "s6"]], E({ surgeon_name: "RPC", surgeon_id: "s3", start_date: "2099-03-02", end_date: "2099-03-06", request_type: "vacation" })],
+      aprNoCall: [["vacation_approved", "No-Call Approved", "RPC's no-call days 2099-12-28 to 2100-01-01 was approved", { surgeon_id: "s3" }, ["s3", "s6"]], E({ surgeon_name: "RPC", surgeon_id: "s3", start_date: "2099-12-28", end_date: "2100-01-01", request_type: "nocall" })],
+      denyVac: [["vacation_denied", "Vacation Denied", "RPC's vacation 2099-03-02 to 2099-03-06 was denied: Too many out that week", { surgeon_id: "s3" }, ["s3", "s6"]], E({ surgeon_name: "RPC", surgeon_id: "s3", start_date: "2099-03-02", end_date: "2099-03-06", note: "Too many out that week", request_type: "vacation" })],
+    };
+    const shape = (r) => r.threw || J([r.notes.length === 1 ? r.notes[0] : r.notes, r.emails.length === 1 && J(r.emails[0][2]) === J(r.notes[0] && r.notes[0][4]) ? r.emails[0][1] : r.emails]);
+    const bad = got ? Object.keys(NOW).filter((k) => shape(got[k]) !== J(NOW[k])) : ["not extractable"];
+    const badOld = gotOld ? Object.keys(MAIN).filter((k) => shape(gotOld[k]) !== J(MAIN[k])) : ["not extractable"];
+    check("DF4 the REAL submit / approve / deny: \"RPC requested vacation Mon Mar 2 – Fri Mar 6\", \"RPC requested a no-call day Tue Mar 3\", \"RPC's vacation Mon Mar 2 – Fri Mar 6 was approved\", \"RPC's no-call days Mon Dec 28, 2099 – Fri Jan 1, 2100 were approved\", \"…was denied: Too many out that week\" — the same titles, data and people; each e-mail to the same people with its fields as before plus dates in words (`dates`)",
+      bad.length === 0, J(bad.map((k) => [k, got && shape(got[k])])).slice(0, 1500));
+    check("DF4 …with an OLD cached helpers.js: main's notice text (\"RPC's vacation 2099-03-02 to 2099-03-06 was approved\") and main's e-mail data byte for byte — no `dates` key goes out; nothing thrown",
+      oldLacks && badOld.length === 0, J(badOld.map((k) => [k, gotOld && shape(gotOld[k])])).slice(0, 1500));
+    // the toasts are not this change's (QW18's): the same with and without the composers
+    const toastsSame = !!got && !!gotOld && Object.keys(NOW).every((k) => J(got[k].toasts) === J(gotOld[k].toasts) && got[k].toasts.length === 1);
+    check("DF4 …the success toasts are untouched (the same with and without the composers — \"Approved — RPC's vacation, 2099-03-02 to 2099-03-06.\")",
+      toastsSame && got.aprVac.toasts[0] === "success: Approved — RPC's vacation, 2099-03-02 to 2099-03-06.", J(got && Object.fromEntries(Object.keys(NOW).map((k) => [k, got[k].toasts]))));
+  }
+
+  // DF5 — the REAL notifyPublished, its link, the deep-link effect and the bell
+  {
+    const npSrc = afterDF("  const notifyPublished = async (ep, period) => {", "\n  };\n");
+    const NP_ENV = "sessionEpochRef, addNotification, sendEmailNotif, justPublished, notifiedRef, setJustPublished";
+    const npCode = npSrc && "async (ep, period) => {" + npSrc + "\n  }";
+    const npNew = fnDF(NP_ENV, npCode, sandbox), npOld = fnDF(NP_ENV, npCode, OLD_DF);
+    const runNP = async (mk, period) => {
+      const log = [];
+      try { await mk({ sessionEpochRef: { current: 0 }, addNotification: async (...a) => { log.push(["notice", ...a]); return true; }, sendEmailNotif: (...a) => { log.push(["e-mail", ...a]); },
+        justPublished: null, notifiedRef: { current: null }, setJustPublished: () => {} })(0, period); } catch (ex) { log.push("threw " + String(ex).slice(0, 120)); }
+      return log;
+    };
+    // AN's slices (buildDeepLink; the bell row's week and tap) and CK's (the deep-link effect)
+    const run = (params, body, args) => { try { return vm.runInNewContext("(function (" + params + ") {\n" + body + "\n})", { URL, URLSearchParams })(...args); } catch (e) { return { err: String(e).slice(0, 200) }; } };
+    const d0 = nsrcDF.indexOf("  const buildDeepLink = useCallback((type, data) => {"), d1 = d0 === -1 ? -1 : nsrcDF.indexOf("\n  }, []);", d0);
+    const bdl = d0 !== -1 && d1 > d0 ? run("useCallback, window", nsrcDF.slice(d0, d1) + "\n  }, []);\nreturn buildDeepLink;", [(f) => f, { location: { origin: "https://dsg.test", pathname: "/app/" } }]) : null;
+    const p0 = nsrcDF.indexOf("{/* ─── Notification Panel ─── */}"), p1 = p0 === -1 ? -1 : nsrcDF.indexOf("{/* ════════════════ SETUP ════════════════ */}", p0);
+    const panel = p0 !== -1 && p1 > p0 ? nsrcDF.slice(p0, p1) : "";
+    const lineAfter = (hay, a) => { const i = hay.indexOf(a); if (i === -1) return null; const j = hay.indexOf("\n", i); return hay.slice(i + a.length, j === -1 ? undefined : j).replace(/\s+$/, ""); };
+    const tmSrc = (() => { const i = panel.indexOf("const tabMap = "); const j = i < 0 ? -1 : panel.indexOf(";", i); return i < 0 || j < 0 ? null : panel.slice(i + "const tabMap = ".length, j); })();
+    const tabMap = tmSrc ? run("", "return (" + tmSrc + ");", []) : null;
+    const jwSrc = lineAfter(panel, "const jumpWeek = "), rowLine = lineAfter(panel, "<div key={n.id} onClick={");
+    const rowSrc = rowLine ? rowLine.replace(/\}$/, "") : null;
+    const bellTap = (n) => {
+      const targetTab = tabMap && tabMap[n.type] || null;
+      const jumpWeek = jwSrc ? run("targetTab, n", "const jumpWeek = " + jwSrc + "\nreturn jumpWeek;", [targetTab, n]) : null;
+      const calls = [], recF = (name) => (v) => calls.push(name + "(" + J(v) + ")");
+      const fn = rowSrc ? run("targetTab, jumpWeek, setCalMonth, setCalYear, setView, setShowNotifs, markNotifsSeen", "return " + rowSrc + ";", [targetTab, jumpWeek, recF("setCalMonth"), recF("setCalYear"), recF("setView"), () => {}, () => {}]) : null;
+      if (typeof fn !== "function") return "ERR";
+      fn(); return calls.join(" ");
+    };
+    const HEAD = "  // ─── Deep-link handler for push notification clicks ───\n", OPEN = "  useEffect(() => {\n", CLOSE = "\n  }, [loaded]);";
+    const h0 = nsrcDF.indexOf(HEAD), o0 = h0 < 0 ? -1 : nsrcDF.indexOf(OPEN, h0), c0 = o0 < 0 ? -1 : nsrcDF.indexOf(CLOSE, o0);
+    const dlF = (() => { try { return c0 > o0 && o0 > 0 ? vm.runInContext(`(function (env) { const { loaded, window, URLSearchParams, setView, setCalMonth, setCalYear, console, isPublicMode } = env;\n${nsrcDF.slice(o0 + OPEN.length, c0)}\n })`, vm.createContext({})) : null; } catch (ex) { return null; } })();
+    const opens = (url) => {
+      const r = { views: [], month: null, year: null };
+      try { const u = new URL(url); dlF({ loaded: true, isPublicMode: false, URLSearchParams, window: { location: { search: u.search, pathname: u.pathname, hash: "" }, history: { replaceState: () => {} } },
+        setView: (v) => r.views.push(v), setCalMonth: (m) => { r.month = m; }, setCalYear: (y) => { r.year = y; }, console: quietDF }); } catch (ex) { r.threw = String(ex).slice(0, 120); }
+      return r;
+    };
+    if (!npNew || !npOld || typeof bdl !== "function" || !tabMap || tabMap.err || !jwSrc || !rowSrc || !dlF) check("DF5 notifyPublished, buildDeepLink, the bell row and the deep-link effect are extractable", false, J({ np: !!npNew, bdl: typeof bdl, tabMap: !!tabMap, jw: !!jwSrc, row: !!rowSrc, dl: !!dlF }));
+    else {
+      const P1 = "Feb 22 – May 30, 2027", P2 = "Dec 28, 2026 – Mar 28, 2027";
+      const a = await runNP(npNew, P1), b = await runNP(npNew, P2), c = await runNP(npNew, ""), o = await runNP(npOld, P1);
+      const NOTICE = (msg, data) => ["notice", "schedule_published", "Schedule Published", msg, data, null, 0], EMAIL = (period) => ["e-mail", "schedule_published", { period }, null, 0];
+      check("DF5 the REAL notifyPublished: \"Call schedule published for Feb 22 – May 30, 2027 — tap to see your shifts.\" with the period's first day as its week (2027-02-22; across a new year 2026-12-28), still to everyone, then its e-mail exactly { period } as before; no period: \"A new call schedule was published — tap to see your shifts.\" with no week; an OLD cached helpers.js: the same words, no week",
+        J(a) === J([NOTICE(`Call schedule published for ${P1} — tap to see your shifts.`, { week: "2027-02-22" }), EMAIL(P1)])
+          && J(b) === J([NOTICE(`Call schedule published for ${P2} — tap to see your shifts.`, { week: "2026-12-28" }), EMAIL(P2)])
+          && J(c) === J([NOTICE("A new call schedule was published — tap to see your shifts.", {}), EMAIL("")])
+          && oldLacks && J(o) === J([NOTICE(`Call schedule published for ${P1} — tap to see your shifts.`, {}), EMAIL(P1)])
+          && count("Check the Schedule or Calendar tab") === 0,
+        J({ a, b, c, o }).slice(0, 1500));
+      // where a tap lands: the push (buildDeepLink → the deep-link effect) and the bell (its row tap)
+      const land = (log) => { const n = log[0], url = bdl(n[1], n[4]); return { url, opens: opens(url), bell: bellTap({ type: n[1], data: n[4] }) }; };
+      const la = land(a), lb = land(b), lc = land(c), lo = land(o);
+      check("DF5 …its tap opens the period: the REAL buildDeepLink gives ?tab=calendar&week=2027-02-22, the REAL deep-link effect then opens the Calendar on February 2027 (December 2026 for a period from Dec 28), and the bell's REAL row tap sets the same month; with no week (no period, or an old helpers.js) the link is ?tab=calendar alone, as before, and the bell opens the Calendar without moving it",
+        la.url === "https://dsg.test/app/?tab=calendar&week=2027-02-22" && J(la.opens.views) === J(["calendar"]) && la.opens.month === 1 && la.opens.year === 2027
+          && la.bell === 'setCalMonth(1) setCalYear(2027) setView("calendar")'
+          && lb.url === "https://dsg.test/app/?tab=calendar&week=2026-12-28" && lb.opens.month === 11 && lb.opens.year === 2026 && lb.bell === 'setCalMonth(11) setCalYear(2026) setView("calendar")'
+          && lc.url === "https://dsg.test/app/?tab=calendar" && lc.opens.month === null && lc.bell === 'setView("calendar")' && lo.url === lc.url && lo.bell === lc.bell,
+        J({ la, lb, lc, lo }).slice(0, 1500));
+    }
+  }
+})().catch(ex => check("DF harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
 
 // ─── CK. A ?tab=mine link opens Mine, not a blank page (2026-10-25) ───
 // A push or a shared link lands on the app with ?tab=X (the deep-link effect). The Mine tab's view is

@@ -3553,10 +3553,12 @@ function CallSchedule() {
       // failure toasts after this, so it is the message left on screen.
       setVacReqStart(""); setVacReqEnd(""); setVacReqReason(""); setVacReqType("vacation");
       showToast(`${isNoCall ? "No-call" : "Vacation"} request sent.`, "success");
+      // Its dates in words (UX audit 2026-11-01 — helpers.js requestNoticeText / requestDates, guarded as every newer
+      // helper): the notice, and the e-mail's `dates` (send-notification v18 shows them; an older one ignores the field).
       await addNotification("vacation_submitted", isNoCall ? "No-Call Request" : "Vacation Request",
-        `${surgeonName} requested ${kindLabel} ${vacReqStart} to ${vacReqEnd}`, { surgeon_id: vacReqSurgeon }, schedulerAdminIds, ep);
+        typeof requestNoticeText === "function" ? requestNoticeText("submitted", req) : `${surgeonName} requested ${kindLabel} ${vacReqStart} to ${vacReqEnd}`, { surgeon_id: vacReqSurgeon }, schedulerAdminIds, ep);
       if (!live()) return; // (review r5 fix-1) another session now: no e-mail sent from it
-      sendEmailNotif("vacation_submitted", { surgeon_name: surgeonName, surgeon_id: vacReqSurgeon, start_date: vacReqStart, end_date: vacReqEnd, reason: vacReqReason, request_type: vacReqType }, schedulerAdminIds, ep);
+      sendEmailNotif("vacation_submitted", { surgeon_name: surgeonName, surgeon_id: vacReqSurgeon, start_date: vacReqStart, end_date: vacReqEnd, reason: vacReqReason, request_type: vacReqType, dates: typeof requestDates === "function" ? requestDates(vacReqStart, vacReqEnd) : undefined }, schedulerAdminIds, ep);
     } catch(e) { console.error("Submit request error:", e); if (live()) showToast("Couldn't submit your request — check your connection and try again.", "error"); }
     finally { vacSubmitBusyRef.current = false; setVacSubmitting(false); }
   }, [vacReqSurgeon, vacReqStart, vacReqEnd, vacReqReason, vacReqType, surgeons, apps, addNotification, sendEmailNotif, schedulerAdminIds]);
@@ -3657,11 +3659,13 @@ function CallSchedule() {
       logAudit("request.approve", `Approved ${req.surgeon_name}'s ${isNoCall ? "no-call" : "vacation"} request: ${req.start_date} → ${req.end_date}`, { request_id: req.id, surgeon_id: req.surgeon_id });
       const kindLabel = isNoCall ? "no-call days" : "vacation";
       const approveTargets = [...new Set([req.surgeon_id, ...schedulerAdminIds].filter(Boolean))];
+      // Its dates in words (UX audit 2026-11-01 — helpers.js requestNoticeText / requestDates, guarded): the notice,
+      // and the e-mail's `dates` (send-notification v18 shows them; an older one ignores the field — the dates as before).
       await addNotification("vacation_approved", isNoCall ? "No-Call Approved" : "Vacation Approved",
-        `${req.surgeon_name}'s ${kindLabel} ${req.start_date} to ${req.end_date} was approved`,
+        typeof requestNoticeText === "function" ? requestNoticeText("approved", req) : `${req.surgeon_name}'s ${kindLabel} ${req.start_date} to ${req.end_date} was approved`,
         { surgeon_id: req.surgeon_id }, approveTargets, ep);
       if (!live()) return; // (review r5 fix-1) another session now: no e-mail sent from it
-      sendEmailNotif("vacation_approved", { surgeon_name: req.surgeon_name, surgeon_id: req.surgeon_id, start_date: req.start_date, end_date: req.end_date, request_type: req.request_type }, approveTargets, ep);
+      sendEmailNotif("vacation_approved", { surgeon_name: req.surgeon_name, surgeon_id: req.surgeon_id, start_date: req.start_date, end_date: req.end_date, request_type: req.request_type, dates: typeof requestDates === "function" ? requestDates(req.start_date, req.end_date) : undefined }, approveTargets, ep);
     } catch(e) { console.error("Approve error:", e); if (live()) showToast("Couldn't approve the request — check your connection and try again.", "error"); }
   }, [addNotification, sendEmailNotif, schedulerAdminIds, userProfile, surgeons, mySurgeon, vacations, noCallDays]);
 
@@ -3702,11 +3706,12 @@ function CallSchedule() {
       showToast(`Denied — ${req.surgeon_name}'s ${kindLabel}, ${typeof mineRangeLabel === "function" ? mineRangeLabel(req.start_date, req.end_date, fmt(new Date())) : `${req.start_date} to ${req.end_date}`}.`, "success"); // before the notice (as approve's)
       denyAudit();
       const denyTargets = [...new Set([req.surgeon_id, ...schedulerAdminIds].filter(Boolean))];
+      // Its dates in words, as approve's (UX audit 2026-11-01).
       await addNotification("vacation_denied", isNoCall ? "No-Call Denied" : "Vacation Denied",
-        `${req.surgeon_name}'s ${kindLabel} ${req.start_date} to ${req.end_date} was denied${note ? ": " + note : ""}`,
+        typeof requestNoticeText === "function" ? requestNoticeText("denied", req, { note }) : `${req.surgeon_name}'s ${kindLabel} ${req.start_date} to ${req.end_date} was denied${note ? ": " + note : ""}`,
         { surgeon_id: req.surgeon_id }, denyTargets, ep);
       if (!live()) return; // (review r5 fix-1) another session now: no e-mail sent from it
-      sendEmailNotif("vacation_denied", { surgeon_name: req.surgeon_name, surgeon_id: req.surgeon_id, start_date: req.start_date, end_date: req.end_date, note, request_type: req.request_type }, denyTargets, ep);
+      sendEmailNotif("vacation_denied", { surgeon_name: req.surgeon_name, surgeon_id: req.surgeon_id, start_date: req.start_date, end_date: req.end_date, note, request_type: req.request_type, dates: typeof requestDates === "function" ? requestDates(req.start_date, req.end_date) : undefined }, denyTargets, ep);
     } catch(e) { console.error("Deny error:", e); if (live()) showToast("Couldn't deny the request — check your connection and try again.", "error"); }
   }, [addNotification, sendEmailNotif, schedulerAdminIds, userProfile, surgeons, mySurgeon]);
 
@@ -4937,8 +4942,13 @@ function CallSchedule() {
     // The tap's session is passed in (review r4 fixes-3): the notice's device
     // push, sent after its insert's await, and its failure toasts are fenced
     // inside addNotification too.
+    // It names the period and opens on it (UX audit 2026-11-01): it said "Check
+    // the Schedule or Calendar tab" (there is no Schedule tab) and its link
+    // opened today's month. The period's first day (helpers.js periodLabelStart,
+    // guarded) is the notice's week: the push link and a bell tap open there.
+    const firstDay = typeof periodLabelStart === "function" ? periodLabelStart(period) : null;
     const saved = await addNotification("schedule_published", "Schedule Published",
-      "A new call schedule has been generated. Check the Schedule or Calendar tab.", {}, null, ep);
+      period ? `Call schedule published for ${period} — tap to see your shifts.` : "A new call schedule was published — tap to see your shifts.", firstDay ? { week: firstDay } : {}, null, ep);
     if (sessionEpochRef.current !== ep) return false;
     sendEmailNotif("schedule_published", { period }, null, ep);
     return saved === true;
@@ -7233,10 +7243,13 @@ function CallSchedule() {
     const newName = sMap[newId]?.name || "—";
     const shiftLabel = SHIFT_LABELS[shift] || shift;
     const editTargets = [...new Set([oldId, newId, ...schedulerAdminIds].filter(Boolean))];
+    // Said with its day, as the week editor's (UX audit 2026-11-01 — helpers.js weekChangeNotice, guarded):
+    // "Thu Dec 17 — Night: DJA → RPC", in the notice, the push and the e-mail (its detail and subject).
+    const told = typeof weekChangeNotice === "function" ? weekChangeNotice(mStr, [{ key: shift, oldName, newName }], "") : null;
     addNotification("schedule_changed", "Shift Reassigned",
-      `${shiftLabel} (wk of ${mStr}): ${oldName} → ${newName}`,
+      told ? told.message : `${shiftLabel} (wk of ${mStr}): ${oldName} → ${newName}`,
       { week: mStr }, editTargets);
-    sendEmailNotif("schedule_changed", { shift: shiftLabel, week: mStr, old_surgeon: oldName, new_surgeon: newName }, editTargets);
+    sendEmailNotif("schedule_changed", told ? told.email : { shift: shiftLabel, week: mStr, old_surgeon: oldName, new_surgeon: newName }, editTargets);
   };
 
   // ─── Smart Swap Suggestions ───
@@ -7565,15 +7578,16 @@ function CallSchedule() {
     const appRefused = appEdits.length > 0 && !appShiftsLoaded;
 
     // Build diff list of changes: the week as written vs as it is now
-    const changes = []; // { slotLabel, oldId, newId, isApp, date }
+    // (key: the slot, for the notices' dated labels — UX audit 2026-11-01; the audit keeps slotLabel)
+    const changes = []; // { slotLabel, oldId, newId, isApp, key, date }
     if ((oldWk.dayCall || "") !== (next.dayCall || "")) {
-      changes.push({ slotLabel: `Service Week`, oldId: oldWk.dayCall || "", newId: next.dayCall || "", isApp: false });
+      changes.push({ slotLabel: `Service Week`, oldId: oldWk.dayCall || "", newId: next.dayCall || "", isApp: false, key: "dayCall" });
     }
     ["mon","tue","wed","thu","wknd"].forEach(nk => {
       const oldId = oldWk.nights?.[nk] || "";
       const newId = next.nights?.[nk] || "";
       if (oldId !== newId) {
-        changes.push({ slotLabel: SHIFT_LABELS[nk] || nk, oldId, newId, isApp: false });
+        changes.push({ slotLabel: SHIFT_LABELS[nk] || nk, oldId, newId, isApp: false, key: nk });
       }
     });
     // Single-day service coverage overrides
@@ -7585,7 +7599,7 @@ function CallSchedule() {
         const oldId = oldOv[ds] || (oldWk.dayCall || "");
         const newId = newOv[ds] || (next.dayCall || "");
         if (oldId !== newId) {
-          changes.push({ slotLabel: `Service Day ${ds}`, oldId, newId, isApp: false, date: ds });
+          changes.push({ slotLabel: `Service Day ${ds}`, oldId, newId, isApp: false, key: "override", date: ds });
         }
       });
     }
@@ -7593,7 +7607,7 @@ function CallSchedule() {
     if (!appRefused) appEdits.forEach(([ds, newAppId]) => {
       const oldAppId = appShifts[ds] || "";
       if (oldAppId !== (newAppId || "")) {
-        changes.push({ slotLabel: `APP ${ds}`, oldId: oldAppId, newId: newAppId, isApp: true, date: ds });
+        changes.push({ slotLabel: `APP ${ds}`, oldId: oldAppId, newId: newAppId, isApp: true, key: "app", date: ds });
       }
     });
 
@@ -7667,9 +7681,10 @@ function CallSchedule() {
     // produces 1 notification set per affected person instead of 4. Massive
     // reduction in email/push noise on multi-shift edits.
     //
-    // Email uses the existing schedule_changed template; for n>=2 we pass a
-    // summarized payload that fits the template shape. The in-app title+body
-    // (which we control fully) carries the detailed per-shift breakdown.
+    // Email uses the existing schedule_changed template, whose data.detail
+    // (v17) now carries every change with its day, as the in-app title+body
+    // does (UX audit 2026-11-01 — below); before, n>=2 sent a summarized
+    // payload ("multiple → open app for details").
     const reasonSuffix = draft.reason ? ` (${draft.reason})` : "";
 
     // Build per-person change list: every affected person gets their own set
@@ -7682,6 +7697,8 @@ function CallSchedule() {
       newId: c.newId,
       oldName: c.isApp ? (aMap[c.oldId]?.name || "—") : (sMap[c.oldId]?.name || "—"),
       newName: c.isApp ? (aMap[c.newId]?.name || "—") : (sMap[c.newId]?.name || "—"),
+      key: c.key,
+      date: c.date,
     }));
     enrichedChanges.forEach(ec => {
       [ec.oldId, ec.newId].filter(Boolean).forEach(pid => {
@@ -7712,7 +7729,13 @@ function CallSchedule() {
     // person plus schedulers, so we reuse it for push/email targeting.)
     const allTargets = [...perPerson.keys()].filter(Boolean);
     let title, msg, emailPayload;
-    if (enrichedChanges.length === 1) {
+    // Each change says its day (UX audit 2026-11-01 — helpers.js weekChangeNotice, guarded as every newer helper):
+    // "Thu Dec 17 — Night: DJA → RPC" in the notice and the push, and the e-mail lists every change (its detail),
+    // its subject the one change's slot or "2 shifts, week of Jan 4". An old cached helpers.js: as before.
+    const told = typeof weekChangeNotice === "function" ? weekChangeNotice(mondayStr, enrichedChanges, draft.reason) : null;
+    if (told) {
+      title = told.title; msg = told.message; emailPayload = told.email;
+    } else if (enrichedChanges.length === 1) {
       const c = enrichedChanges[0];
       title = "Schedule Change";
       msg = `${c.slotLabel}: ${c.oldName} → ${c.newName}${reasonSuffix}`;

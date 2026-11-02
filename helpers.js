@@ -1279,6 +1279,99 @@ function slotLabel(mondayStr, shiftKey) {
   return `${DOW[d.getDay()]} ${md} — Night`;
 }
 
+/* ═══ Notices say the day (UX audit 2026-11-01) ═══
+   A schedule change's notice read "Thu Night: DJA → RPC" in the bell and the
+   push — which Thursday? — and its e-mail added only "week of 2026-12-14"; a
+   two-shift e-mail said "multiple → open app for details"; the swap tool's
+   reassignment said "Thu Night (wk of 2026-12-14)"; a request's notices said
+   "2026-12-14 to 2026-12-18". Each change now names its own day, composed with
+   slotLabel above (the labels the week editor shows, so a notice and the
+   editor can't disagree): ONE composition per event for the bell, the push
+   and the e-mail, as the trade composers do. Pure: no clock, no state; dates
+   are local, via parse. */
+// "Wed Dec 9": a date's weekday and day, as slotLabel writes them (no year).
+function noticeDay(ds) {
+  return `${["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][parse(ds).getDay()]} ${monthDayLabel(ds)}`;
+}
+// One change of a week, said with its day. c.key is the slot ("dayCall",
+// "mon" … "thu", "wknd"), or "override" / "app" with c.date (one day's
+// service coverage / APP call):
+//   "Service Wk of Dec 14", "Thu Dec 17 — Night", "Wknd — Fri Dec 18"
+//   (slotLabel; its legacy "dc" too), "Service day Wed Dec 16", "APP Thu Dec 17"
+// Anything else keeps the label it came with (c.slotLabel).
+function changeSlotText(mondayStr, c) {
+  if (c.key === "override") return `Service day ${noticeDay(c.date)}`;
+  if (c.key === "app") return `APP ${noticeDay(c.date)}`;
+  if (["dayCall", "dc", "mon", "tue", "wed", "thu", "wknd"].includes(c.key)) return slotLabel(mondayStr, c.key);
+  return String(c.slotLabel || c.key || "");
+}
+// A week's changes, told (the week editor's save; the swap tool's one-way
+// reassignment): the bell's notice — the push says the same — and the
+// schedule_changed e-mail's data.
+//   changes: [{ key, date, oldName, newName }], in the editor's order
+//   reason:  the editor's Reason ("" or none: nothing added)
+//   one change → { title: "Schedule Change", message: "Thu Dec 17 — Night: DJA → RPC (Covering)" }
+//   several    → { title: "2 Shifts Updated",
+//                  message: "Mon Jan 4 — Night: DJA → RPC; Tue Jan 5 — Night: MCC → FAK" }
+//   email: send-notification puts data.detail into the e-mail as it is (v17),
+//     so a multi-shift e-mail lists each change on its own line ("<br>"), each
+//     line escaped; data.shift is the e-mail's subject — the one change's slot,
+//     or "2 shifts, week of Jan 4". week / old_surgeon / new_surgeon go as before.
+function weekChangeNotice(mondayStr, changes, reason) {
+  const list = changes || [];
+  const one = list.length === 1;
+  const lines = list.map(c => `${changeSlotText(mondayStr, c)}: ${c.oldName} → ${c.newName}`);
+  const why = reason ? ` (${reason})` : "";
+  const esc = t => String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  return {
+    title: one ? "Schedule Change" : `${list.length} Shifts Updated`,
+    message: lines.join("; ") + why,
+    email: {
+      shift: one ? changeSlotText(mondayStr, list[0]) : `${list.length} shifts, week of ${monthDayLabel(mondayStr)}`,
+      week: mondayStr,
+      old_surgeon: one ? list[0].oldName : "multiple",
+      new_surgeon: one ? list[0].newName : "open app for details",
+      detail: lines.map(esc).join("<br>") + esc(why),
+    },
+  };
+}
+// A time-off request's dates in words: "Mon Dec 14 – Fri Dec 18"; one day
+// "Mon Dec 14"; across a new year each date has its year (rangeSummary's
+// dates, without the count). Anything else is said as it came.
+function requestDates(start, end) {
+  const s = rangeSummary(start, end);
+  return s ? s.slice(s.indexOf(", ") + 2) : `${start || ""} → ${end || ""}`;
+}
+// A time-off request's notice (the bell's; the push says the same). req: the
+// request ({ surgeon_name, start_date, end_date, request_type }); a no-call
+// request says "no-call day" for one day, "no-call days" for several.
+//   ("submitted", req)        → "RPC requested vacation Mon Dec 7 – Fri Dec 11"
+//   ("approved", req)         → "KJH's vacation Mon Dec 14 – Fri Dec 18 was approved"
+//   ("denied", req, { note }) → "ARW's vacation Mon Jan 4 – Tue Jan 5 was denied: Too many out"
+function requestNoticeText(what, req, o) {
+  const one = !!req.start_date && req.start_date === req.end_date;
+  const noCall = req.request_type === "nocall";
+  const noun = noCall ? (one ? "no-call day" : "no-call days") : "vacation";
+  const was = noCall && !one ? "were" : "was";
+  const dates = requestDates(req.start_date, req.end_date);
+  const name = req.surgeon_name;
+  if (what === "submitted") return `${name} requested ${noCall && one ? "a no-call day" : noun} ${dates}`;
+  if (what === "approved") return `${name}'s ${noun} ${dates} ${was} approved`;
+  if (what === "denied") return `${name}'s ${noun} ${dates} ${was} denied${o && o.note ? ": " + o.note : ""}`;
+  return `${name}'s ${noun} ${dates}`;
+}
+// The first day a period's label names, read back (periodLabel writes it):
+//   "Feb 22 – May 30, 2027" → "2027-02-22"; "Dec 28, 2026 – Mar 28, 2027" → "2026-12-28"
+// The "Schedule Published" notice opens the Calendar there (its link's week,
+// and the bell's). null for anything else.
+function periodLabelStart(label) {
+  const m = /^([A-Z][a-z]{2}) (\d{1,2})(?:, (\d{4}))? – [A-Z][a-z]{2} \d{1,2}, (\d{4})$/.exec(String(label || ""));
+  const mo = m ? ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"].indexOf(m[1]) : -1;
+  if (mo < 0) return null;
+  const d = new Date(Number(m[3] || m[4]), mo, Number(m[2]));
+  return d.getMonth() === mo ? fmt(d) : null;
+}
+
 /* ═══ Toasts: the app's short messages stack (UX audit 2026-10-19) ═══
    The app had ONE toast slot: each message replaced the one before, so a
    burst — opening the app offline fires three errors — left only the last.

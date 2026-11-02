@@ -644,7 +644,8 @@ const MUTANTS = [
   { id: "G2f", app: true, what: "G2: Generate & Publish's e-mail goes out after a session change while its notice was written (sent from the next session)",
     // (re-pinned 21/n: the call now passes the tap's session — review r4 fixes-3; the same mutation)
     // (re-pinned 2026-10-20: the notice and the e-mail moved into notifyPublished, whose fence returns false — the same mutation)
-    from: "      \"A new call schedule has been generated. Check the Schedule or Calendar tab.\", {}, null, ep);\n    if (sessionEpochRef.current !== ep) return false;\n", to: "      \"A new call schedule has been generated. Check the Schedule or Calendar tab.\", {}, null, ep);\n" },
+    // (re-pinned ON PURPOSE 2026-11-02 — sync-guards DF5: the notice names its period and carries its week; the same mutation)
+    from: "\"A new call schedule was published — tap to see your shifts.\", firstDay ? { week: firstDay } : {}, null, ep);\n    if (sessionEpochRef.current !== ep) return false;\n", to: "\"A new call schedule was published — tap to see your shifts.\", firstDay ? { week: firstDay } : {}, null, ep);\n" },
   { id: "G2g", app: true, what: "G2: Accept & Publish goes on after its snapshot though the session changed (published as the next account)",
     from: "        if (sessionEpochRef.current !== ep) { setSaveStatus(\"\"); return; } // nothing published as the next session", to: "        // nothing published as the next session" },
   { id: "G2g2", app: true, what: "G2 (variant): Accept & Publish takes the session's identity after its snapshot's await",
