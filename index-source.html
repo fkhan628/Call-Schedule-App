@@ -8542,7 +8542,13 @@ ${"</"}script>${"</"}body>${"</"}html>`;
         const fri=fmt(addD(mon,4));
         if(!holCov[fri]) d[fri]=[...(d[fri]||[]),{type:pfx+"Wknd",surgeon:wkndS,cls,note:"5p–7a"}];
         const sun=fmt(addD(mon,6));
-        if(!holCov[sun]) d[sun]=[...(d[sun]||[]),{type:pfx+"Wknd",surgeon:wkndS,cls,note:"7a–7a"}];
+        // A handed-off Sunday (owner 2026-11-02) is weekHolders' own answer (helpers.js handoffOn), so the calendar and
+        // the helpers never disagree: TWO rows of the Sunday's type / cls / note, the weekend surgeon's (hoPart "from",
+        // 7a until hoAt) then the taker's ("to", hoAt until Mon 7a). The filters, 👤 Me and the Weekends switch then treat
+        // each half as its surgeon's. No new type: the cell draws a foreign one as a phantom "N" (§O4; sync-guards CZ2).
+        const ho = wk.handoffs && typeof weekHolders === "function" ? weekHolders(mStr, wk).days[6].handoff : null;
+        if(ho) d[sun]=[...(d[sun]||[]),{type:pfx+"Wknd",surgeon:ho.from,cls,note:"7a–7a",hoPart:"from",hoAt:ho.at},{type:pfx+"Wknd",surgeon:ho.to,cls,note:"7a–7a",hoPart:"to",hoAt:ho.at}];
+        else if(!holCov[sun]) d[sun]=[...(d[sun]||[]),{type:pfx+"Wknd",surgeon:wkndS,cls,note:"7a–7a"}];
       }
       if(wk.isBackup){
         for(let i=0;i<7;i++){
@@ -8653,7 +8659,11 @@ ${"</"}script>${"</"}body>${"</"}html>`;
       if (e.type === "Holiday") info.holiday = { who: sMap[e.surgeon]?.name || null, label: e.holType === "swap" ? (e.holName || "Coverage") : holidayTitleName({ holiday: e.holiday, label: e.holName }), emoji: holidayEmoji(e.holiday || e.holName) };
       if (e.type === "Svc" || e.type === "B-Svc") info.dayCall = sMap[e.surgeon]?.name || null;
       if (e.type === "Ngt" || e.type === "B-Ngt") info.night = sMap[e.surgeon]?.name || null;
-      if (e.type === "Wknd" || e.type === "B-Wknd") info.weekend = sMap[e.surgeon]?.name || null;
+      // A handed-off Sunday (calData's two weekend rows, hoPart "from" then "to"): weekend stays the weekend surgeon's
+      // (7a to the hour), and weekendHandoff names the taker and the hour as the app writes it ("5p") — only then, so
+      // every other day keeps its exact fields (sync-guards AO1 / CZ2 compare them as JSON)
+      if ((e.type === "Wknd" || e.type === "B-Wknd") && e.hoPart !== "to") info.weekend = sMap[e.surgeon]?.name || null;
+      if ((e.type === "Wknd" || e.type === "B-Wknd") && e.hoPart === "to") info.weekendHandoff = { to: sMap[e.surgeon]?.name || null, at: typeof hourLabel === "function" ? hourLabel(parseInt(e.hoAt, 10)) : e.hoAt };
       if (e.type === "APP") info.app = aMap[e.appId]?.name || null;
       if (e.type === "Fierce") info.fierce = true;
       if (e.type === "FierceBkp") info.fierceBkp = true;
@@ -8692,7 +8702,9 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     if (todayCall.holiday) msg += `${todayCall.holiday.emoji} ${todayCall.holiday.label} 24h (7a–7a): ${todayCall.holiday.who || "Unassigned"}\n`;
     if (todayCall.dayCall) msg += `🏥 Service Week: ${todayCall.dayCall}\n`;
     if (todayCall.night) msg += `🌙 Night (5p–7a): ${todayCall.night}\n`;
-    if (todayCall.weekend) msg += `🌗 Weekend: ${todayCall.weekend}\n`;
+    // A handed-off Sunday: its two halves (todayCall.weekendHandoff)
+    if (todayCall.weekend && todayCall.weekendHandoff) msg += `🌗 Weekend (7a–${todayCall.weekendHandoff.at}): ${todayCall.weekend}\n🌗 Weekend (${todayCall.weekendHandoff.at}–Mon 7a): ${todayCall.weekendHandoff.to || "?"}\n`;
+    else if (todayCall.weekend) msg += `🌗 Weekend: ${todayCall.weekend}\n`;
     if (todayCall.app) msg += `👩‍⚕️ APP (${appTimeLabel}): ${todayCall.app}\n`;
     if (todayCall.fierce) msg += `⚡ Fierce Primary Week\n`;
     if (todayCall.fierceBkp) msg += `🛡 Fierce Backup Week\n`;
@@ -10815,7 +10827,19 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                     </div>
                   </div>
                 )}
-                {todayCall.weekend && (
+                {todayCall.weekend && (todayCall.weekendHandoff ? (()=>{
+                  // A handed-off Sunday: one weekend chip per half, the weekend surgeon's then the taker's (sync-guards CZ2)
+                  const ho = todayCall.weekendHandoff;
+                  return [[`Weekend · 7a–${ho.at}`, todayCall.weekend], [`Weekend · ${ho.at}–Mon 7a`, ho.to || "?"]].map(([lab, who]) => (
+                  <div key={lab} style={{display:"flex",alignItems:"center",gap:6,padding:"6px 12px",background:"#faf8f0",borderRadius:8,border:"1px solid #e0d8c0"}}>
+                    <span style={{fontSize:16}}>🌗</span>
+                    <div>
+                      <div style={{fontSize:10,color:"#7a6030",fontWeight:600,textTransform:"uppercase",letterSpacing:0.5}}>{lab}</div>
+                      <div style={{fontSize:15,fontWeight:700,color:"#1a2a3a"}}>{who}</div>
+                    </div>
+                  </div>
+                  ));
+                })() : (
                   <div style={{display:"flex",alignItems:"center",gap:6,padding:"6px 12px",background:"#faf8f0",borderRadius:8,border:"1px solid #e0d8c0"}}>
                     <span style={{fontSize:16}}>🌗</span>
                     <div>
@@ -10823,7 +10847,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                       <div style={{fontSize:15,fontWeight:700,color:"#1a2a3a"}}>{todayCall.weekend}</div>
                     </div>
                   </div>
-                )}
+                ))}
                 {todayCall.app && (()=>{
                   const dow = new Date().getDay();
                   const appTimeLabel = (dow === 0 || dow === 6) ? "APP 7a–7a" : "APP 5p–7a";
@@ -11245,6 +11269,11 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                     const label = isD?"S":isW?"W":"N";
                     const color = isD?"#3080a8":isW?"#908050":"#6850a0";
                     const highlighted = sf && e.surgeon === sf;
+                    // A handed-off Sunday's half (calData's hoPart rows) shows its hours, as a holiday chip does: "W KJH 7a–5p"
+                    // above "W DJA 5p–7a" (sync-guards CZ2), in the weekend ink (#7a6030, over 5:1 on the chip). Only the time is
+                    // nowrap: on a 320px phone it drops whole under the name, and only that week's row grows.
+                    const hoHour = e.hoPart ? (typeof hourLabel === "function" ? hourLabel(parseInt(e.hoAt, 10)) : e.hoAt) : "";
+                    const hoHrs = e.hoPart === "from" ? `7a–${hoHour}` : e.hoPart === "to" ? `${hoHour}–7a` : null;
                     return (
                       <div key={j} style={{marginBottom:1,padding:"1px 3px",borderRadius:3,fontSize:10,
                         background:highlighted?"#e0f0ff":isB?"#fef8e8":isD?"#f8f9fb":isW?"#faf8f0":"#f4f0f8",
@@ -11255,6 +11284,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                         <span style={{color,fontWeight:700}}>{label}</span>
                         {" "}
                         <span style={{color:surgeonColors(sMap[e.surgeon]?.name, sMap[e.surgeon]?.idx).tx||"#4a5868",fontWeight:highlighted?700:400}}>{sMap[e.surgeon]?.name||"?"}</span>
+                        {hoHrs && <>{" "}<span style={{color:"#7a6030",fontSize:8,whiteSpace:"nowrap"}}>{hoHrs}</span></>}
                       </div>
                     );
                   })}
