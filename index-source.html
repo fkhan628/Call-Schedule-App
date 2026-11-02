@@ -12759,8 +12759,9 @@ ${"</"}script>${"</"}body>${"</"}html>`;
               });
               // The Sunday's taker: that day as a dated role, as a holiday 24h — no chip, no Find Swap (it is not a
               // tradable unit), listed through its date. "from 5p" is in its name: the Next call card's later rows
-              // show no detail. Its detail leads with the date, as every dated role's (the row has no chip).
-              if (ho && ho.to === myId) roles.push({type: `Weekend — from ${hoAt}`, icon: "🌗", detail: `${dayMonthLabel(hw.days[6].ds)} · ${hoAt}–Mon 7a · from ${nameOf(ho.from)}`, color: "#7a6030", shiftKey: null, date: hw.days[6].ds});
+              // show no detail. Its detail leads with the date, as every dated role's (the row has no chip). handoff:
+              // those rows put its date on a line of its own, so a 320px phone keeps "from 5p" (review fix 2026-11-02).
+              if (ho && ho.to === myId) roles.push({type: `Weekend — from ${hoAt}`, icon: "🌗", detail: `${dayMonthLabel(hw.days[6].ds)} · ${hoAt}–Mon 7a · from ${nameOf(ho.from)}`, color: "#7a6030", shiftKey: null, date: hw.days[6].ds, handoff: true});
               // "No call this week" would contradict a holiday 24h, a service day or a handed-off Sunday this surgeon holds
               if (wk.off === myId && !roles.some(r => r.date)) roles.push({type: "OFF", icon: "✅", detail: "No call this week", color: "#2a7a40", shiftKey: null});
               if (roles.length > 0) {
@@ -12927,12 +12928,13 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                       {_upNext.length > 1 && (
                         <div style={{marginTop:12, paddingTop:10, borderTop:"1px dashed "+(dk?"#2a3a48":"#e4ebf1"), display:"flex", flexDirection:"column", gap:9}}>
                           {/* A split service week's runs are long ("Mon, Dec 21 – Wed, Dec 23 + Sat, Dec 26"): on their own line
-                              under the row, so a 320px phone keeps the role's name (rendered check, review fix 2026-10-20) */}
+                              under the row, so a 320px phone keeps the role's name (rendered check, review fix 2026-10-20) —
+                              and a handed-off Sunday's date too, so its name keeps "from 5p" (review fix 2026-11-02) */}
                           {_upNext.slice(1).map((e, i) => (
-                            <div key={i} style={{display:"flex", alignItems:"center", gap:10, ...(e.runs && e.runs.length > 1 ? {flexWrap:"wrap", rowGap:2} : null)}}>
+                            <div key={i} style={{display:"flex", alignItems:"center", gap:10, ...((e.runs && e.runs.length > 1) || e.handoff ? {flexWrap:"wrap", rowGap:2} : null)}}>
                               <span style={{fontSize:16}}>{e.icon}</span>
                               <span style={{flex:1, minWidth:0, fontSize:13, fontWeight:600, color:dk?"#c8d2dc":"#3a4a58", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis"}}>{e.type}{e.isBackup && <span style={{fontSize:9, fontWeight:700, color:"#8a6a10", marginLeft:6}}>· backup</span>}</span>
-                              <span style={{fontSize:12, color:dk?"#9aa8b6":"#5a6a78", whiteSpace:"nowrap", ...(e.runs && e.runs.length > 1 ? {order:3, flexBasis:"100%", paddingLeft:26, whiteSpace:"normal"} : null)}}>{_range(e)}</span>
+                              <span style={{fontSize:12, color:dk?"#9aa8b6":"#5a6a78", whiteSpace:"nowrap", ...((e.runs && e.runs.length > 1) || e.handoff ? {order:3, flexBasis:"100%", paddingLeft:26, whiteSpace:"normal"} : null)}}>{_range(e)}</span>
                               <span style={{fontSize:11, fontWeight:700, color:_whenTone(e.days), minWidth:60, textAlign:"right"}}>{_whenTxt(e.days)}</span>
                             </div>
                           ))}

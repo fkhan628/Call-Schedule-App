@@ -377,7 +377,6 @@ function overnightHolderOn(schedule, ds) {
   if (!wk) return null;
   const day = weekHolders(mStr, wk).days[(dow + 6) % 7];
   if (day.cover) return day.cover.sid || null;
-  if (day.handoff) return day.handoff.to; // a handed-off Sunday: its overnight is the taker's
   return day.night || day.wkndFri || day.sat || day.wkndSun || null;
 }
 

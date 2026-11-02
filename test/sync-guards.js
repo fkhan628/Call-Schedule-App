@@ -11816,10 +11816,11 @@ await (async () => {
     NOT_READY || J(c3));
   // the rendered check at 320px: in the card's second list a split week's runs, wrapping beside the role, squeezed its name
   // ("Service Week (incl. Sat)") to nothing — they go on their own line under the row (order 3, a full-width basis)
+  // (changed ON PURPOSE 2026-11-02, section CZ3: a handed-off Sunday's row, e.handoff, puts its date on its own line too)
   const restRow = (src.replace(/\r\n/g, "\n").match(/\{_upNext\.slice\(1\)\.map\(\(e, i\) => \(\n\s*<div key=\{i\} style=\{\{([^\n]*)\}\}>\n(?:\s*<span[^\n]*\n){2}\s*<span style=\{\{([^\n]*)\}\}>\{_range\(e\)\}<\/span>/) || []);
   check("CF3 (review fix — rendered at 320px) in the card's second list a split week's runs take their own line under the row (its row wraps; the date: order 3, full width, wrapping) so the role's name keeps its room; every other row as before (one line, its date unwrapped)",
-    !!restRow[1] && restRow[1] === 'display:"flex", alignItems:"center", gap:10, ...(e.runs && e.runs.length > 1 ? {flexWrap:"wrap", rowGap:2} : null)'
-      && !!restRow[2] && restRow[2].endsWith('whiteSpace:"nowrap", ...(e.runs && e.runs.length > 1 ? {order:3, flexBasis:"100%", paddingLeft:26, whiteSpace:"normal"} : null)'),
+    !!restRow[1] && restRow[1] === 'display:"flex", alignItems:"center", gap:10, ...((e.runs && e.runs.length > 1) || e.handoff ? {flexWrap:"wrap", rowGap:2} : null)'
+      && !!restRow[2] && restRow[2].endsWith('whiteSpace:"nowrap", ...((e.runs && e.runs.length > 1) || e.handoff ? {order:3, flexBasis:"100%", paddingLeft:26, whiteSpace:"normal"} : null)'),
     J({ row: restRow[1] || null, date: restRow[2] || null }));
 
   // CF4 — on every live and holiday service week, the card spans exactly the chip's first → last day
@@ -17859,7 +17860,7 @@ await (async () => {
           : Object.assign({}, r, { detail: r.detail.replace("Sun 7a–Mon 7a", `Sun 7a–${hourTxt(R.hour)}`) + ` · ${sunTxt(R.sun)} ${hourTxt(R.hour)}–Mon 7a: ${nameOf(R.to)}` }))) });
         hN.detail++; if (/ covered by /.test(J(a.roles))) hN.coverNote++;
       } else if (R && s.id === R.to) {
-        const taker = { type: `Weekend — from ${hourTxt(R.hour)}`, icon: "🌗", detail: `${sunTxt(R.sun)} · ${hourTxt(R.hour)}–Mon 7a · from ${nameOf(R.from)}`, color: "#7a6030", shiftKey: null, date: R.sun };
+        const taker = { type: `Weekend — from ${hourTxt(R.hour)}`, icon: "🌗", detail: `${sunTxt(R.sun)} · ${hourTxt(R.hour)}–Mon 7a · from ${nameOf(R.from)}`, color: "#7a6030", shiftKey: null, date: R.sun, handoff: true };
         want = { mStr: m, endStr: R.sun, roles: (a ? a.roles : []).filter((r) => r.type !== "OFF").concat([taker]), isBackup: WITHOUT[m].isBackup, isFierceBackup: WITHOUT[m].isFierceBackup };
         hN.taker++; if (a && a.roles.some((r) => r.type === "OFF")) hN.takerWasOff++;
       } else if (R) hN.others++; else hN.inert++;
@@ -18291,16 +18292,19 @@ check("AK1 the calendar has a Today button beside the month arrows: it sets the 
 //   CZ1a handoffOn: whole hours 8a–11p only; the record's from comes back (null when not stored); hourLabel
 //   CZ1b weekHolders: that Sunday carries handoff { from, to, at, hour } and still names KJH in wkndSun; no
 //        other day does; a Saturday key, a self-handoff, a stale from or a holiday-covered Sunday is ignored;
-//        a week without handoffs reads exactly as before
+//        a week without handoffs reads exactly as main's weekHolders read it (frozen)
 //   CZ1c the day sheet (dayDetailLines): "Weekend: KJH (7a–5p) — then DJA", "Weekend: DJA (5p–Mon 7a) — from KJH"
 //   CZ1d On call now (onCallNow, Central): KJH Sun 7a–5p ("until 5p"), DJA from 5p to Mon 7a; the Saturday
 //        before stays DJA's service Saturday; without the handoff KJH holds the whole Sunday
-//   CZ1e overnightHolderOn: the handed-off Sunday's overnight is DJA's
+//   CZ1e overnightHolderOn — the Schedule Warnings' rule (Silvis rule 2) — still names the weekend surgeon:
+//        the warnings learn handoffs together, in their own PR (review fix: one warning had learned it alone)
 //   CZ1f the banner's key (onCallWindowKey with the schedule) also turns at the handoff hour — at 5p it is
 //        due anyway, at 1p it is new — and without a schedule or a handoff it is exactly as before
 //   CZ1g the calendar files (buildICSEvents): KJH "Sun 7:00 AM – 5:00 PM, then DJA", DJA "DSG Weekend — Sun
-//        (from KJH)" "Sun 5:00 PM – Mon 7:00 AM"; without the handoff, as before
-//   CZ1h none of them touches the schedule passed in or reads a clock
+//        (from KJH)" "Sun 5:00 PM – Mon 7:00 AM", both all-day, transparent, Sun 11/8 → Mon 11/9; the full
+//        export's titles carry the code; without the handoff, as before
+//   CZ1h none of them touches the schedule passed in — a fresh copy, snapshot before any call, with a
+//        record without "from" and an inert one — or reads a clock
 console.log("\nCZ1. Sunday handoff: the helpers");
 {
   const JZ = JSON.stringify;
@@ -18322,6 +18326,13 @@ console.log("\nCZ1. Sunday handoff: the helpers");
         && bad.every((x) => x === null) && ok({ at: "17:00" }) === null && ok({ to: "", at: "17:00" }) === null && ok("s1@17:00") === null && Z.handoffOn({}, "2026-11-08") === null && Z.handoffOn(null, "2026-11-08") === null
         && [17, 8, 12, 23].map(Z.hourLabel).join(" ") === "5p 8a 12p 11p",
       JZ({ v, bad, labels: [17, 8, 12, 23].map(Z.hourLabel) }));
+    // main's (226bd08) weekHolders on the live week without a handoff, frozen: the branch must read it the same
+    const MAIN_H0 = '{"mondayStr":"2026-11-02","isBackup":false,"days":[{"ds":"2026-11-02","i":0,"svc":"s4","sat":null,"night":"s7","nightKey":"mon","wkndFri":null,"wkndSun":null,"cover":null},{"ds":"2026-11-03","i":1,"svc":"s4","sat":null,"night":"s2","nightKey":"tue","wkndFri":null,"wkndSun":null,"cover":null},{"ds":"2026-11-04","i":2,"svc":"s4","sat":null,"night":"s3","nightKey":"wed","wkndFri":null,"wkndSun":null,"cover":null},{"ds":"2026-11-05","i":3,"svc":"s4","sat":null,"night":"s5","nightKey":"thu","wkndFri":null,"wkndSun":null,"cover":null},{"ds":"2026-11-06","i":4,"svc":"s4","sat":null,"night":null,"nightKey":null,"wkndFri":"s4","wkndSun":null,"cover":null},{"ds":"2026-11-07","i":5,"svc":null,"sat":"s1","night":null,"nightKey":null,"wkndFri":null,"wkndSun":null,"cover":null},{"ds":"2026-11-08","i":6,"svc":null,"sat":null,"night":null,"nightKey":null,"wkndFri":null,"wkndSun":"s4","cover":null}],"covers":[]}';
+    // CZ1h's schedule, untouched until its snapshot: the handoff with and without "from", and an inert (stale) one
+    const PURE = { "2026-11-02": Object.assign(JSON.parse(JZ(WK0)), { handoffs: { "2026-11-08": { to: "s1", at: "17:00" } } }),
+      "2026-11-09": { dayCall: "s2", nights: { mon: "s5", tue: "s3", wed: "s1", thu: "s4", wknd: "s5" }, isBackup: true, handoffs: { "2026-11-15": { from: "s7", to: "s1", at: "17:00" } } },
+      "2026-11-16": { dayCall: "s7", nights: { mon: "s1", tue: "s2", wed: "s3", thu: "s4", wknd: "s6" }, handoffs: { "2026-11-22": { from: "s6", to: "s2", at: "13:00" } } } };
+    const pureBefore = JZ(PURE);
     const H1 = Z.weekHolders("2026-11-02", wk()), H0 = Z.weekHolders("2026-11-02", wk(null));
     const only = (h) => h.days.filter((d) => "handoff" in d).map((d) => d.ds);
     const ign = (ho) => only(Z.weekHolders("2026-11-02", wk(ho)));
@@ -18330,7 +18341,7 @@ console.log("\nCZ1. Sunday handoff: the helpers");
       JZ(H1.days[6].handoff) === JZ({ from: "s4", to: "s1", at: "17:00", hour: 17 }) && H1.days[6].wkndSun === "s4" && JZ(only(H1)) === JZ(["2026-11-08"])
         && JZ(ign({ "2026-11-07": { to: "s4", at: "17:00" } })) === "[]" && JZ(ign({ "2026-11-08": { to: "s4", at: "17:00" } })) === "[]"
         && JZ(ign({ "2026-11-08": { from: "s7", to: "s1", at: "17:00" } })) === "[]" && JZ(only(Z.weekHolders("2026-11-02", COVERED))) === "[]"
-        && JZ(H0) === JZ(Z.weekHolders("2026-11-02", JSON.parse(JZ(WK0)))) && JZ(only(H0)) === "[]",
+        && JZ(H0) === MAIN_H0 && JZ(only(H0)) === "[]",
       JZ({ h: H1.days[6].handoff, only: only(H1) }));
     const lines = (s, ds) => Z.dayDetailLines(s, ds, { nameOf }).map((l) => l.text);
     const L1 = Z.dayDetailLines(sched(wk()), "2026-11-08", { nameOf });
@@ -18345,8 +18356,8 @@ console.log("\nCZ1. Sunday handoff: the helpers");
       JZ(sweep) === JZ(["DJA|Service Day (Sat 24h)|7a", "DJA|Service Day (Sat 24h)|7a", "KJH|Weekend (Sun)|5p", "KJH|Weekend (Sun)|5p", "DJA|Weekend (Sun)|7a", "DJA|Weekend (Sun)|7a", "DJA|Weekend (Sun)|7a"])
         && now(S0, ct(8, 17, 0)) === "KJH|Weekend (Sun)|7a" && now(S0, ct(8, 10, 0)) === "KJH|Weekend (Sun)|7a",
       JZ({ sweep, without: [now(S0, ct(8, 10, 0)), now(S0, ct(8, 17, 0))] }));
-    check("CZ1e overnightHolderOn: the handed-off Sunday's overnight is DJA's; without the handoff, KJH's; the Saturday's stays DJA's (the override)",
-      Z.overnightHolderOn(S1, "2026-11-08") === "s1" && Z.overnightHolderOn(S0, "2026-11-08") === "s4" && Z.overnightHolderOn(S1, "2026-11-07") === "s1",
+    check("CZ1e overnightHolderOn — read only by Schedule Warnings (Silvis rule 2) — still names the weekend surgeon on the handed-off Sunday (KJH, as without the handoff): the warnings learn handoffs together in their own PR; the Saturday's stays DJA's (the override)",
+      Z.overnightHolderOn(S1, "2026-11-08") === "s4" && Z.overnightHolderOn(S0, "2026-11-08") === "s4" && Z.overnightHolderOn(S1, "2026-11-07") === "s1",
       JZ([Z.overnightHolderOn(S1, "2026-11-08"), Z.overnightHolderOn(S0, "2026-11-08")]));
     const S13 = sched(wk({ "2026-11-08": { from: "s4", to: "s1", at: "13:00" } }));
     const keys = { k1659: Z.onCallWindowKey(ct(8, 16, 59), S1), k1700: Z.onCallWindowKey(ct(8, 17, 0), S1), bare: Z.onCallWindowKey(ct(8, 17, 0)), none: Z.onCallWindowKey(ct(8, 17, 0), S0),
@@ -18354,18 +18365,28 @@ console.log("\nCZ1. Sunday handoff: the helpers");
     check("CZ1f the banner's key: with the schedule it also turns at the handoff hour — 16:59 \"2026-11-08b\" → 17:00 \"2026-11-08ch\" (due at 5p anyway), and a 1p handoff turns it inside the day window (12:59 \"…b\" → 13:00 \"…bh\"); without a schedule or a handoff, exactly as before (\"…c\"); Monday 06:00 is Monday's \"…a\"",
       keys.k1659 === "2026-11-08b" && keys.k1700 === "2026-11-08ch" && keys.bare === "2026-11-08c" && keys.none === "2026-11-08c" && keys.k1259 === "2026-11-08b" && keys.k1300 === "2026-11-08bh" && keys.mon === "2026-11-09a",
       JZ(keys));
-    const ics = (s, sid) => Z.buildICSEvents(s, sid, NAMES[sid], { nameOf }).filter((e) => /Weekend/.test(e.title || e.summary || "")).map((e) => `${e.title || e.summary}|${String(e.description || e.desc || "").split("\n")[0]}`);
-    check("CZ1g the calendar files (buildICSEvents): KJH keeps \"DSG Weekend — Fri night\" and gets \"DSG Weekend — Sun\" \"Sun 7:00 AM – 5:00 PM, then DJA\"; DJA gets \"DSG Weekend — Sun (from KJH)\" \"Sun 5:00 PM – Mon 7:00 AM\"; without the handoff KJH's Sunday is the 24h and DJA has none",
-      JZ(ics(S1, "s4")) === JZ(["DSG Weekend — Fri night|Fri 5:00 PM – Sat 7:00 AM", "DSG Weekend — Sun|Sun 7:00 AM – 5:00 PM, then DJA"]) && JZ(ics(S1, "s1")) === JZ(["DSG Weekend — Sun (from KJH)|Sun 5:00 PM – Mon 7:00 AM"])
-        && JZ(ics(S0, "s4")) === JZ(["DSG Weekend — Fri night|Fri 5:00 PM – Sat 7:00 AM", "DSG Weekend — Sun|Sun 7:00 AM – Mon 7:00 AM (24h)"]) && JZ(ics(S0, "s1")) === "[]",
-      JZ({ kjh: ics(S1, "s4"), dja: ics(S1, "s1") }));
-    const before = JZ(S1);
-    Z.weekHolders("2026-11-02", S1["2026-11-02"]); Z.dayDetailLines(S1, "2026-11-08", { nameOf }); Z.onCallNow(S1, ct(8, 17, 0)); Z.overnightHolderOn(S1, "2026-11-08"); Z.onCallWindowKey(ct(8, 17, 0), S1); Z.buildICSEvents(S1, "s1", "DJA", { nameOf });
+    const ics = (s, sid, o) => Z.buildICSEvents(s, sid, NAMES[sid], Object.assign({ nameOf }, o)).filter((e) => /Weekend/.test(e.summary || ""))
+      .map((e) => `${e.summary}|${String(e.desc || "").split("\n")[0]}|${e.start}–${e.end}|${e.allDay ? "allDay" : "timed"}|${e.transparent ? "free" : "busy"}`);
+    check("CZ1g the calendar files (buildICSEvents): KJH keeps \"DSG Weekend — Fri night\" and gets \"DSG Weekend — Sun\" \"Sun 7:00 AM – 5:00 PM, then DJA\"; DJA gets \"DSG Weekend — Sun (from KJH)\" \"Sun 5:00 PM – Mon 7:00 AM\" — each all-day, free, dated Sun 11/8 → Mon 11/9; the full export's titles carry the code; without the handoff KJH's Sunday is the 24h and DJA has none",
+      JZ(ics(S1, "s4")) === JZ(["DSG Weekend — Fri night|Fri 5:00 PM – Sat 7:00 AM|20261106–20261107|allDay|free", "DSG Weekend — Sun|Sun 7:00 AM – 5:00 PM, then DJA|20261108–20261109|allDay|free"])
+        && JZ(ics(S1, "s1")) === JZ(["DSG Weekend — Sun (from KJH)|Sun 5:00 PM – Mon 7:00 AM|20261108–20261109|allDay|free"])
+        && JZ(ics(S1, "s4", { withCode: true }).map((x) => x.split("|")[0])) === JZ(["DSG Weekend — Fri night — KJH", "DSG Weekend — Sun — KJH"])
+        && JZ(ics(S1, "s1", { withCode: true }).map((x) => x.split("|")[0])) === JZ(["DSG Weekend — Sun (from KJH) — DJA"])
+        && JZ(ics(S0, "s4")) === JZ(["DSG Weekend — Fri night|Fri 5:00 PM – Sat 7:00 AM|20261106–20261107|allDay|free", "DSG Weekend — Sun|Sun 7:00 AM – Mon 7:00 AM (24h)|20261108–20261109|allDay|free"]) && JZ(ics(S0, "s1")) === "[]",
+      JZ({ kjh: ics(S1, "s4"), dja: ics(S1, "s1"), codes: ics(S1, "s1", { withCode: true }) }));
+    // (review fix: the snapshot is taken of a fresh copy before ANY call, so an idempotent write — filling in a missing
+    // "from", caching an hour — shows too; the copy holds a record without "from" and an inert one)
+    [["2026-11-02", "2026-11-08"], ["2026-11-09", "2026-11-15"], ["2026-11-16", "2026-11-22"]].forEach(([m, sun]) => {
+      Z.handoffOn(PURE[m], sun); Z.weekHolders(m, PURE[m]); Z.dayDetailLines(PURE, sun, { nameOf }); Z.overnightHolderOn(PURE, sun);
+      Z.onCallWindowKey(new Date(Date.UTC(Number(sun.slice(0, 4)), Number(sun.slice(5, 7)) - 1, Number(sun.slice(8)), 23, 0)), PURE);
+      [7, 12, 17, 22].forEach((h) => Z.onCallNow(PURE, new Date(Date.UTC(Number(sun.slice(0, 4)), Number(sun.slice(5, 7)) - 1, Number(sun.slice(8)), h + 6, 0))));
+    });
+    ["s1", "s2", "s4", "s5", "s6", "s7"].forEach((sid) => Z.buildICSEvents(PURE, sid, NAMES[sid], { nameOf }));
     const hsrc = fs.readFileSync(path.join(ROOT, "helpers.js"), "utf8").replace(/\r\n/g, "\n");
     const body = (name) => { const i = hsrc.indexOf(`function ${name}(`); return i < 0 ? "" : hsrc.slice(i, hsrc.indexOf("\n}\n", i)); };
-    check("CZ1h none of them changes the schedule passed in, and handoffOn / hourLabel / onCallWindowKey read no clock (no Date.now, no new Date())",
-      JZ(S1) === before && ["handoffOn", "hourLabel", "onCallWindowKey"].every((n) => body(n).length > 0 && !/Date\.now|new Date\(\)/.test(body(n))),
-      JZ({ same: JZ(S1) === before }));
+    check("CZ1h none of them changes the schedule passed in — a fresh copy, snapshot before any call, with a handoff without \"from\", a backup week's inert (stale) one and a 1p one, through every helper — and handoffOn / hourLabel / onCallWindowKey read no clock (no Date.now, no new Date())",
+      JZ(PURE) === pureBefore && ["handoffOn", "hourLabel", "onCallWindowKey"].every((n) => body(n).length > 0 && !/Date\.now|new Date\(\)/.test(body(n))),
+      JZ({ same: JZ(PURE) === pureBefore }));
   }
 }
 
