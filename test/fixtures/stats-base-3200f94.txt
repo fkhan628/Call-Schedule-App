@@ -1,0 +1,147 @@
+//@@ exportYearlySummary — the running-totals export before these quick wins (3200f94), frozen: its CSV must stay byte for byte (section DB)
+  const exportYearlySummary = useCallback(() => {
+    const header = ["Surgeon","Svc Wk","Nights","Wknds","B-SW","B-Nights","B-Wknds","Total"];
+    const rows = surgeons.map(s => {
+      const pri = priorCounts[s.id] || {};
+      const cumDc = pri.dc||0, cumN = pri.nights||0, cumW = pri.wknd||0;
+      const cumDcB = pri.dcB||0, cumNB = pri.nightsB||0, cumWB = pri.wkndB||0;
+      const total1 = calcShifts({dc:cumDc,nights:cumN,wknd:cumW,totalDays:pri.totalDays||0});
+      const total2 = pri.totalDaysB||0;
+      return [s.name, cumDc, cumN, cumW, cumDcB, cumNB, cumWB, total1+total2].join(",");
+    });
+    const csv = [header.join(","), ...rows].join("\n");
+    const blob = new Blob([csv], {type:"text/csv"});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = `call-schedule-summary-${startYear}.csv`; a.click();
+    URL.revokeObjectURL(url);
+  }, [surgeons, priorCounts, startYear, calcShifts]);
+//@@ monthly — the Stats → Monthly block before these quick wins (3200f94) (the tables and the CSV), frozen: the scheduler's file must stay byte for byte (section DB)
+          {statsTab==="monthly" && Object.keys(schedule).length > 0 && (()=>{
+            // Compute monthly breakdown
+            // Formula: Service Week = 6, Week Night = 1, Weekend = 2
+            // Whole-shift shifts (Svc Wk, Weekend) are attributed to the month the shift STARTS in
+            const monthlyData = {};
+            const allMonths = new Set();
+            Object.entries(schedule).forEach(([mStr, wk]) => {
+              const mon = parse(mStr);
+              // Register every month touched by this week so all surgeons show columns
+              for (let i = 0; i < 7; i++) {
+                const d = addD(mon, i);
+                const moKey = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+                allMonths.add(moKey);
+                if (!monthlyData[moKey]) monthlyData[moKey] = {};
+                surgeons.forEach(s => { if (!monthlyData[moKey][s.id]) monthlyData[moKey][s.id] = { total1st: 0, total2nd: 0 }; });
+              }
+              const isB = wk.isBackup;
+              const countKey = isB ? "total2nd" : "total1st";
+
+              // Service Week = 6 points, attributed to the month containing Monday
+              if (wk.dayCall) {
+                const monMoKey = `${mon.getFullYear()}-${String(mon.getMonth()+1).padStart(2,"0")}`;
+                if (monthlyData[monMoKey]?.[wk.dayCall]) monthlyData[monMoKey][wk.dayCall][countKey] += 6;
+              }
+
+              // Week Nights (Mon-Thu) = 1 point each, attributed to the night's own month
+              NIGHT_KEYS.forEach((sk, i) => {
+                const sid = wk.nights?.[sk];
+                if (!sid) return;
+                const d = addD(mon, i);
+                const moKey = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+                if (monthlyData[moKey]?.[sid]) monthlyData[moKey][sid][countKey] += 1;
+              });
+
+              // Weekend (Fri night + Sun 24h) = 2 points, attributed to the month containing Friday
+              const wkndSid = wk.nights?.wknd;
+              if (wkndSid) {
+                const fri = addD(mon, 4);
+                const friMo = `${fri.getFullYear()}-${String(fri.getMonth()+1).padStart(2,"0")}`;
+                if (monthlyData[friMo]?.[wkndSid]) monthlyData[friMo][wkndSid][countKey] += 2;
+              }
+            });
+
+            const sortedMonths = [...allMonths].sort();
+            const moLabels = sortedMonths.map(m => { const [y,mo] = m.split("-"); return MO[parseInt(mo)-1].slice(0,3) + " " + y.slice(2); });
+
+            return (
+              <div style={css.card}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12,flexWrap:"wrap",gap:8}}>
+                  <div style={css.cardT}>📊 Monthly Call Summary</div>
+                  <button onClick={()=>{
+                    const header = ["Surgeon", ...moLabels.map(m=>m+" 1st"), "Total 1st", ...moLabels.map(m=>m+" 2nd"), "Total 2nd", "Grand Total"];
+                    const rows = surgeons.map(s => {
+                      const m1 = sortedMonths.map(m => monthlyData[m]?.[s.id]?.total1st || 0);
+                      const m2 = sortedMonths.map(m => monthlyData[m]?.[s.id]?.total2nd || 0);
+                      const t1 = m1.reduce((a,b)=>a+b,0);
+                      const t2 = m2.reduce((a,b)=>a+b,0);
+                      return [s.name, ...m1, t1, ...m2, t2, t1+t2].join(",");
+                    });
+                    const csv = [header.join(","), ...rows].join("\n");
+                    const blob = new Blob([csv], {type:"text/csv"});
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement("a"); a.href=url; a.download=`monthly-call-summary-${startYear}.csv`; a.click();
+                    URL.revokeObjectURL(url);
+                  }} style={{...css.btn(true),padding:"5px 14px",fontSize:11}}>
+                    ⬇ Export CSV
+                  </button>
+                </div>
+
+                {/* 1st Call (Regular) */}
+                <div style={{fontSize:11,fontWeight:700,color:"#1a6fa8",marginBottom:4}}>1st Call (Regular)</div>
+                <div style={{overflowX:"auto",marginBottom:14}}>
+                  <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+                    <thead>
+                      <tr style={{borderBottom:"2px solid #d0d8e0"}}>
+                        <th style={{...thS2,position:"sticky",left:0,background:dk?"#16213e":"#fff",zIndex:1}}>Surgeon</th>
+                        {moLabels.map(m=><th key={m} style={{...thS2,textAlign:"center",minWidth:40}}>{m}</th>)}
+                        <th style={{...thS2,textAlign:"center",fontWeight:700,color:"#1a8040"}}>Total</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {surgeons.filter(s => isScheduler || !mySurgeon || mySurgeon === "admin" || s.id === mySurgeon).map(s=>{
+                        const vals = sortedMonths.map(m => monthlyData[m]?.[s.id]?.total1st || 0);
+                        const total = vals.reduce((a,b)=>a+b,0);
+                        return (
+                          <tr key={s.id} style={{borderBottom:"1px solid #e8ecf0"}}>
+                            <td style={{padding:"4px 6px",position:"sticky",left:0,background:dk?"#16213e":"#fff",zIndex:1}}><Badge id={s.id} small/></td>
+                            {vals.map((v,i)=><td key={i} style={{...tdS,textAlign:"center",fontSize:12,padding:"4px 3px",color:v===0?"#c0c8d0":undefined}}>{v||"–"}</td>)}
+                            <td style={{...tdS,textAlign:"center",fontSize:13,fontWeight:700,color:"#1a8040"}}>{total}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* 2nd Call (Backup) */}
+                <div style={{fontSize:11,fontWeight:700,color:"#8a6a10",marginBottom:4}}>2nd Call (Backup)</div>
+                <div style={{overflowX:"auto"}}>
+                  <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+                    <thead>
+                      <tr style={{borderBottom:"2px solid #d8c880"}}>
+                        <th style={{...thS2,position:"sticky",left:0,background:dk?"#16213e":"#fff",zIndex:1}}>Surgeon</th>
+                        {moLabels.map(m=><th key={m} style={{...thS2,textAlign:"center",minWidth:40}}>{m}</th>)}
+                        <th style={{...thS2,textAlign:"center",fontWeight:700,color:"#8a6a10"}}>Total</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {surgeons.filter(s => isScheduler || !mySurgeon || mySurgeon === "admin" || s.id === mySurgeon).map(s=>{
+                        const vals = sortedMonths.map(m => monthlyData[m]?.[s.id]?.total2nd || 0);
+                        const total = vals.reduce((a,b)=>a+b,0);
+                        return (
+                          <tr key={s.id} style={{borderBottom:"1px solid #e8ecf0"}}>
+                            <td style={{padding:"4px 6px",position:"sticky",left:0,background:dk?"#16213e":"#fff",zIndex:1}}><Badge id={s.id} small/></td>
+                            {vals.map((v,i)=><td key={i} style={{...tdS,textAlign:"center",fontSize:12,padding:"4px 3px",color:v===0?"#c0c8d0":undefined}}>{v||"–"}</td>)}
+                            <td style={{...tdS,textAlign:"center",fontSize:13,fontWeight:700,color:"#8a6a10"}}>{total}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                <div style={{fontSize:11,color:"#7a8a98",lineHeight:1.5,marginTop:10}}>
+                  <strong style={{color:"#2c5a80"}}>Formula:</strong> Service Week = 6 · Week Night = 1 · Weekend = 2. Multi-day shifts counted in the month they start.
+                </div>
+              </div>
+            );
+          })()}

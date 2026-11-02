@@ -8815,9 +8815,11 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     } catch (e) { /* focus only */ }
   };
 
-  // ─── Yearly Summary Export ───
+  // ─── Running totals export (Stats → "⬇ Export running totals") ───
   // The Multi-Year counts as stored (2026-10-26): every published week is already in priorCounts (rollForwardCounts,
   // at its publish), so the Generate period's tally is no longer added on top — that counted a published period twice.
+  // The file is named for the day it was taken (UX audit 2026-11-01, QW17): "call-schedule-summary-<the Generate tab's
+  // year>.csv" read like one year's summary, but it holds the multi-year totals. The content is unchanged.
   const exportYearlySummary = useCallback(() => {
     const header = ["Surgeon","Svc Wk","Nights","Wknds","B-SW","B-Nights","B-Wknds","Total"];
     const rows = surgeons.map(s => {
@@ -8832,7 +8834,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
     const blob = new Blob([csv], {type:"text/csv"});
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
-    a.href = url; a.download = `call-schedule-summary-${startYear}.csv`; a.click();
+    a.href = url; a.download = `call-schedule-running-totals-${fmt(new Date())}.csv`; a.click();
     URL.revokeObjectURL(url);
   }, [surgeons, priorCounts, startYear, calcShifts]);
 
@@ -9096,6 +9098,8 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   const dayText = (ds) => (typeof mineDayLabel === "function" ? mineDayLabel(ds, todayStr) : String(ds || ""));
   const rangeText = (a, b) => (typeof mineRangeLabel === "function" ? mineRangeLabel(a, b, todayStr) : !b || a === b ? String(a || "") : `${a} → ${b}`);
   const stampText = (ts) => { const d = ts ? new Date(ts) : null; return d && !isNaN(d) ? dayText(fmt(d)) : ""; };
+  // A span as periodLabel says a period, "Nov 2, 2026 – Jan 3, 2027" (QW17 — helpers.js dateSpanLabel): Stats' titles
+  const spanText = (a, b) => (typeof dateSpanLabel === "function" ? dateSpanLabel(a, b) : `${a} → ${b}`);
 
   const Badge = ({id,small}) => {
     const s=sMap[id]; if(!s) return <span style={{color:"#a0a8b0",fontSize:10}}>—</span>;
@@ -12519,32 +12523,35 @@ ${"</"}script>${"</"}body>${"</"}html>`;
             ))}
           </div>
           {statsTabShown==="counts" && (<>
-          {/* Export — scheduler only */}
+          {/* Export — scheduler only: the multi-year running totals as stored, in a file named for the day (UX audit
+              2026-11-01, QW17 — it said "Yearly Summary" and was named for the Generate tab's year) */}
           {isScheduler && (
             <div style={{display:"flex",justifyContent:"flex-end",marginBottom:10}}>
               <button onClick={exportYearlySummary} style={{...css.btn(true),padding:"6px 16px",fontSize:12}}>
-                ⬇ Export Yearly Summary (CSV)
+                ⬇ Export running totals (CSV)
               </button>
             </div>
           )}
-          {/* Scope (This Period / Year to Date) + backup toggles */}
+          {/* Scope (This Period / This year — one name for it everywhere, owner Q8 2026-11-02) + backup toggles */}
           <div style={{display:"flex",justifyContent:"flex-end",gap:6,marginBottom:8,flexWrap:"wrap"}}>
-            <button onClick={()=>setStatsScope("period")}
+            <button onClick={()=>setStatsScope("period")} aria-pressed={statsScope==="period"}
               style={{background:statsScope==="period"?"#eaf4fb":"#f4f6f8",border:`1px solid ${statsScope==="period"?"#a8cce8":"#d0d8e0"}`,color:statsScope==="period"?"#1a6fa8":"#5a6a78",borderRadius:6,padding:"4px 12px",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:font}}>
               This Period
             </button>
-            <button onClick={()=>setStatsScope("ytd")}
+            <button onClick={()=>setStatsScope("ytd")} aria-pressed={statsScope==="ytd"}
               style={{background:statsScope==="ytd"?"#eaf4fb":"#f4f6f8",border:`1px solid ${statsScope==="ytd"?"#a8cce8":"#d0d8e0"}`,color:statsScope==="ytd"?"#1a6fa8":"#5a6a78",borderRadius:6,padding:"4px 12px",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:font}}>
-              Year to Date
+              This year
             </button>
             <button onClick={()=>setShowBackupStats(p=>!p)}
               style={{background:showBackupStats?"#fef8e8":"#f4f6f8",border:`1px solid ${showBackupStats?"#d8c880":"#d0d8e0"}`,color:showBackupStats?"#8a6a10":"#5a6a78",borderRadius:6,padding:"4px 12px",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:font}}>
               {showBackupStats ? "Hide 2nd Call" : "Show 2nd Call"}
             </button>
           </div>
-          {/* Surgeon stats — This Period (the made period: statsMade, owner decision 2026-10-24) or Year to Date (statsScope) */}
+          {/* Surgeon stats — This Period (the made period: statsMade, owner decision 2026-10-24) or This year (statsScope): every
+              scheduled week whose Monday is in this calendar year, future ones too (the counting rule of 2026-07-18,
+              unchanged), said as "This year — Jan 5, 2026 – Jan 3, 2027" (QW17: it was "Current Period — 2026-01-05 → …") */}
           <div style={css.card}>
-            <div style={css.cardT}>{statsScope==="ytd" ? <>Current Period — {ytdRange.start} → {ytdRange.end}</> : <>This Period{madePeriodText ? <> — {madePeriodText}</> : null}</>}</div>
+            <div style={css.cardT}>{statsScope==="ytd" ? <>This year — {spanText(ytdRange.start, ytdRange.end)}<span style={{fontWeight:400,fontSize:11,color:"#7a8a98",textTransform:"none",letterSpacing:0}}> (all scheduled weeks)</span></> : <>This Period{madePeriodText ? <> — {madePeriodText}</> : null}</>}</div>
             {!Object.values(statsScope==="ytd"?statsYTD:statsMade).some(s=>s.dc>0||s.nights>0) ? (
               <p style={{color:"#7a8a98",fontSize:13}}>{statsEmptyFor(statsScope)}</p>
             ) : (
@@ -12909,22 +12916,24 @@ ${"</"}script>${"</"}body>${"</"}html>`;
           )}
 
           {statsTabShown==="fairness" && (<>
-          {/* Vacation Days — scoped to the made period (vacDaysPeriod: madeMondays, owner decision 2026-10-24) or the year */}
+          {/* Vacation Days — scoped to the made period (vacDaysPeriod: madeMondays, owner decision 2026-10-24) or the year.
+              The scope has one name everywhere — This Period / This year (QW17, owner Q8 2026-11-02: it was "Period" /
+              "YTD" here and "Current Period" in the title) — and its dates read as the Counts title's do. */}
           <div style={css.card}>
             <div style={css.cardT}>
               Vacation Days Used
               {statsScope==="ytd" ? (
                 <span style={{fontWeight:400,fontSize:11,color:"#7a8a98",textTransform:"none",letterSpacing:0}}>
-                  {" — Current Period ("}{vacDaysYTD.start} → {vacDaysYTD.end}{") · days actually taken off — worked-vacation days excluded"}
+                  {" — This year ("}{spanText(vacDaysYTD.start, vacDaysYTD.end)}{") · days actually taken off — worked-vacation days excluded"}
                 </span>
               ) : vacDaysPeriod.hasPeriod && (
                 <span style={{fontWeight:400,fontSize:11,color:"#7a8a98",textTransform:"none",letterSpacing:0}}>
-                  {" — This Period ("}{vacDaysPeriod.pStart} → {vacDaysPeriod.pEnd}{")"}
+                  {" — This Period ("}{spanText(vacDaysPeriod.pStart, vacDaysPeriod.pEnd)}{")"}
                 </span>
               )}
               <span style={{marginLeft:8,display:"inline-flex",gap:5,verticalAlign:"middle"}}>
-                <button onClick={()=>setStatsScope("period")} style={{background:statsScope==="period"?"#eaf4fb":"#f4f6f8",border:`1px solid ${statsScope==="period"?"#a8cce8":"#d0d8e0"}`,color:statsScope==="period"?"#1a6fa8":"#5a6a78",borderRadius:5,padding:"1px 8px",fontSize:10,fontWeight:600,cursor:"pointer",fontFamily:font,textTransform:"none",letterSpacing:0}}>Period</button>
-                <button onClick={()=>setStatsScope("ytd")} style={{background:statsScope==="ytd"?"#eaf4fb":"#f4f6f8",border:`1px solid ${statsScope==="ytd"?"#a8cce8":"#d0d8e0"}`,color:statsScope==="ytd"?"#1a6fa8":"#5a6a78",borderRadius:5,padding:"1px 8px",fontSize:10,fontWeight:600,cursor:"pointer",fontFamily:font,textTransform:"none",letterSpacing:0}}>YTD</button>
+                <button onClick={()=>setStatsScope("period")} aria-pressed={statsScope==="period"} style={{background:statsScope==="period"?"#eaf4fb":"#f4f6f8",border:`1px solid ${statsScope==="period"?"#a8cce8":"#d0d8e0"}`,color:statsScope==="period"?"#1a6fa8":"#5a6a78",borderRadius:5,padding:"1px 8px",fontSize:10,fontWeight:600,cursor:"pointer",fontFamily:font,textTransform:"none",letterSpacing:0}}>This Period</button>
+                <button onClick={()=>setStatsScope("ytd")} aria-pressed={statsScope==="ytd"} style={{background:statsScope==="ytd"?"#eaf4fb":"#f4f6f8",border:`1px solid ${statsScope==="ytd"?"#a8cce8":"#d0d8e0"}`,color:statsScope==="ytd"?"#1a6fa8":"#5a6a78",borderRadius:5,padding:"1px 8px",fontSize:10,fontWeight:600,cursor:"pointer",fontFamily:font,textTransform:"none",letterSpacing:0}}>This year</button>
               </span>
             </div>
             {!Object.values((statsScope==="ytd"?vacDaysYTD:vacDaysPeriod).out).some(v=>v.days>0) ? (
@@ -12951,7 +12960,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                           <td style={{...tdS,fontWeight:700,color:days>0?"#60c0a0":"#3e4e5e",fontSize:15}}>{days}</td>
                           <td style={{padding:"7px 8px",fontSize:11,color:"#5a6a78",fontFamily:mono}}>
                             {ranges.map(([vs,ve],i)=>(
-                              <span key={i}>{i>0?" · ":""}{vs} → {ve}</span>
+                              <span key={i}>{i>0?" · ":""}{rangeText(vs, ve)}</span>
                             ))}
                             {ranges.length===0 && <span style={{color:"#8a94a0"}}>—</span>}
                             {workedD>0 && <span style={{color:"#8a94a0"}}>{" · "}{workedD}d worked (excluded)</span>}
@@ -12972,7 +12981,7 @@ ${"</"}script>${"</"}body>${"</"}html>`;
                           <td style={{...tdS,fontWeight:700,color:days>0?"#60c0a0":"#3e4e5e",fontSize:15}}>{days}</td>
                           <td style={{padding:"7px 8px",fontSize:11,color:"#5a6a78",fontFamily:mono}}>
                             {ranges.map(([vs,ve],i)=>(
-                              <span key={i}>{i>0?" · ":""}{vs} → {ve}</span>
+                              <span key={i}>{i>0?" · ":""}{rangeText(vs, ve)}</span>
                             ))}
                             {workedDA>0 && <span style={{color:"#8a94a0"}}>{" · "}{workedDA}d worked (excluded)</span>}
                           </td>

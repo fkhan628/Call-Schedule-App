@@ -2017,14 +2017,17 @@ ${chainSrc}
   const textOf = (n) => (n == null ? "" : typeof n !== "object" ? String(n) : n.kids.map(textOf).join(""));
   // a card: from its opening line (found once) to its own closing </div> (10 spaces in)
   const cardFrom = (a) => { const i = nsrc.indexOf(a); if (i < 0 || nsrc.indexOf(a, i + 1) !== -1) return null; const j = nsrc.indexOf("\n          </div>", i); return j < 0 ? null : nsrc.slice(i, j + "\n          </div>".length); };
-  const countsSrc = cardFrom('<div style={css.card}>\n            <div style={css.cardT}>{statsScope==="ytd" ? <>Current Period — {ytdRange.start} → {ytdRange.end}</>');
+  // (changed on purpose 2026-11-02, section DB: the year view is "This year — <its span>" now — owner Q8, one name for it)
+  const countsSrc = cardFrom('<div style={css.card}>\n            <div style={css.cardT}>{statsScope==="ytd" ? <>This year — {spanText(ytdRange.start, ytdRange.end)}');
   const vacSrc = cardFrom('<div style={css.card}>\n            <div style={css.cardT}>\n              Vacation Days Used\n');
   const compile = (cardSrc, names, filename) => { try { return cardSrc ? { fn: vm.runInContext(`(function (env) { const { ${names} } = env; return (${jsxCJ(cardSrc)}); })`, sandbox, { filename }) } : { err: "card not found" }; } catch (ex) { return { err: String(ex).slice(0, 200) }; } };
   const CSS = { card: { k: "card" }, cardT: { k: "cardT" } };
   // (changed on purpose 2026-11-02, section DB: the card's empty line is statsEmptyFor(scope) — helpers.js statsEmptyText,
-  // run below for a loaded session; DB runs the loading / failed / member lines)
-  const counts = compile(countsSrc, "h, css, statsScope, ytdRange, periodText, madePeriodText, stats, statsMade, statsYTD, thS, thS2, tdS, showBackupStats, surgeons, isScheduler, mySurgeon, calcRawCount, statsEmptyFor", "cj-counts-card.js");
+  // run below for a loaded session; DB runs the loading / failed / member lines — and its dates are said by the app's
+  // spanText / rangeText, here the helpers.js functions they wrap, on CJ's clock, Oct 24, 2026; DB runs the wrappers)
+  const counts = compile(countsSrc, "h, css, statsScope, ytdRange, periodText, madePeriodText, stats, statsMade, statsYTD, thS, thS2, tdS, showBackupStats, surgeons, isScheduler, mySurgeon, calcRawCount, statsEmptyFor, spanText", "cj-counts-card.js");
   const emptyTextCJ = vm.runInContext('typeof statsEmptyText === "function" ? statsEmptyText : null', sandbox);
+  const spanTextCJ = vm.runInContext('(a, b) => dateSpanLabel(a, b)', sandbox), rangeTextCJ = vm.runInContext('(a, b) => mineRangeLabel(a, b, "2026-10-24")', sandbox);
   const MEMOS = ["  const madeMondays = useMemo(", "  const madePeriodText = useMemo(", "  const statsMade = useMemo("];
   check("CJ2 the REAL Stats memos — the made ones (madeMondays, madePeriodText, statsMade, on madePeriodMondays), statsYTD, ytdRange — with tallySchedule, calcRawCount and the Generate tab's mondays memo slice and compile; the REAL Counts card (its JSX) found once and compiles",
     !!runMemo && !!chain && !!counts.fn && !!mpmSrc && MEMOS.every((m) => chainSrc.includes(m)), J({ runMemo: !!runMemo, chain: !!chain, card: counts.err || "ok", made: !!mpmSrc && MEMOS.filter((m) => chainSrc && chainSrc.includes(m)).length }));
@@ -2042,7 +2045,7 @@ ${chainSrc}
     const { m, mondays } = r;
     const tree = tryRun(() => counts.fn({ h: hh, css: CSS, statsScope: o.scope || "period", ytdRange: m.ytdRange, periodText: ptReal ? ptReal(mondays) : null, madePeriodText: m.madePeriodText, stats: m.stats, statsMade: m.statsMade, statsYTD: m.statsYTD,
       thS: {}, thS2: {}, tdS: {}, showBackupStats: !!o.second, surgeons: SURG, isScheduler: !o.member, mySurgeon: o.member || "s6", calcRawCount: m.calcRawCount,
-      statsEmptyFor: (scope) => (emptyTextCJ ? emptyTextCJ({ loaded: true, seeded: true, loadFailed: false, isScheduler: !o.member, hasWeeks: Object.keys(o.schedule || fixture).length > 0, scope }) : "no statsEmptyText") }));
+      statsEmptyFor: (scope) => (emptyTextCJ ? emptyTextCJ({ loaded: true, seeded: true, loadFailed: false, isScheduler: !o.member, hasWeeks: Object.keys(o.schedule || fixture).length > 0, scope }) : "no statsEmptyText"), spanText: spanTextCJ }));
     if (typeof tree === "string") return { err: tree };
     const nodes = all(tree);
     const title = textOf(nodes.find((x) => x.props.style === CSS.cardT));
@@ -2085,21 +2088,23 @@ ${chainSrc}
   ]);
   check("CJ2 nothing published → \"This Period\" (no dates) and the existing empty line; an old cached helpers.js → the plain dates, never a throw; a member sees only their own row",
     cj2d.every((r) => r.ok), bad(cj2d));
-  const YTD = { title: "Current Period — 2026-11-02 → 2027-01-03", empty: null, rows: "DJA 8/1/4/2/2 · MCC 8/1/5/1/1 · RPC 8/0/6/1/0 · KJH 9/3/4/1/0 · REH 10/2/5/1/0 · FAK 5/1/3/1/4 · ARW 6/0/5/1/1" };
+  // (changed on purpose 2026-11-02, section DB: the same weeks and table, titled "This year — …" — owner Q8 — with readable dates)
+  const YTD = { title: "This year — Nov 2, 2026 – Jan 3, 2027 (all scheduled weeks)", empty: null, rows: "DJA 8/1/4/2/2 · MCC 8/1/5/1/1 · RPC 8/0/6/1/0 · KJH 9/3/4/1/0 · REH 10/2/5/1/0 · FAK 5/1/3/1/4 · ARW 6/0/5/1/1" };
   const cj2e = runCases([
     ["This Period beside it, the same settings: the made period", ["2027-02-22", 14], {}, { title: NOV16, rows: T14, empty: null }],
     ["Year to Date, Generate = Feb 22 × 14", ["2027-02-22", 14], { scope: "ytd" }, YTD],
     ["Year to Date, Generate = Nov 2 × 14", ["2026-11-02", 14], { scope: "ytd" }, YTD],
     ["Year to Date, Show 2nd Call", ["2027-02-22", 14], { scope: "ytd", second: true }, Object.assign({}, YTD, { rows: "DJA 8/1/4/2/2 + 0/1/0/0 · MCC 8/1/5/1/1 + 1/0/0/0 · RPC 8/0/6/1/0 + 0/1/0/0 · KJH 9/3/4/1/0 + 0/1/0/0 · REH 10/2/5/1/0 + 0/1/1/0 · FAK 5/1/3/1/4 + 0/0/0/1 · ARW 6/0/5/1/1 + 0/0/0/0" })],
   ]);
-  check("CJ2 the scope toggle: This Period the made period, Year to Date unchanged — the clock at Oct 24, 2026: \"Current Period — 2026-11-02 → 2027-01-03\" and the 2026 weeks' table exactly as main shows it, whatever the Generate tab says",
-    cj2e.every((r) => r.ok) && countN("<>Current Period — {ytdRange.start} → {ytdRange.end}</>") === 1, bad(cj2e));
+  check("CJ2 the scope toggle: This Period the made period, This year (was Year to Date) the same weeks — the clock at Oct 24, 2026: \"This year — Nov 2, 2026 – Jan 3, 2027 (all scheduled weeks)\" and the 2026 weeks' table exactly as main shows it, whatever the Generate tab says",
+    cj2e.every((r) => r.ok) && countN("<>Current Period — {ytdRange.start} → {ytdRange.end}</>") === 0 && countN("<>This year — {spanText(ytdRange.start, ytdRange.end)}<span") === 1, bad(cj2e));
 
   // CJ3 — the Vacation Days period window: the REAL vacDaysPeriod + countVacDaysInWindow, then the REAL card
   const cvdSrc = after("  const countVacDaysInWindow = ", "\n  const vacDaysPeriod = useMemo(");
   const vdpSrc = span("  const vacDaysPeriod = useMemo(", "\n  // Day-level \"this person actually WORKED");
   const vacMemo = mk(cvdSrc && vdpSrc && `(function (env) { const { vacations, surgeons, apps, madeMondays, mondays, endDate, useMemo } = env;\n  const countVacDaysInWindow = ${cvdSrc}\n${vdpSrc}\n  return vacDaysPeriod; })`, "cj-vac-memo.js");
-  const vac = compile(vacSrc, "h, css, statsScope, vacDaysYTD, vacDaysPeriod, setStatsScope, font, mono, thS, tdS, surgeons, apps, isScheduler, mySurgeon", "cj-vac-card.js");
+  // (changed on purpose 2026-11-02, section DB: the card says its span and ranges through spanText / rangeText — Mine's style)
+  const vac = compile(vacSrc, "h, css, statsScope, vacDaysYTD, vacDaysPeriod, setStatsScope, font, mono, thS, tdS, surgeons, apps, isScheduler, mySurgeon, spanText, rangeText", "cj-vac-card.js");
   // SYNTHETIC people and ranges — never anyone's real time off
   const VS = [{ id: "v1", name: "VA" }, { id: "v2", name: "VB" }, { id: "v3", name: "VC" }, { id: "v4", name: "VD" }, { id: "v5", name: "VE" }], VAP = [{ id: "va1", name: "VAP" }];
   const VAC = {
@@ -2116,7 +2121,7 @@ ${chainSrc}
     const { m, mondays } = r;
     const vdp = tryRun(() => vacMemo({ vacations: VAC, surgeons: VS, apps: VAP, madeMondays: m.madeMondays, mondays, endDate: mondays.length ? H.addD(mondays[mondays.length - 1], 6) : null, useMemo: (f) => f() }));
     if (typeof vdp === "string") return { err: vdp };
-    const tree = tryRun(() => vac.fn({ h: hh, css: CSS, statsScope: "period", vacDaysYTD: { out: {}, start: "", end: "" }, vacDaysPeriod: vdp, setStatsScope() {}, font: "", mono: "", thS: {}, tdS: {}, surgeons: VS, apps: VAP, isScheduler: true, mySurgeon: "v1" }));
+    const tree = tryRun(() => vac.fn({ h: hh, css: CSS, statsScope: "period", vacDaysYTD: { out: {}, start: "", end: "" }, vacDaysPeriod: vdp, setStatsScope() {}, font: "", mono: "", thS: {}, tdS: {}, surgeons: VS, apps: VAP, isScheduler: true, mySurgeon: "v1", spanText: spanTextCJ, rangeText: rangeTextCJ }));
     if (typeof tree === "string") return { err: tree };
     const nodes = all(tree);
     const head = nodes.filter((x) => x.tag === "span").map(textOf).find((t) => t.startsWith(" — ")) || null;
@@ -2125,13 +2130,14 @@ ${chainSrc}
     const p = nodes.find((x) => x.tag === "p");
     return { window: [vdp.pStart, vdp.pEnd, vdp.hasPeriod], head, rows, empty: p ? textOf(p) : null };
   };
-  const VROWS = "v1 4 2027-01-12 → 2027-01-15 · v2 3 2026-11-16 → 2026-11-18 · v3 3 2027-02-19 → 2027-02-21 · v4 0 — · v5 2 2026-12-01 → 2026-12-02 · va1 98 2026-11-16 → 2027-02-21";
-  const VWANT = { window: ["2026-11-16", "2027-02-21", true], head: " — This Period (2026-11-16 → 2027-02-21)", rows: VROWS, empty: null };
+  // (changed on purpose 2026-11-02, section DB: the same windows and day counts, said in Mine's style — CJ's clock, Oct 24, 2026)
+  const VROWS = "v1 4 Tue 1/12/2027 → Fri 1/15/2027 · v2 3 Mon 11/16 → Wed 11/18 · v3 3 Fri 2/19/2027 → Sun 2/21/2027 · v4 0 — · v5 2 Tue 12/1 → Wed 12/2 · va1 98 Mon 11/16 → Sun 2/21/2027";
+  const VWANT = { window: ["2026-11-16", "2027-02-21", true], head: " — This Period (Nov 16, 2026 – Feb 21, 2027)", rows: VROWS, empty: null };
   const cj3 = [["Generate = Feb 22 × 14 (live)", ["2027-02-22", 14], {}, VWANT], ["Generate = Feb 1 × 14", ["2027-02-01", 14], {}, VWANT], ["Generate = Nov 16 × 14", ["2026-11-16", 14], {}, VWANT],
     ["nothing published → no window: the card's all-time fallback, as before", ["2027-02-22", 14], { schedule: {} }, { window: [null, null, false], head: null, empty: null,
-      rows: "v1 4 2027-01-12 → 2027-01-15 · v2 7 2026-11-12 → 2026-11-18 · v3 7 2027-02-19 → 2027-02-25 · v4 5 2027-03-08 → 2027-03-12 · v5 7 2026-10-05 → 2026-10-09 · 2026-12-01 → 2026-12-02 · va1 112 2026-11-10 → 2027-03-01" }],
+      rows: "v1 4 Tue 1/12/2027 → Fri 1/15/2027 · v2 7 Thu 11/12 → Wed 11/18 · v3 7 Fri 2/19/2027 → Thu 2/25/2027 · v4 5 Mon 3/8/2027 → Fri 3/12/2027 · v5 7 Mon 10/5 → Fri 10/9 · Tue 12/1 → Wed 12/2 · va1 112 Tue 11/10 → Mon 3/1/2027" }],
   ].map(([what, [start, n], o, want]) => { const got = viewVac(start, n, o); return { what, ok: same(got, want), got }; });
-  check("CJ3 Vacation Days Used → Period is the made period's first Monday → its last Sunday — \"— This Period (2026-11-16 → 2027-02-21)\" with the Generate tab on Feb 22 × 14 (main: 2027-02-22 → 2027-05-30): synthetic ranges, raw days — one inside 4, one across each edge clamped to 3 and 3, one only in Feb 22 – May 30 0, an APP across both 98; nothing published → the all-time fallback",
+  check("CJ3 Vacation Days Used → This Period is the made period's first Monday → its last Sunday — \"— This Period (Nov 16, 2026 – Feb 21, 2027)\" with the Generate tab on Feb 22 × 14 (main: 2027-02-22 → 2027-05-30): synthetic ranges, raw days — one inside 4, one across each edge clamped to 3 and 3, one only in Feb 22 – May 30 0, an APP across both 98; nothing published → the all-time fallback",
     cj3.every((r) => r.ok), bad(cj3));
 
   // CJ4 — pins
@@ -6632,8 +6638,11 @@ ${rollSrc}
     const WANT_CSV = ["Surgeon,Svc Wk,Nights,Wknds,B-SW,B-Nights,B-Wknds,Total", "S1,31,154,31,3,11,2,440", "S2,30,149,30,1,14,1,413", "S3,29,152,29,2,10,4,420"].join("\n");
     const csv = (stats) => (ok1 ? tryCU(() => csvOf({ surgeons: SURG, priorCounts: pub1.prior, stats, startYear: 2026 })) : null);
     const c1 = csv(statsFor(P, Object.keys(P))), c2 = csv(statsFor(P, NEXT));
-    check("CU3 the REAL exportYearlySummary after that publish: the CSV is priorCounts as stored, every column, exact — \"S1,31,154,31,3,11,2,440\" … (main added the published Generate period again: S1,32,158,32,4,12,2,…) — and the same with the Generate tab on the next period; one download, call-schedule-summary-2026.csv, text/csv",
-      [c1, c2].every((c) => c && typeof c === "object" && c.csv === WANT_CSV && c.file === "call-schedule-summary-2026.csv" && c.type === "text/csv" && c.clicks === 1),
+    // (changed on purpose 2026-11-02, section DB: the file is named for the day it is taken — "Export running totals", QW17;
+    // the CSV itself is unchanged)
+    const FILE_CU = "call-schedule-running-totals-" + vm.runInContext("fmt(new Date())", sandbox) + ".csv";
+    check("CU3 the REAL exportYearlySummary after that publish: the CSV is priorCounts as stored, every column, exact — \"S1,31,154,31,3,11,2,440\" … (main added the published Generate period again: S1,32,158,32,4,12,2,…) — and the same with the Generate tab on the next period; one download, call-schedule-running-totals-<today>.csv, text/csv",
+      [c1, c2].every((c) => c && typeof c === "object" && c.csv === WANT_CSV && c.file === FILE_CU && c.type === "text/csv" && c.clicks === 1),
       J({ c1, c2 }).slice(0, 700));
 
     // CU4 — the gates, as the JSX has them (evaluated), with the Generate tab on the next, unpublished period
@@ -19270,6 +19279,11 @@ console.log("\nAJ. owner decisions 2026-10-13");
 //       decisions' toasts and the Withdraw / Revoke questions (their real templates), Generate's "Current schedule
 //       ends …", a Schedule Warnings line's week ("Nov 2 – Nov 8"), the Silvis card ("covers …"; the setting line in
 //       words for everyone but the scheduler)
+//   DB4 (QW17, Q8) Stats says "This year" everywhere (the counting rule unchanged), with readable dates. Rendered: Counts'
+//       buttons ("⬇ Export running totals (CSV)", This Period / This year, aria-pressed) and its title ("This year — Jan 5,
+//       2026 – Jan 3, 2027 (all scheduled weeks)"), Fairness' toggles and Vacation Days subtitles; no "Year to Date" /
+//       "YTD" / "Current Period" / "Yearly Summary" left on the tab. The REAL export against the one before these quick
+//       wins (test/fixtures/stats-base-3200f94.txt): the same CSV byte for byte, the file named for the day
 console.log("\nDB. Quick wins: the bell, Stats for APPs and members, \"This year\", Mine's dates everywhere, a member's Monthly CSV");
 {
   const nsrcDB = src.replace(/\r\n/g, "\n"), JDB = JSON.stringify;
@@ -19588,10 +19602,12 @@ console.log("\nDB. Quick wins: the bell, Stats for APPs and members, \"This year
       if (t === false) return "none"; if (!okTree(t)) return t; return allDB(t).filter((x) => x.tag === "tr" && x.props.key).map((r) => r.props.key).join(","); };
     const db2f = { app: running(true, "a1"), member: running(false, "s3"), sched: running(false, "s6") };
     const VAC = cutDB('<div style={css.card}>\n            <div style={css.cardT}>\n              Vacation Days Used\n', "\n          </div>", true);
-    const vacOf = viewDB("h, css, statsScope, vacDaysYTD, vacDaysPeriod, setStatsScope, font, mono, thS, tdS, surgeons, apps, isScheduler, mySurgeon, todayStr", VAC && VAC + "\n          </div>", "db2-vac.js");
+    const vacOf = viewDB("h, css, statsScope, vacDaysYTD, vacDaysPeriod, setStatsScope, font, mono, thS, tdS, surgeons, apps, isScheduler, mySurgeon, spanText, rangeText", VAC && VAC + "\n          </div>", "db2-vac.js");
+    const spanDB = vm.runInContext('(a, b) => (typeof dateSpanLabel === "function" ? dateSpanLabel(a, b) : a + " → " + b)', sandbox);
+    const rangeDB = vm.runInContext('(a, b) => (typeof mineRangeLabel === "function" ? mineRangeLabel(a, b, "2026-11-02") : a + " → " + b)', sandbox);
     const VOUT = { s1: { days: 3, ranges: [["2026-11-17", "2026-11-19"]] }, s3: { days: 0, ranges: [] }, a1: { days: 0, ranges: [] }, a2: { days: 2, ranges: [["2026-12-01", "2026-12-02"]] } };
     const vacRows = (who, sched) => { const t = vacOf ? tryDB(() => vacOf({ h: hDB, css: CSSDB, statsScope: "period", vacDaysYTD: { out: {}, start: "", end: "" }, vacDaysPeriod: { out: VOUT, pStart: "2026-11-16", pEnd: "2027-02-21", hasPeriod: true },
-      setStatsScope() {}, font: "F", mono: "M", thS: {}, tdS: {}, surgeons: SURG2, apps: APPS.slice(0, 2), isScheduler: sched, mySurgeon: who, todayStr: "2026-11-02" })) : "not found";
+      setStatsScope() {}, font: "F", mono: "M", thS: {}, tdS: {}, surgeons: SURG2, apps: APPS.slice(0, 2), isScheduler: sched, mySurgeon: who, spanText: spanDB, rangeText: rangeDB })) : "not found";
       if (!okTree(t)) return t; const tb = allDB(t).find((x) => x.tag === "tbody"); return tb ? tb.kids.map((r) => r.props.key + " " + textDB(r.kids[1])).join(" · ") : "no table"; };
     const db2g = { appMA: vacRows("a1", false), sched: vacRows("s6", true), member: vacRows("s3", false) };
     check("DB2 Fairness for an APP (the real JSX, rendered): no Running Totals card (surgeons' totals only — it drew two tables' headers over no rows), a member and the scheduler still see it as before; Vacation Days Used lists the APP's own row even at 0 days, while the scheduler's list still leaves an APP with none out",
@@ -19707,6 +19723,89 @@ console.log("\nDB. Quick wins: the bell, Stats for APPs and members, \"This year
     check("DB3 the Silvis feed card (the real JSX, rendered): a member reads \" · Silvis conflict check is off\" (it read \"rule silvisBusy is OFF (silvisRule.enabled = false in the config blob)\"), the scheduler keeps both technical lines; nothing while the rule is on; the cache covers \"Thu 10/1 → Sun 1/31/2027\"",
       db3d.member === " · Silvis conflict check is off" && db3d.memberCode === " · Silvis conflict check is off" && db3d.sched === " · rule silvisBusy is OFF (silvisRule.enabled = false in the config blob)"
         && db3d.schedCode === ' · code "XYZ" is not on the roster — rule silvisBusy is inactive' && db3d.active === false && db3d.covers === " · covers Thu 10/1 → Sun 1/31/2027", JDB(db3d));
+  }
+  // ── DB4 (QW17, owner Q8) — "This year" everywhere on Stats, readable dates, "Export running totals" with a dated file ──
+  {
+    const FIXDB = fs.readFileSync(path.join(ROOT, "test", "fixtures", "stats-base-3200f94.txt"), "utf8").replace(/\r\n/g, "\n");
+    const BASE = {};
+    { const p = FIXDB.split(/\n?\/\/@@ (\w+) — [^\n]*\n/); for (let k = 1; k + 1 < p.length; k += 2) BASE[p[k]] = p[k + 1]; }
+    const SPW = cutDB("  const spanText = (a, b) => ", "\n", true);
+    const spanOfCtx = (ctx) => (SPW ? tryDB(() => vm.runInContext(`(function () { ${SPW}\n return spanText; })()`, ctx)) : null);
+    const spanReal = spanOfCtx(sandbox), spanOld = spanOfCtx(vm.createContext({}));
+    const rangeReal = vm.runInContext('(a, b) => mineRangeLabel(a, b, "2026-11-02")', sandbox);
+    const SNAME = [{ id: "s1", name: "DJA" }, { id: "s3", name: "RPC" }];
+    // the Counts sub-tab (the real JSX, rendered): its buttons, their pressed state, and the card's title
+    const CT = cutDB('{statsTabShown==="counts" && (<>', "\n          </>)}", true);
+    const countsOf = CT ? viewDB("h, statsTabShown, isScheduler, exportYearlySummary, css, setStatsScope, statsScope, font, setShowBackupStats, showBackupStats, ytdRange, spanText, madePeriodText, statsYTD, statsMade, statsEmptyFor, thS, thS2, tdS, surgeons, mySurgeon, calcRawCount",
+      CT.slice(1) + "\n          </>)", "db4-counts.js") : null;
+    const TALLY = { s1: { dc: 1, nights: 4, wknd: 2, off: 1 }, s3: { dc: 0, nights: 6, wknd: 1, off: 0 } };
+    const countsView = (o) => {
+      const calls = [];
+      const t = countsOf ? tryDB(() => countsOf({ h: hDB, statsTabShown: "counts", isScheduler: !!o.sched, exportYearlySummary: () => calls.push("export"), css: { card: { k: "card" }, cardT: { k: "cardT" }, btn: () => ({}) }, setStatsScope: (s) => calls.push("scope " + s),
+        statsScope: o.scope, font: "F", setShowBackupStats: () => calls.push("2nd"), showBackupStats: false, ytdRange: o.range || { start: "2026-01-05", end: "2027-01-03", hasData: true }, spanText: o.span || spanReal,
+        madePeriodText: "Nov 16, 2026 – Feb 21, 2027", statsYTD: TALLY, statsMade: TALLY, statsEmptyFor: () => "EMPTY", thS: {}, thS2: {}, tdS: {}, surgeons: SNAME, mySurgeon: o.sched ? "s6" : "s3", calcRawCount: (s) => (s.dc || 0) + (s.nights || 0) + (s.wknd || 0) })) : "not found";
+      if (!okTree(t)) return { err: t };
+      const n = allDB(t), bs = n.filter((x) => x.tag === "button");
+      bs.forEach((b) => b.props.onClick());
+      return { buttons: bs.map((b) => textDB(b).trim() + (b.props["aria-pressed"] === true ? "*" : "")), title: textDB(n.find((x) => x.props.style && x.props.style.k === "cardT")), calls };
+    };
+    const db4a = { schedYear: countsView({ sched: true, scope: "ytd" }), memberPeriod: countsView({ scope: "period" }), sameYear: countsView({ sched: true, scope: "ytd", range: { start: "2026-11-02", end: "2026-12-27", hasData: true } }),
+      oldHelpers: countsView({ sched: true, scope: "ytd", span: spanOld }) };
+    check("DB4 Stats → Counts (the real JSX, rendered): the scheduler's \"⬇ Export running totals (CSV)\" (it said \"Export Yearly Summary\"), \"This Period\" / \"This year\" (it said \"Year to Date\") — the shown one aria-pressed — and \"This year — Jan 5, 2026 – Jan 3, 2027 (all scheduled weeks)\" (it said \"Current Period — 2026-01-05 → 2027-01-03\"; in one year \"Nov 2 – Dec 27, 2026\"); a member: no export, the same scope buttons; each button does what it did; an old cached helpers.js: the plain dates",
+      JDB(db4a.schedYear.buttons) === JDB(["⬇ Export running totals (CSV)", "This Period", "This year*", "Show 2nd Call"]) && db4a.schedYear.title === "This year — Jan 5, 2026 – Jan 3, 2027 (all scheduled weeks)"
+        && JDB(db4a.schedYear.calls) === JDB(["export", "scope period", "scope ytd", "2nd"]) && JDB(db4a.memberPeriod.buttons) === JDB(["This Period*", "This year", "Show 2nd Call"]) && db4a.memberPeriod.title === "This Period — Nov 16, 2026 – Feb 21, 2027"
+        && db4a.sameYear.title === "This year — Nov 2 – Dec 27, 2026 (all scheduled weeks)" && db4a.oldHelpers.title === "This year — 2026-01-05 → 2027-01-03 (all scheduled weeks)", JDB(db4a));
+
+    // the Fairness tab's Vacation Days Used card (the real JSX, rendered): its scope toggles and dates
+    const VAC4 = cutDB('<div style={css.card}>\n            <div style={css.cardT}>\n              Vacation Days Used\n', "\n          </div>", true);
+    const vac4Of = viewDB("h, css, statsScope, vacDaysYTD, vacDaysPeriod, setStatsScope, font, mono, thS, tdS, surgeons, apps, isScheduler, mySurgeon, spanText, rangeText", VAC4 && VAC4 + "\n          </div>", "db4-vac.js");
+    const OUT4 = { s1: { days: 3, worked: 0, ranges: [["2026-11-17", "2026-11-19"]] }, s3: { days: 1, worked: 1, ranges: [["2027-01-04", "2027-01-05"]] } };
+    const vac4 = (scope) => {
+      const calls = [];
+      const t = vac4Of ? tryDB(() => vac4Of({ h: hDB, css: { card: {}, cardT: { k: "cardT" } }, statsScope: scope, vacDaysYTD: { out: OUT4, start: "2026-01-05", end: "2027-01-03" }, vacDaysPeriod: { out: OUT4, pStart: "2026-11-16", pEnd: "2027-02-21", hasPeriod: true },
+        setStatsScope: (s) => calls.push(s), font: "F", mono: "M", thS: {}, tdS: {}, surgeons: SNAME, apps: [], isScheduler: true, mySurgeon: "s6", spanText: spanReal, rangeText: rangeReal })) : "not found";
+      if (!okTree(t)) return { err: t };
+      const n = allDB(t), bs = n.filter((x) => x.tag === "button");
+      bs.forEach((b) => b.props.onClick());
+      const tb = n.find((x) => x.tag === "tbody");
+      return { sub: n.filter((x) => x.tag === "span").map(textDB).find((s) => s.startsWith(" — ")) || null, toggles: bs.map((b) => textDB(b) + (b.props["aria-pressed"] === true ? "*" : "")), calls,
+        rows: tb ? tb.kids.map((r) => textDB(r.kids[2])) : null };
+    };
+    const db4b = { year: vac4("ytd"), period: vac4("period") };
+    check("DB4 Fairness → Vacation Days Used (the real JSX, rendered): its toggles say \"This Period\" / \"This year\" (they said \"Period\" / \"YTD\") with aria-pressed; This year — \" — This year (Jan 5, 2026 – Jan 3, 2027) · days actually taken off — worked-vacation days excluded\" (it said \"Current Period (2026-01-05 → 2027-01-03)\"); This Period — \" — This Period (Nov 16, 2026 – Feb 21, 2027)\"; the periods in Mine's style",
+      db4b.year.sub === " — This year (Jan 5, 2026 – Jan 3, 2027) · days actually taken off — worked-vacation days excluded" && JDB(db4b.year.toggles) === JDB(["This Period", "This year*"]) && JDB(db4b.year.calls) === JDB(["period", "ytd"])
+        && db4b.period.sub === " — This Period (Nov 16, 2026 – Feb 21, 2027)" && JDB(db4b.period.toggles) === JDB(["This Period*", "This year"])
+        && JDB(db4b.year.rows) === JDB(["Tue 11/17 → Thu 11/19", "Mon 1/4/2027 → Tue 1/5/2027 · 1d worked (excluded)"]), JDB(db4b));
+    // one name on the whole tab: no "Year to Date", "YTD", "Current Period" or "Yearly Summary" left on screen (comments aside)
+    const STATS = cutDB("{/* ════════════════ STATS ════════════════ */}", "{/* ════════════════ MY SCHEDULE ════════════════ */}", true) || "";
+    const shown4 = STATS.replace(/^[ \t]*\/\/.*$/gm, "").replace(/\{\/\*[\s\S]*?\*\/\}/g, "");
+    check("DB4 one name for the scope on the whole Stats tab (owner Q8): no \"Year to Date\", \"YTD\", \"Current Period\" or \"Yearly Summary\" left on it (comments aside), \"This year\" on the Counts button and title, the Fairness toggle and its subtitle",
+      !!STATS && !/Year to Date|\bYTD\b|Current Period|Yearly Summary/.test(shown4) && (shown4.match(/This year/g) || []).length === 4, JDB({ found: (shown4.match(/Year to Date|\bYTD\b|Current Period|Yearly Summary/g) || []), thisYear: (shown4.match(/This year/g) || []).length }));
+
+    // the export: the REAL exportYearlySummary and the one before these quick wins, on the same counts — the CSV byte for byte
+    const EYS = cutDB("  const exportYearlySummary = useCallback(() => {", "\n  }, [surgeons, ", true);
+    const CSH = cutDB("  const calcShifts = ", "\n", false);
+    const runEys = (code) => {
+      if (!code || !CSH) return { err: "not found" };
+      const out = {};
+      const f = tryDB(() => vm.runInContext(`(function (env) { const { surgeons, priorCounts, startYear, Date } = env; const useCallback = (f) => f;
+  const Blob = function (parts, o) { env.out.csv = parts.join(""); env.out.type = o && o.type; };
+  const URL = { createObjectURL: () => "blob:db", revokeObjectURL: () => {} };
+  const document = { createElement: () => { const a = { click: () => { env.out.file = a.download; env.out.clicks = (env.out.clicks || 0) + 1; } }; return a; } };
+  const calcShifts = ${CSH}
+${code.replace(/\n  \}, \[surgeons, [^\n]*$/, "")}
+  });
+  exportYearlySummary(); })`, sandbox, { filename: "db4-export.js" }));
+      if (typeof f !== "function") return { err: f };
+      const D4 = vm.runInContext("(function () { return class extends Date { constructor(...a) { if (a.length) super(...a); else super(2026, 10, 2, 12); } }; })()", sandbox);
+      const r = tryDB(() => f({ surgeons: [{ id: "s1", name: "DJA" }, { id: "s2", name: "MCC" }, { id: "s3", name: "RPC" }], startYear: 2026, Date: D4, out,
+        priorCounts: { s1: { dc: 30, nights: 149, wknd: 32, dcB: 3, nightsB: 11, wkndB: 2, totalDays: 400, totalDaysB: 18 }, s2: { dc: 29, nights: 150, wknd: 31, totalDaysB: 4 } } }));
+      return typeof r === "string" ? { err: r } : out;
+    };
+    const eNew = runEys(EYS && EYS + "\n  }, [surgeons, priorCounts, startYear, calcShifts]);"), eOld = runEys(BASE.exportYearlySummary);
+    check("DB4 \"⬇ Export running totals\" (the REAL export, run on the same counts as the one before these quick wins, frozen in test/fixtures/stats-base-3200f94.txt): the CSV is byte for byte the same — the multi-year totals as stored; the file is now named for the day, call-schedule-running-totals-2026-11-02.csv (it was call-schedule-summary-2026.csv, after the Generate tab's year)",
+      !!eNew.csv && eNew.csv === eOld.csv && eNew.csv.split("\n")[0] === "Surgeon,Svc Wk,Nights,Wknds,B-SW,B-Nights,B-Wknds,Total" && eNew.csv.split("\n").length === 4 && eNew.file === "call-schedule-running-totals-2026-11-02.csv"
+        && eOld.file === "call-schedule-summary-2026.csv" && eNew.type === "text/csv" && eNew.clicks === 1, JDB({ eNew, eOld }).slice(0, 700));
   }
 }
 
