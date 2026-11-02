@@ -14189,7 +14189,8 @@ console.log("\nAY. On Call Today: an \"On call now\" line");
     wiredOk && count(HCT) === 1 && hc > 0 && /^  const hasCallToday = [^\n]*\n(?:[ \t]*\/\/[^\n]*\n)*$/.test(src.slice(hc, w0)), `${hc} < ${w0} < ${w1}`);
   let wire = null;
   try {
-    wire = wiredOk ? vm.runInContext("(function (env) {\n  const { schedule, sMap, useState, useEffect, setInterval, clearInterval } = env;\n  const Date = env.Date;\n"
+    // (+ scheduleRef, changed ON PURPOSE 2026-11-02: the window key reads the schedule mirror, so a handed-off Sunday turns it at its hour — section CZ)
+    wire = wiredOk ? vm.runInContext("(function (env) {\n  const { schedule, sMap, useState, useEffect, setInterval, clearInterval, scheduleRef } = env;\n  const Date = env.Date;\n"
       + src.slice(w0, w1 + EFF.length) + "\n  return { callNow, callNowName, callNowLine, key: nowWindowKey() };\n})", sandbox, { filename: "on-call-now-wiring.js" }) : null;
   } catch (ex) { check("AY4 …and it compiles standalone", false, String(ex)); }
   const clock = { ms: 0 };
@@ -14198,7 +14199,7 @@ console.log("\nAY. On Call Today: an \"On call now\" line");
     clock.ms = when.getTime();
     const st = { init: [], sets: [], effects: [], intervals: [], cleared: [] };
     try {
-      const r = wire({ schedule: SCHED, sMap, Date: PinnedDate,
+      const r = wire({ schedule: SCHED, scheduleRef: { current: SCHED }, sMap, Date: PinnedDate,
         useState: (i) => { const v = typeof i === "function" ? i() : i; st.init.push(v); return [v, (nv) => st.sets.push(nv)]; },
         useEffect: (fn, deps) => { st.effects.push({ fn, deps }); },
         setInterval: (fn, ms) => { st.intervals.push({ fn, ms }); return 4242; },
@@ -14239,7 +14240,7 @@ console.log("\nAY. On Call Today: an \"On call now\" line");
     for (let t = from.getTime(); t < to.getTime(); t += 60000) {
       clock.ms = t;
       let r;
-      try { r = wire({ schedule: SCHED, sMap: SM, Date: PinnedDate, useState: (i) => [typeof i === "function" ? i() : i, () => {}], useEffect: () => {}, setInterval: () => 0, clearInterval: () => {} }); } catch (ex) { out.missed.push(String(ex).slice(0, 80)); break; }
+      try { r = wire({ schedule: SCHED, scheduleRef: { current: SCHED }, sMap: SM, Date: PinnedDate, useState: (i) => [typeof i === "function" ? i() : i, () => {}], useEffect: () => {}, setInterval: () => 0, clearInterval: () => {} }); } catch (ex) { out.missed.push(String(ex).slice(0, 80)); break; }
       const cur = { a: sig(r.callNow) + "|" + (r.callNowLine ? r.callNowLine.text : ""), k: r.key };
       if (prev) {
         if (cur.a !== prev.a) out.answerChanges++;
@@ -14273,7 +14274,7 @@ console.log("\nAY. On Call Today: an \"On call now\" line");
     count("{hasCallToday && (") === 0 && count("{hasCallToday && <>") === 1 && count(HCT) === 1 && b0 > 0 && b1 > b0 && !src.slice(b0, b1).includes("callNow"), `${count("{hasCallToday && <>")} ${count(HCT)} ${b0}..${b1}`);
   const iKey = src.indexOf("  const nowWindowKey = () => "), iState = src.indexOf("  const [, setNowWindow] = useState(nowWindowKey);");
   check("AY5 the tick's key (Central: onCallWindowKey) and state are declared before the effect that uses them, all at the component's top level (2-space indent, never inside a condition)",
-    count("const nowWindowKey = () => (typeof onCallWindowKey === \"function\" ? onCallWindowKey(new Date()) : \"\");") === 1 && count("const [, setNowWindow] = useState(nowWindowKey);") === 1 && iKey > 0 && iKey < iState && iState < w1
+    count("const nowWindowKey = () => (typeof onCallWindowKey === \"function\" ? onCallWindowKey(new Date(), scheduleRef.current) : \"\");") === 1 && count("const [, setNowWindow] = useState(nowWindowKey);") === 1 && iKey > 0 && iKey < iState && iState < w1
       && src.slice(iKey - 1, iKey) === "\n" && src.slice(iState - 1, iState) === "\n" && src.slice(w1 - 1, w1) === "\n" && !/getHours\(\)/.test(src.slice(w0, w1)), `${iKey} < ${iState} < ${w1}`);
 
   // AY6 — review fix: the first morning past the published schedule. Last night's holder is on call until 7a, but today
@@ -14281,7 +14282,7 @@ console.log("\nAY. On Call Today: an \"On call now\" line");
   // was hidden. The banner's own gate, executed (AO3 slices it), with the real wiring's answer at that minute.
   {
     const PAST = { "2026-12-21": { dayCall: "s1", nights: { mon: "s3", wknd: "s4" } }, "2026-12-28": { dayCall: "s5", nights: { mon: "s1", wknd: "s2" } } }; // published through Sun 1/3/2027
-    const mountP = (when) => { clock.ms = when.getTime(); try { return wire({ schedule: PAST, sMap: SM, Date: PinnedDate, useState: (i) => [typeof i === "function" ? i() : i, () => {}], useEffect: () => {}, setInterval: () => 0, clearInterval: () => {} }); } catch (ex) { return { err: String(ex).slice(0, 160) }; } };
+    const mountP = (when) => { clock.ms = when.getTime(); try { return wire({ schedule: PAST, scheduleRef: { current: PAST }, sMap: SM, Date: PinnedDate, useState: (i) => [typeof i === "function" ? i() : i, () => {}], useEffect: () => {}, setInterval: () => 0, clearInterval: () => {} }); } catch (ex) { return { err: String(ex).slice(0, 160) }; } };
     const nsrcG = nsrcY.slice(B0, BH);
     const gm = nsrcG.match(/\{\(([^\n]*?)\) && \(\n/);
     let gate = null;

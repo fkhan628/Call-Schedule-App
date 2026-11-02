@@ -8673,8 +8673,10 @@ ${"</"}script>${"</"}body>${"</"}html>`;
   // Re-render when the on-call window turns over (midnight, 7a, 5p — Central, as onCallNow reads
   // them: helpers.js onCallWindowKey), so a phone left open or the OR board never keeps the last
   // window's holder. The 60-s data poll re-renders only while its reads succeed; this needs no
-  // network. Same window = same value, so React skips the render.
-  const nowWindowKey = () => (typeof onCallWindowKey === "function" ? onCallWindowKey(new Date()) : "");
+  // network. Same window = same value, so React skips the render. It reads the schedule mirror
+  // (scheduleRef — the []-deps tick keeps the first render's closure): a handed-off Sunday
+  // (helpers.js handoffOn) turns the key at its hour too (2026-11-02).
+  const nowWindowKey = () => (typeof onCallWindowKey === "function" ? onCallWindowKey(new Date(), scheduleRef.current) : "");
   const [, setNowWindow] = useState(nowWindowKey);
   useEffect(() => { const t = setInterval(() => setNowWindow(nowWindowKey()), 60000); return () => clearInterval(t); }, []);
 
