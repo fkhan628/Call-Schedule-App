@@ -54,7 +54,7 @@
     // ─── Auto-update: bump this version string each deploy ───
     // SINGLE SOURCE OF TRUTH for the app version. The cache-bust script
     // below (line ~102) reads APP_VERSION directly — do not duplicate.
-    var APP_VERSION = "2026.11.02c";
+    var APP_VERSION = "2026.11.02d";
     (function() {
       var stored = localStorage.getItem("dsg_app_version");
       var mismatch = stored && stored !== APP_VERSION;
@@ -1610,7 +1610,8 @@ function CallSchedule() {
   }, [isScheduler, userProfile]);
   const deleteTimeOff = async (filter, opts) => {
     const ep = sessionEpochRef.current,
-      quiet = !!(opts && opts.quiet);
+      quiet = !!(opts && opts.quiet),
+      wantRows = !!(opts && opts.rows);
     const tell = () => {
       if (!quiet && sessionEpochRef.current === ep) showToast("Couldn't remove that — check your connection and try again.", "error");
     };
@@ -1619,7 +1620,9 @@ function CallSchedule() {
       try {
         res = await fetch(`${SUPABASE_URL}/rest/v1/time_off?${filter}`, {
           method: "DELETE",
-          headers: dbAuthHeaders()
+          headers: wantRows ? _objectSpread(_objectSpread({}, dbAuthHeaders()), {}, {
+            Prefer: "return=representation"
+          }) : dbAuthHeaders()
         });
       } finally {
         timeOffLoadSeqRef.current.del++;
@@ -1632,8 +1635,13 @@ function CallSchedule() {
           ok: false
         };
       }
-      return {
+      if (!wantRows) return {
         ok: true
+      };
+      const rows = await res.json().catch(() => null);
+      return {
+        ok: true,
+        rows: Array.isArray(rows) ? rows : null
       };
     } catch (e) {
       console.error("time_off delete ex", e);
@@ -1710,6 +1718,46 @@ function CallSchedule() {
     if (!USE_TIME_OFF) return;
     const q = rowId ? `id=eq.${rowId}` : `person_id=eq.${encodeURIComponent(personId)}&kind=eq.${kind}&start_date=eq.${start}&end_date=eq.${end}`;
     await deleteTimeOff(q);
+  };
+  const toRemoveRequested = async (personId, kind, start, end, who) => {
+    const overlaps = ([s, e]) => s <= end && e >= start;
+    const noun = kind === "nocall" ? "no-call days" : "vacation";
+    const say = (s, e) => typeof mineRangeLabel === "function" ? mineRangeLabel(s, e, fmt(new Date())) : `${s} → ${e}`;
+    const audit = (s, e) => logAudit(kind + ".remove", `Removed ${kind === "nocall" ? "no-call" : "vacation"} for ${who}: ${s}${s !== e ? " → " + e : ""}`, {
+      person_id: personId,
+      kind,
+      start: s,
+      end: e,
+      revoked: `${start} → ${end}`
+    });
+    if (!USE_TIME_OFF) {
+      setterFor(kind)(p => _objectSpread(_objectSpread({}, p), {}, {
+        [personId]: (p[personId] || []).filter(r => !overlaps(r))
+      }));
+      audit(start, end);
+      return;
+    }
+    const ep = sessionEpochRef.current;
+    try {
+      const res = await deleteTimeOff(`person_id=eq.${encodeURIComponent(personId)}&kind=eq.${kind}&start_date=lte.${end}&end_date=gte.${start}`, {
+        rows: true
+      });
+      if (!res || !res.ok || !Array.isArray(res.rows)) return;
+      const rows = res.rows;
+      if (rows.length) {
+        const ids = new Set(rows.map(r => r.id).filter(id => id != null)),
+          pairs = new Set(rows.map(r => r.start_date + "|" + r.end_date));
+        setterFor(kind)(p => _objectSpread(_objectSpread({}, p), {}, {
+          [personId]: (p[personId] || []).filter(([s, e, id]) => !(id != null && ids.has(id)) && !pairs.has(s + "|" + e))
+        }));
+        rows.forEach(r => audit(r.start_date, r.end_date));
+      }
+      if (sessionEpochRef.current !== ep) return;
+      const other = rows.filter(r => r.start_date !== start || r.end_date !== end);
+      if (!rows.length) showToast(`${who}'s ${noun} ${say(start, end)} was already off the time off list — nothing to remove.`, "info");else if (other.length) showToast(`Removed ${who}'s ${noun} ${rows.map(r => say(r.start_date, r.end_date)).join(" and ")} — ${other.length === rows.length ? "not" : "more than"} the request's exact days (${say(start, end)}). Check Setup.`, "error");
+    } catch (e) {
+      console.error("time_off revoke removal ex", e);
+    }
   };
   const toEdit = async (personId, kind, oldStart, oldEnd, newStart, newEnd) => {
     if (!newStart || !newEnd) return;
@@ -2945,7 +2993,9 @@ function CallSchedule() {
       setVacReqReason("");
       setVacReqType("vacation");
       showToast(`${isNoCall ? "No-call" : "Vacation"} request sent.`, "success");
-      await addNotification("vacation_submitted", isNoCall ? "No-Call Request" : "Vacation Request", typeof requestNoticeText === "function" ? requestNoticeText("submitted", req) : `${surgeonName} requested ${kindLabel} ${vacReqStart} to ${vacReqEnd}`, {
+      await addNotification("vacation_submitted", isNoCall ? "No-Call Request" : "Vacation Request", typeof requestNoticeText === "function" ? requestNoticeText("submitted", req, {
+        today: fmt(new Date())
+      }) : `${surgeonName} requested ${kindLabel} ${vacReqStart} to ${vacReqEnd}`, {
         surgeon_id: vacReqSurgeon
       }, schedulerAdminIds, ep);
       if (!live()) return;
@@ -2956,7 +3006,7 @@ function CallSchedule() {
         end_date: vacReqEnd,
         reason: vacReqReason,
         request_type: vacReqType,
-        dates: typeof requestDates === "function" ? requestDates(vacReqStart, vacReqEnd) : undefined
+        dates: typeof requestDates === "function" ? requestDates(vacReqStart, vacReqEnd, fmt(new Date())) : undefined
       }, schedulerAdminIds, ep);
     } catch (e) {
       console.error("Submit request error:", e);
@@ -3055,7 +3105,9 @@ function CallSchedule() {
       });
       const kindLabel = isNoCall ? "no-call days" : "vacation";
       const approveTargets = [...new Set([req.surgeon_id, ...schedulerAdminIds].filter(Boolean))];
-      await addNotification("vacation_approved", isNoCall ? "No-Call Approved" : "Vacation Approved", typeof requestNoticeText === "function" ? requestNoticeText("approved", req) : `${req.surgeon_name}'s ${kindLabel} ${req.start_date} to ${req.end_date} was approved`, {
+      await addNotification("vacation_approved", isNoCall ? "No-Call Approved" : "Vacation Approved", typeof requestNoticeText === "function" ? requestNoticeText("approved", req, {
+        today: fmt(new Date())
+      }) : `${req.surgeon_name}'s ${kindLabel} ${req.start_date} to ${req.end_date} was approved`, {
         surgeon_id: req.surgeon_id
       }, approveTargets, ep);
       if (!live()) return;
@@ -3065,7 +3117,7 @@ function CallSchedule() {
         start_date: req.start_date,
         end_date: req.end_date,
         request_type: req.request_type,
-        dates: typeof requestDates === "function" ? requestDates(req.start_date, req.end_date) : undefined
+        dates: typeof requestDates === "function" ? requestDates(req.start_date, req.end_date, fmt(new Date())) : undefined
       }, approveTargets, ep);
     } catch (e) {
       console.error("Approve error:", e);
@@ -3120,7 +3172,8 @@ function CallSchedule() {
       denyAudit();
       const denyTargets = [...new Set([req.surgeon_id, ...schedulerAdminIds].filter(Boolean))];
       await addNotification("vacation_denied", isNoCall ? "No-Call Denied" : "Vacation Denied", typeof requestNoticeText === "function" ? requestNoticeText("denied", req, {
-        note
+        note,
+        today: fmt(new Date())
       }) : `${req.surgeon_name}'s ${kindLabel} ${req.start_date} to ${req.end_date} was denied${note ? ": " + note : ""}`, {
         surgeon_id: req.surgeon_id
       }, denyTargets, ep);
@@ -3132,7 +3185,7 @@ function CallSchedule() {
         end_date: req.end_date,
         note,
         request_type: req.request_type,
-        dates: typeof requestDates === "function" ? requestDates(req.start_date, req.end_date) : undefined
+        dates: typeof requestDates === "function" ? requestDates(req.start_date, req.end_date, fmt(new Date())) : undefined
       }, denyTargets, ep);
     } catch (e) {
       console.error("Deny error:", e);
@@ -3876,11 +3929,12 @@ function CallSchedule() {
         status: "revoked"
       }) : r));
       showToast(`Revoked — ${req.surgeon_name}'s ${kindLabel}, ${typeof mineRangeLabel === "function" ? mineRangeLabel(req.start_date, req.end_date, fmt(new Date())) : `${req.start_date} to ${req.end_date}`}.`, "success");
-      toRemove(req.surgeon_id, isNoCall ? "nocall" : "vacation", req.start_date, req.end_date);
+      toRemoveRequested(req.surgeon_id, isNoCall ? "nocall" : "vacation", req.start_date, req.end_date, req.surgeon_name);
       const revokeTargets = [...new Set([req.surgeon_id, ...schedulerAdminIds].filter(Boolean))];
       const revokedBy = (userProfile === null || userProfile === void 0 ? void 0 : userProfile.display_name) || ((_surgeons$find10 = surgeons.find(s => s.id === mySurgeon)) === null || _surgeons$find10 === void 0 ? void 0 : _surgeons$find10.name) || "";
       const said = typeof requestNoticeText === "function" ? requestNoticeText("revoked", req, {
-        by: revokedBy
+        by: revokedBy,
+        today: fmt(new Date())
       }) : "";
       const revokeMsg = /\brevoked\b/.test(said) ? said : `${req.surgeon_name}'s ${kindLabel} ${req.start_date} → ${req.end_date} was revoked`;
       await addNotification("vacation_revoked", isNoCall ? "No-Call Revoked" : "Vacation Revoked", revokeMsg, {
@@ -3893,7 +3947,7 @@ function CallSchedule() {
         start_date: req.start_date,
         end_date: req.end_date,
         request_type: req.request_type,
-        dates: typeof requestDates === "function" ? requestDates(req.start_date, req.end_date) : undefined,
+        dates: typeof requestDates === "function" ? requestDates(req.start_date, req.end_date, fmt(new Date())) : undefined,
         revoked_by: revokedBy || undefined,
         detail: revokeMsg,
         message: revokeMsg
