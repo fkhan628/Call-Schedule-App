@@ -2408,8 +2408,9 @@ ${chainSrc}
         afterBE("  const acceptTradeRequest = useCallback(", ", [schedule, surgeons, pushUndo, addNotification, sendEmailNotif, detectCascadeChanges, schedulerAdminIds, silvisActive, silvisBlock, silvisRefuse]);")),
       decline: fnBE("SUPABASE_URL, dbAuthHeaders, console, showToast, setTradeRequests, logAudit, sessionEpochRef, sendEmailNotif, userProfile, surgeons, mySurgeon, addNotification, fetch",
         afterBE("  const declineTradeRequest = useCallback(", ", [addNotification, sendEmailNotif, userProfile, surgeons, mySurgeon]);")),
-      // (changed ON PURPOSE 2026-11-02 — DF6: the revoke e-mails too and names who revoked it; its deps list what it reads)
-      revoke: fnBE("sessionEpochRef, dbAuthHeaders, confirm, fetch, SUPABASE_URL, console, showToast, setBackRequest, setVacRequests, toRemove, schedulerAdminIds, addNotification, sendEmailNotif, userProfile, surgeons, mySurgeon",
+      // (changed ON PURPOSE 2026-11-02 — DF6: the revoke e-mails too and names who revoked it; its deps list what it reads;
+      // DF8: its removal is toRemoveRequested, whatever overlaps the request's days)
+      revoke: fnBE("sessionEpochRef, dbAuthHeaders, confirm, fetch, SUPABASE_URL, console, showToast, setBackRequest, setVacRequests, toRemoveRequested, schedulerAdminIds, addNotification, sendEmailNotif, userProfile, surgeons, mySurgeon",
         afterBE("  const revokeApprovedVac = useCallback(", ", [addNotification, sendEmailNotif, schedulerAdminIds, userProfile, surgeons, mySurgeon]);")),
     };
     const TREQ = { id: 9, from_surgeon_id: "s6", to_surgeon_id: "s1", from_surgeon_name: "FAK", to_surgeon_name: "AAA", week_monday: "2099-01-05", shift_key: "tue", shift_label: "Tue Night", return_week: null, return_shift: null, status: "pending" };
@@ -2427,8 +2428,8 @@ ${chainSrc}
         sendEmailNotif: (type) => ev.push("email " + type),
         logAudit: () => {}, setBackRequest: async () => { ev.push("set back"); return true; },
         setVacRequests: () => ev.push("list"), setTradeRequests: () => ev.push("list"), toAdd: () => ev.push("time off"),
-        // (removeFails: the time_off DELETE fails — the real toRemove's own toast, deleteTimeOff's tell())
-        toRemove: () => { ev.push("time off"); if (removeFails) ev.push("toast error: Couldn't remove that — check your connection and try again."); },
+        // (removeFails: the time_off DELETE fails — the real toRemoveRequested's own toast, deleteTimeOff's tell())
+        toRemoveRequested: () => { ev.push("time off"); if (removeFails) ev.push("toast error: Couldn't remove that — check your connection and try again."); },
         surgeons: SURG_BE, vacations: {}, noCallDays: {}, userProfile: { display_name: "FAK" }, mySurgeon: "s1", schedulerAdminIds: ["s6"],
         // the accept: the trade still holds (FAK holds the Tuesday), no cascades, nothing Silvis
         schedule: {}, scheduleRef: { current: { "2099-01-05": { dayCall: "s3", nights: { tue: "s6" }, off: null } } }, schedEditable: () => true, detectCascadeChanges: () => [],
@@ -20464,6 +20465,16 @@ await (async () => {
 //       switch and opening Requests. The review of QW5: nothing about the schedule in the sentence (whatever the
 //       dates), the notice not held by the time off's removal, a helpers.js whose requestNoticeText lacks "revoked":
 //       the old words; today pinned (Mon Nov 2, 2026)
+// Follow-ups to the review of QW5 (2026-11-02):
+//   DF7 the year when it isn't today's: requestDates / requestNoticeText with today ("Mon Jan 4 – Fri Jan 8, 2027", once,
+//       at the end; a past year's "…, 2025"; this year's and a range across a new year as before); the REAL submit /
+//       approve / deny / revoke, today pinned, say it in the notice and the e-mail's `dates`; a helpers.js from before
+//       (its requestDates takes no today) ignores it — the year-less words, nothing thrown
+//   DF8 the revoke's removal, toRemoveRequested over the REAL deleteTimeOff: a request's time off changed since its
+//       approval (Mine's edit, Setup's) was missed by the exact match — ONE DELETE of whatever overlaps the request's
+//       days, asking for the rows removed; the screen drops those rows; the scheduler told when they weren't the
+//       request's exact days, or when none was there; refused / unanswered / unreadable; the session fence; the blob
+//       mode; no-call days; the REAL revoke hands it the request and doesn't wait; Setup's and Mine's keep toRemove
 //   the section runs inside its own catch (a throw fails one named check, never the run)
 console.log("\nDF. Notices say the day; the publish notice opens on its period; a revoked vacation is e-mailed (2026-11-02)");
 await (async () => {
@@ -20662,11 +20673,14 @@ await (async () => {
   // DF4 — the REAL submit / approve / deny
   {
     const wfrDF = (() => { const a = nsrcDF.indexOf("function writeFailReason(err) {"); const b = a < 0 ? -1 : nsrcDF.indexOf("\n}\n", a); return a < 0 || b < 0 ? "" : nsrcDF.slice(a, b + 2); })();
-    const SUB_ENV = "vacReqSurgeon, vacReqStart, vacReqEnd, vacReqReason, vacReqType, surgeons, apps, showToast, db, setVacRequests, addNotification, schedulerAdminIds, sendEmailNotif, setVacReqStart, setVacReqEnd, setVacReqReason, setVacReqType, vacSubmitBusyRef, sessionEpochRef, setVacSubmitting, console";
+    // (changed ON PURPOSE 2026-11-02, DF7: + Date — the notices read today for the year rule; pinned to Mon Nov 2, 2026, so the
+    // 2099 requests below carry their year whatever the real clock says)
+    const Nov2DF = class extends Date { constructor(...a) { if (a.length) super(...a); else super(2026, 10, 2, 12, 0, 0); } };
+    const SUB_ENV = "vacReqSurgeon, vacReqStart, vacReqEnd, vacReqReason, vacReqType, surgeons, apps, showToast, db, setVacRequests, addNotification, schedulerAdminIds, sendEmailNotif, setVacReqStart, setVacReqEnd, setVacReqReason, setVacReqType, vacSubmitBusyRef, sessionEpochRef, setVacSubmitting, console, Date";
     const subCode = afterDF("  const submitVacRequest = useCallback(", ", [vacReqSurgeon, vacReqStart, vacReqEnd, vacReqReason, vacReqType, surgeons, apps, addNotification, sendEmailNotif, schedulerAdminIds]);");
-    const APR_ENV = "sessionEpochRef, dbAuthHeaders, surgeons, vacations, noCallDays, confirm, userProfile, mySurgeon, fetch, SUPABASE_URL, console, showToast, setBackRequest, setVacRequests, toAdd, logAudit, schedulerAdminIds, addNotification, sendEmailNotif";
+    const APR_ENV = "sessionEpochRef, dbAuthHeaders, surgeons, vacations, noCallDays, confirm, userProfile, mySurgeon, fetch, SUPABASE_URL, console, showToast, setBackRequest, setVacRequests, toAdd, logAudit, schedulerAdminIds, addNotification, sendEmailNotif, Date";
     const aprCode = afterDF("  const approveVacRequest = useCallback(", ", [addNotification, sendEmailNotif, schedulerAdminIds, userProfile, surgeons, mySurgeon, vacations, noCallDays]);");
-    const DENY_ENV = "sessionEpochRef, dbAuthHeaders, logAudit, userProfile, surgeons, mySurgeon, fetch, SUPABASE_URL, console, showToast, setVacRequests, schedulerAdminIds, addNotification, sendEmailNotif";
+    const DENY_ENV = "sessionEpochRef, dbAuthHeaders, logAudit, userProfile, surgeons, mySurgeon, fetch, SUPABASE_URL, console, showToast, setVacRequests, schedulerAdminIds, addNotification, sendEmailNotif, Date";
     const denyCode = afterDF("  const denyVacRequest = useCallback(", ", [addNotification, sendEmailNotif, schedulerAdminIds, userProfile, surgeons, mySurgeon]);");
     const MK = (ctx) => ({ submit: fnDF(SUB_ENV, subCode, ctx, wfrDF), approve: fnDF(APR_ENV, aprCode, ctx), deny: fnDF(DENY_ENV, denyCode, ctx) });
     const mkNew = MK(sandbox), mkOld = MK(OLD_DF);
@@ -20678,7 +20692,7 @@ await (async () => {
       try {
         await mk(Object.assign({ vacReqSurgeon: "s3", vacReqStart: start, vacReqEnd: end, vacReqReason: "", vacReqType: type, surgeons: SURG, apps: [], db: { insert: async (t, row) => ({ data: Object.assign({ id: 9 }, row), error: null }) },
           setVacRequests: () => {}, schedulerAdminIds: ["s6"], setVacReqStart: () => {}, setVacReqEnd: () => {}, setVacReqReason: () => {}, setVacReqType: () => {}, vacSubmitBusyRef: { current: false },
-          sessionEpochRef: { current: 0 }, setVacSubmitting: () => {}, console: quietDF }, senders(rec)))();
+          sessionEpochRef: { current: 0 }, setVacSubmitting: () => {}, console: quietDF, Date: Nov2DF }, senders(rec)))();
       } catch (ex) { rec.threw = String(ex).slice(0, 160); }
       return rec;
     };
@@ -20687,7 +20701,7 @@ await (async () => {
       try {
         const fn = mk(Object.assign({ sessionEpochRef: { current: 0 }, dbAuthHeaders: () => ({ Authorization: "Bearer A" }), SUPABASE_URL: "https://x.test", console: quietDF, confirm: () => true,
           fetch: async () => ({ ok: true, status: 200, json: async () => [{ id: 7 }], text: async () => "" }), logAudit: () => {}, setBackRequest: async () => true, setVacRequests: () => {}, toAdd: () => {},
-          surgeons: SURG, vacations: {}, noCallDays: {}, userProfile: { display_name: "FAK" }, mySurgeon: "s6", schedulerAdminIds: ["s6"] }, senders(rec)));
+          surgeons: SURG, vacations: {}, noCallDays: {}, userProfile: { display_name: "FAK" }, mySurgeon: "s6", schedulerAdminIds: ["s6"], Date: Nov2DF }, senders(rec)));
         await (note === undefined ? fn(Object.assign({}, req)) : fn(Object.assign({}, req), note));
       } catch (ex) { rec.threw = String(ex).slice(0, 160); }
       return rec;
@@ -20700,12 +20714,14 @@ await (async () => {
     } : null;
     const got = await runAll(mkNew), gotOld = await runAll(mkOld);
     const E = (o) => J(o);
+    // (changed ON PURPOSE 2026-11-02, DF7: these 2099 requests aren't this year's — today is pinned to 2026 — so their dates
+    // carry the year once, at the end: "Mon Mar 2 – Fri Mar 6, 2099"; the one across a new year carried both already)
     const NOW = {
-      subVac: [["vacation_submitted", "Vacation Request", "RPC requested vacation Mon Mar 2 – Fri Mar 6", { surgeon_id: "s3" }, ["s6"]], E({ surgeon_name: "RPC", surgeon_id: "s3", start_date: "2099-03-02", end_date: "2099-03-06", reason: "", request_type: "vacation", dates: "Mon Mar 2 – Fri Mar 6" })],
-      subNoCall: [["vacation_submitted", "No-Call Request", "RPC requested a no-call day Tue Mar 3", { surgeon_id: "s3" }, ["s6"]], E({ surgeon_name: "RPC", surgeon_id: "s3", start_date: "2099-03-03", end_date: "2099-03-03", reason: "", request_type: "nocall", dates: "Tue Mar 3" })],
-      aprVac: [["vacation_approved", "Vacation Approved", "RPC's vacation Mon Mar 2 – Fri Mar 6 was approved", { surgeon_id: "s3" }, ["s3", "s6"]], E({ surgeon_name: "RPC", surgeon_id: "s3", start_date: "2099-03-02", end_date: "2099-03-06", request_type: "vacation", dates: "Mon Mar 2 – Fri Mar 6" })],
+      subVac: [["vacation_submitted", "Vacation Request", "RPC requested vacation Mon Mar 2 – Fri Mar 6, 2099", { surgeon_id: "s3" }, ["s6"]], E({ surgeon_name: "RPC", surgeon_id: "s3", start_date: "2099-03-02", end_date: "2099-03-06", reason: "", request_type: "vacation", dates: "Mon Mar 2 – Fri Mar 6, 2099" })],
+      subNoCall: [["vacation_submitted", "No-Call Request", "RPC requested a no-call day Tue Mar 3, 2099", { surgeon_id: "s3" }, ["s6"]], E({ surgeon_name: "RPC", surgeon_id: "s3", start_date: "2099-03-03", end_date: "2099-03-03", reason: "", request_type: "nocall", dates: "Tue Mar 3, 2099" })],
+      aprVac: [["vacation_approved", "Vacation Approved", "RPC's vacation Mon Mar 2 – Fri Mar 6, 2099 was approved", { surgeon_id: "s3" }, ["s3", "s6"]], E({ surgeon_name: "RPC", surgeon_id: "s3", start_date: "2099-03-02", end_date: "2099-03-06", request_type: "vacation", dates: "Mon Mar 2 – Fri Mar 6, 2099" })],
       aprNoCall: [["vacation_approved", "No-Call Approved", "RPC's no-call days Mon Dec 28, 2099 – Fri Jan 1, 2100 were approved", { surgeon_id: "s3" }, ["s3", "s6"]], E({ surgeon_name: "RPC", surgeon_id: "s3", start_date: "2099-12-28", end_date: "2100-01-01", request_type: "nocall", dates: "Mon Dec 28, 2099 – Fri Jan 1, 2100" })],
-      denyVac: [["vacation_denied", "Vacation Denied", "RPC's vacation Mon Mar 2 – Fri Mar 6 was denied: Too many out that week", { surgeon_id: "s3" }, ["s3", "s6"]], E({ surgeon_name: "RPC", surgeon_id: "s3", start_date: "2099-03-02", end_date: "2099-03-06", note: "Too many out that week", request_type: "vacation", dates: "Mon Mar 2 – Fri Mar 6" })],
+      denyVac: [["vacation_denied", "Vacation Denied", "RPC's vacation Mon Mar 2 – Fri Mar 6, 2099 was denied: Too many out that week", { surgeon_id: "s3" }, ["s3", "s6"]], E({ surgeon_name: "RPC", surgeon_id: "s3", start_date: "2099-03-02", end_date: "2099-03-06", note: "Too many out that week", request_type: "vacation", dates: "Mon Mar 2 – Fri Mar 6, 2099" })],
     };
     const MAIN = {
       subVac: [["vacation_submitted", "Vacation Request", "RPC requested vacation 2099-03-02 to 2099-03-06", { surgeon_id: "s3" }, ["s6"]], E({ surgeon_name: "RPC", surgeon_id: "s3", start_date: "2099-03-02", end_date: "2099-03-06", reason: "", request_type: "vacation" })],
@@ -20717,7 +20733,7 @@ await (async () => {
     const shape = (r) => r.threw || J([r.notes.length === 1 ? r.notes[0] : r.notes, r.emails.length === 1 && J(r.emails[0][2]) === J(r.notes[0] && r.notes[0][4]) ? r.emails[0][1] : r.emails]);
     const bad = got ? Object.keys(NOW).filter((k) => shape(got[k]) !== J(NOW[k])) : ["not extractable"];
     const badOld = gotOld ? Object.keys(MAIN).filter((k) => shape(gotOld[k]) !== J(MAIN[k])) : ["not extractable"];
-    check("DF4 the REAL submit / approve / deny: \"RPC requested vacation Mon Mar 2 – Fri Mar 6\", \"RPC requested a no-call day Tue Mar 3\", \"RPC's vacation Mon Mar 2 – Fri Mar 6 was approved\", \"RPC's no-call days Mon Dec 28, 2099 – Fri Jan 1, 2100 were approved\", \"…was denied: Too many out that week\" — the same titles, data and people; each e-mail to the same people with its fields as before plus dates in words (`dates`)",
+    check("DF4 the REAL submit / approve / deny (today pinned to 2026, the requests in 2099): \"RPC requested vacation Mon Mar 2 – Fri Mar 6, 2099\", \"RPC requested a no-call day Tue Mar 3, 2099\", \"RPC's vacation Mon Mar 2 – Fri Mar 6, 2099 was approved\", \"RPC's no-call days Mon Dec 28, 2099 – Fri Jan 1, 2100 were approved\", \"…was denied: Too many out that week\" — the same titles, data and people; each e-mail to the same people with its fields as before plus dates in words (`dates`)",
       bad.length === 0, J(bad.map((k) => [k, got && shape(got[k])])).slice(0, 1500));
     check("DF4 …with an OLD cached helpers.js: main's notice text (\"RPC's vacation 2099-03-02 to 2099-03-06 was approved\") and main's e-mail data byte for byte — no `dates` key goes out; nothing thrown",
       oldLacks && badOld.length === 0, J(badOld.map((k) => [k, gotOld && shape(gotOld[k])])).slice(0, 1500));
@@ -20726,6 +20742,67 @@ await (async () => {
     // (changed ON PURPOSE 2026-11-02, integration: the toasts say their dates in Mine's style — QW18, DB3 — with or without these composers)
     check("DF4 …the success toasts are untouched by these composers (the same with and without them — QW18's \"Approved — RPC's vacation, Mon 3/2/2099 → Fri 3/6/2099.\")",
       toastsSame && got.aprVac.toasts[0] === "success: Approved — RPC's vacation, Mon 3/2/2099 → Fri 3/6/2099.", J(got && Object.fromEntries(Object.keys(NOW).map((k) => [k, got[k].toasts]))));
+    // DF7 — the year when it isn't today's (follow-up to the review of QW5, 2026-11-02: a request a year ahead, or a past
+    // year's record, read as this year's): requestDates / requestNoticeText with today, executed; the REAL handlers, today
+    // pinned; a helpers.js from before (its requestDates takes no today, main's at #110) ignores it — never a throw
+    {
+      const T = "2026-11-02";
+      const RDY = [
+        [["2027-01-04", "2027-01-08", T], "Mon Jan 4 – Fri Jan 8, 2027"], [["2027-01-04", "2027-01-04", T], "Mon Jan 4, 2027"],
+        [["2025-12-15", "2025-12-19", T], "Mon Dec 15 – Fri Dec 19, 2025"], [["2026-12-14", "2026-12-18", T], "Mon Dec 14 – Fri Dec 18"],
+        [["2026-12-28", "2027-01-01", T], "Mon Dec 28, 2026 – Fri Jan 1, 2027"], [["2027-01-04", "2027-01-08"], "Mon Jan 4 – Fri Jan 8"],
+        [["2027-01-04", "2027-01-08", ""], "Mon Jan 4 – Fri Jan 8"], [["2027-01-04", "2027-01-08", "feed"], "Mon Jan 4 – Fri Jan 8"],
+        [["2027-01-08", "2027-01-04", T], "2027-01-08 → 2027-01-04"],
+      ];
+      const rdyBad = RDY.filter(([a, want]) => H.requestDates(...a) !== want).map(([a]) => [a, H.requestDates(...a)]);
+      const RQY = (s, e, t) => ({ surgeon_name: "KJH", start_date: s, end_date: e, request_type: t || "vacation" });
+      const RNY = [
+        [["submitted", RQY("2027-01-04", "2027-01-08"), { today: T }], "KJH requested vacation Mon Jan 4 – Fri Jan 8, 2027"],
+        [["approved", RQY("2027-01-04", "2027-01-08"), { today: T }], "KJH's vacation Mon Jan 4 – Fri Jan 8, 2027 was approved"],
+        [["denied", RQY("2025-12-15", "2025-12-19"), { note: "Too late", today: T }], "KJH's vacation Mon Dec 15 – Fri Dec 19, 2025 was denied: Too late"],
+        [["revoked", RQY("2027-01-04", "2027-01-04", "nocall"), { by: "FAK", today: T }], "KJH's approved no-call day Mon Jan 4, 2027 was revoked by FAK"],
+        [["approved", RQY("2026-12-14", "2026-12-18"), { today: T }], "KJH's vacation Mon Dec 14 – Fri Dec 18 was approved"],
+        [["approved", RQY("2027-01-04", "2027-01-08")], "KJH's vacation Mon Jan 4 – Fri Jan 8 was approved"],
+      ];
+      const rnyBad = RNY.filter(([a, want]) => H.requestNoticeText(...a) !== want).map(([a]) => H.requestNoticeText(...a));
+      check("DF7 requestDates / requestNoticeText with today (executed): a range in another year says it once, at the end — \"Mon Jan 4 – Fri Jan 8, 2027\", one day \"Mon Jan 4, 2027\", a past year \"Mon Dec 15 – Fri Dec 19, 2025\"; this year's as before; across a new year each date keeps its own; no today, an empty or odd one: as before; an inverted range as it came; the four notices the same (\"…no-call day Mon Jan 4, 2027 was revoked by FAK\")",
+        rdyBad.length === 0 && rnyBad.length === 0, J({ rdyBad, rnyBad }));
+      const yr = mkNew.submit && mkNew.approve && mkNew.deny ? {
+        subAhead: await submitRun(mkNew.submit, "2027-01-04", "2027-01-08", "vacation"), aprAhead: await decideRun(mkNew.approve, REQ("2027-01-04", "2027-01-08", "vacation")),
+        denyPast: await decideRun(mkNew.deny, REQ("2025-12-15", "2025-12-19", "vacation"), "Too late"), aprThis: await decideRun(mkNew.approve, REQ("2026-12-14", "2026-12-18", "vacation")),
+      } : null;
+      const YR = {
+        subAhead: [["vacation_submitted", "Vacation Request", "RPC requested vacation Mon Jan 4 – Fri Jan 8, 2027", { surgeon_id: "s3" }, ["s6"]], E({ surgeon_name: "RPC", surgeon_id: "s3", start_date: "2027-01-04", end_date: "2027-01-08", reason: "", request_type: "vacation", dates: "Mon Jan 4 – Fri Jan 8, 2027" })],
+        aprAhead: [["vacation_approved", "Vacation Approved", "RPC's vacation Mon Jan 4 – Fri Jan 8, 2027 was approved", { surgeon_id: "s3" }, ["s3", "s6"]], E({ surgeon_name: "RPC", surgeon_id: "s3", start_date: "2027-01-04", end_date: "2027-01-08", request_type: "vacation", dates: "Mon Jan 4 – Fri Jan 8, 2027" })],
+        denyPast: [["vacation_denied", "Vacation Denied", "RPC's vacation Mon Dec 15 – Fri Dec 19, 2025 was denied: Too late", { surgeon_id: "s3" }, ["s3", "s6"]], E({ surgeon_name: "RPC", surgeon_id: "s3", start_date: "2025-12-15", end_date: "2025-12-19", note: "Too late", request_type: "vacation", dates: "Mon Dec 15 – Fri Dec 19, 2025" })],
+        aprThis: [["vacation_approved", "Vacation Approved", "RPC's vacation Mon Dec 14 – Fri Dec 18 was approved", { surgeon_id: "s3" }, ["s3", "s6"]], E({ surgeon_name: "RPC", surgeon_id: "s3", start_date: "2026-12-14", end_date: "2026-12-18", request_type: "vacation", dates: "Mon Dec 14 – Fri Dec 18" })],
+      };
+      const yrBad = yr ? Object.keys(YR).filter((k) => shape(yr[k]) !== J(YR[k])) : ["not extractable"];
+      check("DF7 the REAL submit / approve / deny, today Mon Nov 2, 2026: a request a year ahead — \"RPC requested vacation Mon Jan 4 – Fri Jan 8, 2027\", \"RPC's vacation Mon Jan 4 – Fri Jan 8, 2027 was approved\"; a past year's record — \"…Mon Dec 15 – Fri Dec 19, 2025 was denied: Too late\"; this year's — no year; each e-mail's `dates` the same words",
+        yrBad.length === 0, J(yrBad.map((k) => [k, yr && shape(yr[k])])).slice(0, 1500));
+      // a helpers.js from before this change: requestDates(start, end) alone, requestNoticeText not passing today
+      const PRE_FU = (() => {
+        const h = fs.readFileSync(path.join(ROOT, "helpers.js"), "utf8")
+          .replace("function requestDates(start, end, today) {", "function requestDates(start, end, __no) { const today = undefined;")
+          .replace("const dates = requestDates(req.start_date, req.end_date, o && o.today);", "const dates = requestDates(req.start_date, req.end_date);");
+        const sb = { console, window: {}, document: undefined, navigator: { userAgent: "node-test" }, localStorage: { getItem: () => null, setItem() {}, removeItem() {} }, fetch: () => { throw new Error("no fetch in PRE_FU"); }, setTimeout, clearTimeout };
+        sb.globalThis = sb; vm.createContext(sb);
+        vm.runInContext(h, sb, { filename: "helpers-before-fu.js" });
+        vm.runInContext(fs.readFileSync(path.join(ROOT, "config.js"), "utf8"), sb, { filename: "config.js" });
+        return sb;
+      })();
+      const preIgnores = vm.runInContext('requestDates("2027-01-04", "2027-01-08", "2026-11-02") === "Mon Jan 4 – Fri Jan 8" && requestNoticeText("approved", { surgeon_name: "RPC", start_date: "2027-01-04", end_date: "2027-01-08", request_type: "vacation" }, { today: "2026-11-02" }) === "RPC\'s vacation Mon Jan 4 – Fri Jan 8 was approved"', PRE_FU)
+        && H.requestDates("2027-01-04", "2027-01-08", "2026-11-02") === "Mon Jan 4 – Fri Jan 8, 2027";
+      const mkPre = MK(PRE_FU);
+      const pre = mkPre.submit && mkPre.approve ? { subAhead: await submitRun(mkPre.submit, "2027-01-04", "2027-01-08", "vacation"), aprAhead: await decideRun(mkPre.approve, REQ("2027-01-04", "2027-01-08", "vacation")) } : null;
+      const PRE = {
+        subAhead: [["vacation_submitted", "Vacation Request", "RPC requested vacation Mon Jan 4 – Fri Jan 8", { surgeon_id: "s3" }, ["s6"]], E({ surgeon_name: "RPC", surgeon_id: "s3", start_date: "2027-01-04", end_date: "2027-01-08", reason: "", request_type: "vacation", dates: "Mon Jan 4 – Fri Jan 8" })],
+        aprAhead: [["vacation_approved", "Vacation Approved", "RPC's vacation Mon Jan 4 – Fri Jan 8 was approved", { surgeon_id: "s3" }, ["s3", "s6"]], E({ surgeon_name: "RPC", surgeon_id: "s3", start_date: "2027-01-04", end_date: "2027-01-08", request_type: "vacation", dates: "Mon Jan 4 – Fri Jan 8" })],
+      };
+      const preBad = pre ? Object.keys(PRE).filter((k) => shape(pre[k]) !== J(PRE[k])) : ["not extractable"];
+      check("DF7 …with a cached helpers.js from before (requestDates without today, main's at #110 — it ignores the today handed in): the year-less words as it said them, in the notice and the e-mail's `dates`; nothing thrown",
+        preIgnores && preBad.length === 0, J({ preIgnores, preBad: preBad.map((k) => [k, pre && shape(pre[k])]) }).slice(0, 1500));
+    }
   }
 
   // DF5 — the REAL notifyPublished, its link, the deep-link effect and the bell
@@ -20797,7 +20874,8 @@ await (async () => {
   {
     // (changed ON PURPOSE 2026-11-02, the review of QW5: + Date — the toast's dates read today, pinned here to Mon Nov 2,
     // 2026: by the real clock the toast would have said the year from Jan 1, 2027 and the check gone red)
-    const RV_ENV = "sessionEpochRef, dbAuthHeaders, confirm, fetch, SUPABASE_URL, console, showToast, setBackRequest, setVacRequests, toRemove, schedulerAdminIds, addNotification, sendEmailNotif, userProfile, surgeons, mySurgeon, Date";
+    // (changed ON PURPOSE 2026-11-02, DF8: the revoke's removal is toRemoveRequested — whatever overlaps the request's days)
+    const RV_ENV = "sessionEpochRef, dbAuthHeaders, confirm, fetch, SUPABASE_URL, console, showToast, setBackRequest, setVacRequests, toRemoveRequested, schedulerAdminIds, addNotification, sendEmailNotif, userProfile, surgeons, mySurgeon, Date";
     const rvCode = afterDF("  const revokeApprovedVac = useCallback(", ", [addNotification, sendEmailNotif, schedulerAdminIds, userProfile, surgeons, mySurgeon]);");
     const rvNew = fnDF(RV_ENV, rvCode, sandbox), rvOld = fnDF(RV_ENV, rvCode, OLD_DF);
     // a cached helpers.js that has requestNoticeText but not "revoked" (main's before this change answers without the verb)
@@ -20812,7 +20890,7 @@ await (async () => {
         const run = mk(Object.assign({ sessionEpochRef: ep, dbAuthHeaders: () => ({ Authorization: "Bearer A" }), confirm: () => true, SUPABASE_URL: "https://x.test", console: quietDF,
           fetch: async (url, init) => { ev.push("request " + ((init && init.method) || "GET")); if (o.cross === "status" && ++sent === 1) ep.current++; return { ok: true, status: 200, json: async () => [{ id: 7 }], text: async () => "" }; },
           showToast: (m, t) => ev.push("toast " + (t || "info") + ": " + m), setBackRequest: async () => { ev.push("set back"); return true; }, setVacRequests: () => ev.push("list"),
-          toRemove: () => { ev.push("time off"); return o.hang ? new Promise(() => {}) : undefined; },
+          toRemoveRequested: (...a) => { ev.push("time off" + (o.args ? " " + J(a) : "")); return o.hang ? new Promise(() => {}) : undefined; },
           schedulerAdminIds: ["s6"], addNotification: async (type, title, msg, data, to) => { ev.push(["notice", type, title, msg, data, to]); if (o.cross === "notice") ep.current++; },
           sendEmailNotif: (type, data, to) => ev.push(["e-mail", type, data, to]),
           userProfile: "userProfile" in o ? o.userProfile : { display_name: "FAK" }, surgeons: SURG, mySurgeon: o.mySurgeon || "s6", Date: NOV2 }, o.env || {}))(Object.assign({}, req));
@@ -20869,6 +20947,16 @@ await (async () => {
       const noVerb = await revokeRun(rvNoVerb, VAC, { env: { requestNoticeText: (what, req) => `${req.surgeon_name}'s vacation Mon Dec 14 – Fri Dec 18` } });
       check("DF6 (the review of QW5) …with a cached helpers.js that has requestNoticeText but not \"revoked\" (it answers without the verb): the old words, \"MCC's vacation 2026-12-14 → 2026-12-18 was revoked\", in the notice and the e-mail",
         msgOf(noVerb) === OLDMSG && mailOf(noVerb).detail === OLDMSG && mailOf(noVerb).message === OLDMSG, J({ noVerb: msgOf(noVerb), mail: mailOf(noVerb) }));
+      // (added 2026-11-02, DF7) a request a year ahead: the year, once, in the notice and the e-mail's dates
+      const ahead = await revokeRun(rvNew, REQ("2027-01-04", "2027-01-08", "vacation"));
+      check("DF7 the REAL revoke, today Mon Nov 2, 2026, on a request a year ahead: \"MCC's approved vacation Mon Jan 4 – Fri Jan 8, 2027 was revoked by FAK\" — the notice, the e-mail's detail and its dates (\"Mon Jan 4 – Fri Jan 8, 2027\")",
+        msgOf(ahead) === "MCC's approved vacation Mon Jan 4 – Fri Jan 8, 2027 was revoked by FAK" && mailOf(ahead).detail === msgOf(ahead) && mailOf(ahead).dates === "Mon Jan 4 – Fri Jan 8, 2027",
+        J({ ahead: msgOf(ahead), mail: mailOf(ahead) }));
+      // (added 2026-11-02, DF8) what the revoke hands its removal — and it doesn't wait for it (the hang case above)
+      const handed = await revokeRun(rvNew, ONE, { args: true });
+      check("DF8 the REAL revoke hands toRemoveRequested the person, the kind, the request's dates and the surgeon's name — (\"s2\", \"nocall\", \"2026-12-01\", \"2026-12-01\", \"MCC\") — and doesn't wait for it (the hang case above); Setup's ✕ and Mine's remove still call toRemove, the exact row",
+        handed.includes('time off ["s2","nocall","2026-12-01","2026-12-01","MCC"]') && count("toRemoveRequested(") === 1 && count('toRemove(sid,"vacation",') === 1 && count('toRemove(sid,"nocall",') === 1 && count('toRemove(myId, "vacation",') === 1,
+        J(handed).slice(0, 600));
       // its push: still under each person's vacation PUSH switch (the REAL filterPushTargetsByType, unchanged) and still
       // opening Requests (the REAL buildDeepLink, unchanged); the e-mail's switch is the server's (v18: VACATION_TYPES)
       const fpCode = afterDF("  const filterPushTargetsByType = useCallback(", ", []);");
@@ -20878,6 +20966,70 @@ await (async () => {
       const kept = fp ? fp({ notifPrefsRef: { current: { s2: { vacation_updates_push: false }, s6: { vacation_updates_push: true } } } })("vacation_revoked", ["s2", "s6"]) : null;
       check("DF6 …its push as before: each person's vacation push switch still governs it (s2 off → only s6), and a tap opens Requests (?tab=requests)",
         J(kept) === J(["s6"]) && typeof bdl === "function" && bdl("vacation_revoked", { surgeon_id: "s2" }) === "https://dsg.test/app/?tab=requests", J({ kept, link: typeof bdl === "function" && bdl("vacation_revoked", {}) }));
+    }
+  }
+
+  // DF8 — the REAL toRemoveRequested over the REAL deleteTimeOff (follow-up to the review of QW5, 2026-11-02): the
+  // revoke's removal finds the request's time off even when its dates were changed since the approval
+  {
+    const delDF = fnDF("sessionEpochRef, showToast, fetch, SUPABASE_URL, dbAuthHeaders, timeOffLoadSeqRef, console",
+      afterDF("  const deleteTimeOff = ", ";\n\n  // ─── Write helpers (the ONLY paths that mutate time_off) ───"), sandbox);
+    const RM_ENV = "sessionEpochRef, setterFor, logAudit, USE_TIME_OFF, deleteTimeOff, showToast, console, Date";
+    const rmNew = fnDF(RM_ENV, afterDF("  const toRemoveRequested = ", ";\n\n  const toEdit = async ("), sandbox);
+    const Nov2R = class extends Date { constructor(...a) { if (a.length) super(...a); else super(2026, 10, 2, 12, 0, 0); } };
+    // one removal over the REAL deleteTimeOff: what the DELETE asks, what the server answers (o.answer: the rows it removed;
+    // 500; "throw" — unanswered; "text" — an unreadable body), what the screen drops (the setter's function applied to a
+    // map), the audit lines and the toasts; o.cross: the session changes while the DELETE is out; o.blob: the blob mode
+    const removeRun = async (mk, o = {}) => {
+      const ev = [], ep = { current: 0 }, map = o.map || { s2: [["2026-10-26", "2026-10-30", 9003], ["2026-12-14", "2026-12-18", 9010]] };
+      let after = null;
+      const toast = (m, t) => ev.push("toast " + (t || "info") + ": " + m);
+      const del = delDF({ sessionEpochRef: ep, showToast: toast, SUPABASE_URL: "https://x.test", dbAuthHeaders: () => ({ Authorization: "Bearer A" }), timeOffLoadSeqRef: { current: { del: 0 } }, console: quietDF,
+        fetch: async (url, init) => {
+          ev.push("request " + init.method + " " + url.slice(url.indexOf("time_off")) + (init.headers && init.headers.Prefer ? " Prefer: " + init.headers.Prefer : ""));
+          if (o.cross) ep.current++;
+          if (o.answer === "throw") throw new TypeError("Failed to fetch");
+          if (o.answer === 500) return { ok: false, status: 500, text: async () => "", json: async () => ({}) };
+          return { ok: true, status: 200, text: async () => "", json: async () => { if (o.answer === "text") throw new SyntaxError("not json"); return o.answer; } };
+        } });
+      try {
+        await mk({ sessionEpochRef: ep, setterFor: (kind) => (f) => { ev.push("screen " + kind); after = f(map); }, logAudit: (a, s, d) => ev.push(["audit", a, s, d]), USE_TIME_OFF: !o.blob, deleteTimeOff: del, showToast: toast, console: quietDF, Date: Nov2R })(
+          o.person || "s2", o.kind || "vacation", o.start || "2026-10-26", o.end || "2026-10-30", "MCC");
+      } catch (ex) { ev.push("threw " + String(ex).slice(0, 160)); }
+      return { ev: JSON.parse(J(ev)), after: after && after.s2 };
+    };
+    const exactRow = { id: 9003, person_id: "s2", kind: "vacation", start_date: "2026-10-26", end_date: "2026-10-30" };
+    const Q = "request DELETE time_off?person_id=eq.s2&kind=eq.vacation&start_date=lte.2026-10-30&end_date=gte.2026-10-26 Prefer: return=representation";
+    const AUD = (s, e) => ["audit", "vacation.remove", `Removed vacation for MCC: ${s}${s !== e ? " → " + e : ""}`, { person_id: "s2", kind: "vacation", start: s, end: e, revoked: "2026-10-26 → 2026-10-30" }];
+    const DEC = [["2026-12-14", "2026-12-18", 9010]];
+    const TELL = "toast error: Couldn't remove that — check your connection and try again.";
+    if (!rmNew || !delDF) check("DF8 toRemoveRequested and deleteTimeOff are extractable", false, "anchors not found");
+    else {
+      const exact = await removeRun(rmNew, { answer: [exactRow] });
+      // (the screen's map holds the changed dates, as it would after Mine's edit and the reload: the row goes by its id)
+      const TRIM = { s2: [["2026-10-26", "2026-10-28", 9003], ["2026-12-14", "2026-12-18", 9010]] };
+      const trimmed = await removeRun(rmNew, { answer: [Object.assign({}, exactRow, { end_date: "2026-10-28" })], map: TRIM });
+      const extra = await removeRun(rmNew, { answer: [exactRow, { id: 9011, person_id: "s2", kind: "vacation", start_date: "2026-10-30", end_date: "2026-10-31" }] });
+      const none = await removeRun(rmNew, { answer: [] });
+      check("DF8 the REAL toRemoveRequested over the REAL deleteTimeOff: ONE DELETE of the person's time off of that kind overlapping the request's days (start_date ≤ the end, end_date ≥ the start), asking for the rows it removed; the request's own row — the screen drops it (by id), one audit line, nothing said; a row changed since the approval (Oct 26–28) — dropped and said: \"Removed MCC's vacation Mon 10/26 → Wed 10/28 — not the request's exact days (Mon 10/26 → Fri 10/30). Check Setup.\"; the row and another overlapping it — both dropped, \"…Mon 10/26 → Fri 10/30 and Fri 10/30 → Sat 10/31 — more than the request's exact days…\"; no row — nothing dropped or audited, \"MCC's vacation Mon 10/26 → Fri 10/30 was already off the time off list — nothing to remove.\"",
+        J(exact) === J({ ev: [Q, "screen vacation", AUD("2026-10-26", "2026-10-30")], after: DEC })
+          && J(trimmed) === J({ ev: [Q, "screen vacation", AUD("2026-10-26", "2026-10-28"), "toast error: Removed MCC's vacation Mon 10/26 → Wed 10/28 — not the request's exact days (Mon 10/26 → Fri 10/30). Check Setup."], after: DEC })
+          && J(extra) === J({ ev: [Q, "screen vacation", AUD("2026-10-26", "2026-10-30"), AUD("2026-10-30", "2026-10-31"), "toast error: Removed MCC's vacation Mon 10/26 → Fri 10/30 and Fri 10/30 → Sat 10/31 — more than the request's exact days (Mon 10/26 → Fri 10/30). Check Setup."], after: DEC })
+          && J(none) === J({ ev: [Q, "toast info: MCC's vacation Mon 10/26 → Fri 10/30 was already off the time off list — nothing to remove."], after: null }),
+        J({ exact, trimmed, extra, none }).slice(0, 2400));
+      const refused = await removeRun(rmNew, { answer: 500 }), unanswered = await removeRun(rmNew, { answer: "throw" }), unreadable = await removeRun(rmNew, { answer: "text" });
+      const crossed = await removeRun(rmNew, { answer: [Object.assign({}, exactRow, { end_date: "2026-10-28" })], map: TRIM, cross: true });
+      const blob = await removeRun(rmNew, { answer: [], blob: true });
+      const nocall = await removeRun(rmNew, { answer: [{ id: 7, person_id: "s2", kind: "nocall", start_date: "2026-12-01", end_date: "2026-12-01" }], kind: "nocall", start: "2026-12-01", end: "2026-12-01" });
+      const noIds = await removeRun(rmNew, { answer: [exactRow], map: { s2: [["2026-10-26", "2026-10-30"], ["2026-12-14", "2026-12-18"]] } });
+      check("DF8 …a DELETE refused (500) or unanswered: deleteTimeOff's own \"Couldn't remove that…\", nothing dropped, audited or said besides; an answer that isn't rows: nothing (the reload shows what stands); the session changing while the DELETE is out: the removed row still dropped and audited, nothing said on the next session's screen; the blob mode: no request — the overlapping entries go from the screen, one audit line; no-call days: kind=eq.nocall, \"Removed no-call for MCC: 2026-12-01\"; a map without row ids (the blob's shape): the row dropped by its dates",
+        J(refused.ev) === J([Q, TELL]) && J(unanswered.ev) === J([Q, TELL]) && J(unreadable.ev) === J([Q])
+          && J(crossed) === J({ ev: [Q, "screen vacation", AUD("2026-10-26", "2026-10-28")], after: DEC })
+          && J(blob) === J({ ev: ["screen vacation", AUD("2026-10-26", "2026-10-30")], after: DEC })
+          && nocall.ev[0] === "request DELETE time_off?person_id=eq.s2&kind=eq.nocall&start_date=lte.2026-12-01&end_date=gte.2026-12-01 Prefer: return=representation" && nocall.ev.length === 3
+          && J(nocall.ev[2]) === J(["audit", "nocall.remove", "Removed no-call for MCC: 2026-12-01", { person_id: "s2", kind: "nocall", start: "2026-12-01", end: "2026-12-01", revoked: "2026-12-01 → 2026-12-01" }])
+          && J(noIds.after) === J([["2026-12-14", "2026-12-18"]]),
+        J({ refused: refused.ev, unanswered: unanswered.ev, unreadable: unreadable.ev, crossed: crossed.ev, blob, nocall: nocall.ev, noIds: noIds.after }).slice(0, 2400));
     }
   }
 })().catch(ex => check("DF harness ran without crashing", false, String(ex && ex.stack || ex).split("\n").slice(0, 3).join(" | ")));
