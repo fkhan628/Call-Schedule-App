@@ -1338,9 +1338,15 @@ function weekChangeNotice(mondayStr, changes, reason) {
 // A time-off request's dates in words: "Mon Dec 14 – Fri Dec 18"; one day
 // "Mon Dec 14"; across a new year each date has its year (rangeSummary's
 // dates, without the count). Anything else is said as it came.
-function requestDates(start, end) {
+// today ("YYYY-MM-DD", optional): a range in another year says that year once,
+// at the end — "Mon Jan 4 – Fri Jan 8, 2027", one day "Mon Jan 4, 2027" — as
+// Mine's dates carry theirs (follow-up to the review of QW5, 2026-11-02: a
+// request a year ahead, or a past year's record, read as this year's).
+function requestDates(start, end, today) {
   const s = rangeSummary(start, end);
-  return s ? s.slice(s.indexOf(", ") + 2) : `${start || ""} → ${end || ""}`;
+  if (!s) return `${start || ""} → ${end || ""}`;
+  const words = s.slice(s.indexOf(", ") + 2), y = String(start).slice(0, 4), ty = String(today || "").slice(0, 4);
+  return /^\d{4}$/.test(ty) && y !== ty && String(end).slice(0, 4) === y ? `${words}, ${y}` : words;
 }
 // A time-off request's notice (the bell's; the push says the same, and so
 // does the revoke's e-mail). req: the request ({ surgeon_name, start_date,
@@ -1352,12 +1358,14 @@ function requestDates(start, end) {
 //   ("revoked", req, { by })  → "MCC's approved vacation Mon Oct 26 – Fri Oct 30 was revoked by FAK"
 //                                (no by: no "by …"; nothing about the schedule — a revoke puts nobody on call,
 //                                and its time off can outlive it: review of QW5, 2026-11-02)
+// o.today ("YYYY-MM-DD", any of them): dates in another year carry it (requestDates) —
+//   ("approved", req, { today: "2026-11-02" }) → "KJH's vacation Mon Jan 4 – Fri Jan 8, 2027 was approved"
 function requestNoticeText(what, req, o) {
   const one = !!req.start_date && req.start_date === req.end_date;
   const noCall = req.request_type === "nocall";
   const noun = noCall ? (one ? "no-call day" : "no-call days") : "vacation";
   const was = noCall && !one ? "were" : "was";
-  const dates = requestDates(req.start_date, req.end_date);
+  const dates = requestDates(req.start_date, req.end_date, o && o.today);
   const name = req.surgeon_name;
   if (what === "submitted") return `${name} requested ${noCall && one ? "a no-call day" : noun} ${dates}`;
   if (what === "approved") return `${name}'s ${noun} ${dates} ${was} approved`;

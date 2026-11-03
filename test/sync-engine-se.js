@@ -7478,7 +7478,8 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
 
   // SE-X23 — 22/n, I4 (review r5 fix-1): approving, revoking or editing a vacation request never acts in the next
   // session — H2's pattern, as the trade's accept. The REAL approveVacRequest / revokeApprovedVac / saveVacRequestEdit
-  // with the REAL setBackRequest, toAdd, toRemove, toEdit, deleteTimeOff, addNotification, sendPushNotif and
+  // with the REAL setBackRequest, toAdd, toRemoveRequested (the revoke's removal, 2026-11-02), toRemove, toEdit,
+  // deleteTimeOff, addNotification, sendPushNotif and
   // sendEmailNotif, the real session boundary (another account's "Sign in again" — B's table loaded; or a sign-out),
   // crossed while the request's status PATCH is out (the reviewer's p-vac-approve shape). (a) Nothing more in the next
   // session — no time_off write (none as B, none refused as anon), no notice, push or e-mail, no list or editor change,
@@ -7496,8 +7497,9 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
       approve: fnX("sessionEpochRef, dbAuthHeaders, parse, fmt, addD, surgeons, onVac, vacations, noCallDays, confirm, userProfile, mySurgeon, fetch, SUPABASE_URL, console, showToast, setBackRequest, setVacRequests, toAdd, logAudit, schedulerAdminIds, addNotification, sendEmailNotif",
         after("  const approveVacRequest = useCallback(", ", [addNotification, sendEmailNotif, schedulerAdminIds, userProfile, surgeons, mySurgeon, vacations, noCallDays]);")),
       // (changed ON PURPOSE 2026-11-02 — sync-guards DF6: the revoke e-mails too and names who revoked it; its deps list
-      // sendEmailNotif / userProfile / surgeons / mySurgeon, handed in below as approve's are)
-      revoke: fnX("sessionEpochRef, dbAuthHeaders, confirm, fetch, SUPABASE_URL, console, showToast, setBackRequest, setVacRequests, toRemove, schedulerAdminIds, addNotification, sendEmailNotif, userProfile, surgeons, mySurgeon",
+      // sendEmailNotif / userProfile / surgeons / mySurgeon, handed in below as approve's are; DF8: its removal is
+      // toRemoveRequested — the REAL one below, over the REAL deleteTimeOff)
+      revoke: fnX("sessionEpochRef, dbAuthHeaders, confirm, fetch, SUPABASE_URL, console, showToast, setBackRequest, setVacRequests, toRemoveRequested, schedulerAdminIds, addNotification, sendEmailNotif, userProfile, surgeons, mySurgeon",
         after("  const revokeApprovedVac = useCallback(", ", [addNotification, sendEmailNotif, schedulerAdminIds, userProfile, surgeons, mySurgeon]);")),
       // (owner decision 2026-10-20, changed ON PURPOSE — sync-guards CA: the edit first asks canChangeVacRequest, now in
       // its deps; this is the scheduler's edit, so the stand-in below allows it — CA runs the real predicate)
@@ -7505,9 +7507,10 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
         after("  const saveVacRequestEdit = useCallback(", ", [editingVacReq, vacRequests, isScheduler, canChangeVacRequest]);")),
       toAdd: fnX("sessionEpochRef, showToast, setterFor, logAudit, nameOf, USE_TIME_OFF, db, userProfile, console", decl("toAdd", "\n  };\n")),
       toRemove: fnX("noCallDays, vacations, setterFor, logAudit, nameOf, USE_TIME_OFF, deleteTimeOff", decl("toRemove", "\n  };\n")),
+      toRemoveRequested: fnX("sessionEpochRef, setterFor, logAudit, USE_TIME_OFF, deleteTimeOff, showToast, console", decl("toRemoveRequested", "\n  };\n")),
       toEdit: fnX("sessionEpochRef, dbAuthHeaders, showToast, noCallDays, vacations, setterFor, logAudit, nameOf, USE_TIME_OFF, db, deleteTimeOff, userProfile, fetch, SUPABASE_URL, console", decl("toEdit", "\n  };\n")),
     };
-    const vMiss = ["approve", "revoke", "edit", "toAdd", "toRemove", "toEdit"].filter(k => typeof V[k] !== "function");
+    const vMiss = ["approve", "revoke", "edit", "toAdd", "toRemove", "toRemoveRequested", "toEdit"].filter(k => typeof V[k] !== "function");
     if (vMiss.length) { check("SE-X23 22/n I4 — the vacation request slices are extractable", false, vMiss.join(", ")); return; }
     const EDGE = "https://fn.test/functions/v1/send-notification";
     const spin = async (n) => { for (let j = 0; j < (n || 20); j++) await null; };
@@ -7546,7 +7549,10 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
         if (/\/rest\/v1\/time_off/.test(u)) {
           rec.to.push(m + " " + au);
           if (m === "DELETE" && o.at === "delete") await crossNow();
-          return au === "Bearer ANON" ? r(401, { message: "JWT required" }) : r(m === "DELETE" ? 204 : 201, []);
+          if (au === "Bearer ANON") return r(401, { message: "JWT required" });
+          // (2026-11-02, sync-guards DF8: the revoke's DELETE asks for the rows it removed — the request's own row, as approved)
+          if (m === "DELETE" && init.headers && init.headers.Prefer === "return=representation") return r(200, [{ id: 99, person_id: REQ.surgeon_id, kind: "vacation", start_date: REQ.start_date, end_date: REQ.end_date }]);
+          return r(m === "DELETE" ? 204 : 201, []);
         }
         if (/send-push$/.test(u)) { rec.pushes.push(au); return r(200, {}); }
         if (/send-notification$/.test(u)) { rec.emails.push(au); return r(200, { failed: 0 }); }
@@ -7570,7 +7576,7 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
       const vac = { s3: which === "approve" ? [] : [o.noId ? [REQ.start_date, REQ.end_date] : [REQ.start_date, REQ.end_date, 99]] };
       const tEnv = { sessionEpochRef: ep, dbAuthHeaders: hdr, showToast: A.showToast, noCallDays: {}, vacations: vac, setterFor: () => mark("time off on screen"), logAudit, nameOf: (x) => x, USE_TIME_OFF: true, db,
         deleteTimeOff: delTO, userProfile: { person_id: "s1" }, fetch: net, SUPABASE_URL: BASE, console: con };
-      const toAdd = V.toAdd(tEnv), toRemove = V.toRemove(tEnv), toEdit = V.toEdit(tEnv);
+      const toAdd = V.toAdd(tEnv), toRemove = V.toRemove(tEnv), toRemoveRequested = V.toRemoveRequested(tEnv), toEdit = V.toEdit(tEnv);
       const setBackRequest = V.setBack ? V.setBack({ fetch: net, SUPABASE_URL: BASE, console: con, logAudit, dbAuthHeaders: hdr }) : undefined;
       const common = { sessionEpochRef: ep, dbAuthHeaders: hdr, fetch: net, SUPABASE_URL: BASE, console: con, showToast: A.showToast, logAudit, setVacRequests: mark("request list"), schedulerAdminIds: ["s7"],
         addNotification: note, sendEmailNotif: email, setBackRequest, confirm: () => true };
@@ -7578,7 +7584,7 @@ async function appScenarios(src, createSchedSync, mergeEditorEdits, check) {
       else if (o.direct === "toAdd") await toAdd("s3", "vacation", NEW.start_date, NEW.end_date);
       else if (which === "approve") await V.approve(Object.assign({}, common, { parse: HX.parse, fmt: HX.fmt, addD: HX.addD, surgeons: S7, onVac: () => false, vacations: vac, noCallDays: {},
         userProfile: { person_id: "s1", display_name: "AAA" }, mySurgeon: "s1", toAdd }))(Object.assign({}, REQ));
-      else if (which === "revoke") await V.revoke(Object.assign({}, common, { toRemove, userProfile: { person_id: "s1", display_name: "AAA" }, surgeons: S7, mySurgeon: "s1" }))(Object.assign({}, REQ));
+      else if (which === "revoke") await V.revoke(Object.assign({}, common, { toRemoveRequested, userProfile: { person_id: "s1", display_name: "AAA" }, surgeons: S7, mySurgeon: "s1" }))(Object.assign({}, REQ));
       else await V.edit(Object.assign({}, common, { editingVacReq: Object.assign({ id: 7, reason: "trip, longer" }, NEW), isScheduler: true, canChangeVacRequest: (q) => !!q, fmt: HX.fmt, vacRequests: [Object.assign({}, REQ)], toEdit,
         setEditingVacReq: mark("editor closed") }))();
       await spin(40); await ticks(A);

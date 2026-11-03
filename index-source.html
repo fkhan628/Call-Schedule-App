@@ -2050,15 +2050,17 @@ function CallSchedule() {
   // while it was out — may have been served before it committed: it is counted
   // when it answers, so loadTimeOff reads again when such a read's answer
   // lands later (review r7 fix-2).
+  // opts.rows (the revoke's removal, 2026-11-02): ask for the rows the DELETE removed — { ok: true, rows: [...] } ([] when
+  // it matched none; null when the answer couldn't be read). Without it a DELETE answers 204 whatever it matched.
   const deleteTimeOff = async (filter, opts) => {
-    const ep = sessionEpochRef.current, quiet = !!(opts && opts.quiet);
+    const ep = sessionEpochRef.current, quiet = !!(opts && opts.quiet), wantRows = !!(opts && opts.rows);
     const tell = () => { if (!quiet && sessionEpochRef.current === ep) showToast("Couldn't remove that — check your connection and try again.", "error"); };
     try {
       let res;
       try {
         res = await fetch(`${SUPABASE_URL}/rest/v1/time_off?${filter}`, {
           method: "DELETE",
-          headers: dbAuthHeaders(),
+          headers: wantRows ? { ...dbAuthHeaders(), Prefer: "return=representation" } : dbAuthHeaders(),
         });
       } finally { timeOffLoadSeqRef.current.del++; } // (answered or not)
       if (!res.ok) {
@@ -2067,7 +2069,9 @@ function CallSchedule() {
         tell();
         return { ok: false };
       }
-      return { ok: true };
+      if (!wantRows) return { ok: true };
+      const rows = await res.json().catch(() => null);
+      return { ok: true, rows: Array.isArray(rows) ? rows : null };
     } catch (e) { console.error("time_off delete ex", e); tell(); return { ok: false, unanswered: true }; }
   };
 
@@ -2119,6 +2123,41 @@ function CallSchedule() {
       ? `id=eq.${rowId}`
       : `person_id=eq.${encodeURIComponent(personId)}&kind=eq.${kind}&start_date=eq.${start}&end_date=eq.${end}`;
     await deleteTimeOff(q);
+  };
+
+  // The revoke's removal (follow-up to the review of QW5, 2026-11-02). A request's time off can be changed after its
+  // approval — Mine's ✎ Edit, Setup's — so its dates no longer equal the request's: toRemove's exact match missed it,
+  // its DELETE by those dates matched no row (a 2xx all the same), and the time off stayed, keeping the surgeon off
+  // those days with nobody told. Now every entry of that person and kind overlapping the request's days goes — ONE
+  // DELETE by that range (lexical order is date order), which answers with the rows it removed, and the screen drops
+  // those rows (never this render's map, which the revoke may hold stale). The scheduler is told when what went
+  // wasn't the request's own days, and when nothing was there (removed in Mine already, say). Setup's ✕ and Mine's
+  // remove keep toRemove: an exact row. The revoke doesn't wait for this (its notice goes out at once).
+  const toRemoveRequested = async (personId, kind, start, end, who) => {
+    const overlaps = ([s, e]) => s <= end && e >= start;
+    const noun = kind === "nocall" ? "no-call days" : "vacation";
+    const say = (s, e) => typeof mineRangeLabel === "function" ? mineRangeLabel(s, e, fmt(new Date())) : `${s} → ${e}`;
+    const audit = (s, e) => logAudit(kind + ".remove", `Removed ${kind === "nocall" ? "no-call" : "vacation"} for ${who}: ${s}${s !== e ? " → " + e : ""}`, { person_id: personId, kind, start: s, end: e, revoked: `${start} → ${end}` });
+    if (!USE_TIME_OFF) { // the blob holds the time off: the overlapping entries go from the screen (the autosave persists it)
+      setterFor(kind)(p => ({ ...p, [personId]: (p[personId] || []).filter(r => !overlaps(r)) }));
+      audit(start, end);
+      return;
+    }
+    const ep = sessionEpochRef.current;
+    try {
+      const res = await deleteTimeOff(`person_id=eq.${encodeURIComponent(personId)}&kind=eq.${kind}&start_date=lte.${end}&end_date=gte.${start}`, { rows: true });
+      if (!res || !res.ok || !Array.isArray(res.rows)) return; // refused or unanswered: its own toast said so; unreadable: the reload shows what stands
+      const rows = res.rows;
+      if (rows.length) {
+        const ids = new Set(rows.map(r => r.id).filter(id => id != null)), pairs = new Set(rows.map(r => r.start_date + "|" + r.end_date));
+        setterFor(kind)(p => ({ ...p, [personId]: (p[personId] || []).filter(([s, e, id]) => !(id != null && ids.has(id)) && !pairs.has(s + "|" + e)) }));
+        rows.forEach(r => audit(r.start_date, r.end_date));
+      }
+      if (sessionEpochRef.current !== ep) return; // another session now: nothing said on its screen
+      const other = rows.filter(r => r.start_date !== start || r.end_date !== end);
+      if (!rows.length) showToast(`${who}'s ${noun} ${say(start, end)} was already off the time off list — nothing to remove.`, "info");
+      else if (other.length) showToast(`Removed ${who}'s ${noun} ${rows.map(r => say(r.start_date, r.end_date)).join(" and ")} — ${other.length === rows.length ? "not" : "more than"} the request's exact days (${say(start, end)}). Check Setup.`, "error");
+    } catch (e) { console.error("time_off revoke removal ex", e); }
   };
 
   const toEdit = async (personId, kind, oldStart, oldEnd, newStart, newEnd) => {
@@ -3663,10 +3702,12 @@ function CallSchedule() {
       showToast(`${isNoCall ? "No-call" : "Vacation"} request sent.`, "success");
       // Its dates in words (UX audit 2026-11-01 — helpers.js requestNoticeText / requestDates, guarded as every newer
       // helper): the notice, and the e-mail's `dates` (send-notification v18 shows them; an older one ignores the field).
+      // With the year when it isn't today's (today passed in — follow-up to the review of QW5, 2026-11-02; a cached
+      // helpers.js from before ignores it), as submit's, approve's, deny's and revoke's all do.
       await addNotification("vacation_submitted", isNoCall ? "No-Call Request" : "Vacation Request",
-        typeof requestNoticeText === "function" ? requestNoticeText("submitted", req) : `${surgeonName} requested ${kindLabel} ${vacReqStart} to ${vacReqEnd}`, { surgeon_id: vacReqSurgeon }, schedulerAdminIds, ep);
+        typeof requestNoticeText === "function" ? requestNoticeText("submitted", req, { today: fmt(new Date()) }) : `${surgeonName} requested ${kindLabel} ${vacReqStart} to ${vacReqEnd}`, { surgeon_id: vacReqSurgeon }, schedulerAdminIds, ep);
       if (!live()) return; // (review r5 fix-1) another session now: no e-mail sent from it
-      sendEmailNotif("vacation_submitted", { surgeon_name: surgeonName, surgeon_id: vacReqSurgeon, start_date: vacReqStart, end_date: vacReqEnd, reason: vacReqReason, request_type: vacReqType, dates: typeof requestDates === "function" ? requestDates(vacReqStart, vacReqEnd) : undefined }, schedulerAdminIds, ep);
+      sendEmailNotif("vacation_submitted", { surgeon_name: surgeonName, surgeon_id: vacReqSurgeon, start_date: vacReqStart, end_date: vacReqEnd, reason: vacReqReason, request_type: vacReqType, dates: typeof requestDates === "function" ? requestDates(vacReqStart, vacReqEnd, fmt(new Date())) : undefined }, schedulerAdminIds, ep);
     } catch(e) { console.error("Submit request error:", e); if (live()) showToast("Couldn't submit your request — check your connection and try again.", "error"); }
     finally { vacSubmitBusyRef.current = false; setVacSubmitting(false); }
   }, [vacReqSurgeon, vacReqStart, vacReqEnd, vacReqReason, vacReqType, surgeons, apps, addNotification, sendEmailNotif, schedulerAdminIds]);
@@ -3770,10 +3811,10 @@ function CallSchedule() {
       // Its dates in words (UX audit 2026-11-01 — helpers.js requestNoticeText / requestDates, guarded): the notice,
       // and the e-mail's `dates` (send-notification v18 shows them; an older one ignores the field — the dates as before).
       await addNotification("vacation_approved", isNoCall ? "No-Call Approved" : "Vacation Approved",
-        typeof requestNoticeText === "function" ? requestNoticeText("approved", req) : `${req.surgeon_name}'s ${kindLabel} ${req.start_date} to ${req.end_date} was approved`,
+        typeof requestNoticeText === "function" ? requestNoticeText("approved", req, { today: fmt(new Date()) }) : `${req.surgeon_name}'s ${kindLabel} ${req.start_date} to ${req.end_date} was approved`,
         { surgeon_id: req.surgeon_id }, approveTargets, ep);
       if (!live()) return; // (review r5 fix-1) another session now: no e-mail sent from it
-      sendEmailNotif("vacation_approved", { surgeon_name: req.surgeon_name, surgeon_id: req.surgeon_id, start_date: req.start_date, end_date: req.end_date, request_type: req.request_type, dates: typeof requestDates === "function" ? requestDates(req.start_date, req.end_date) : undefined }, approveTargets, ep);
+      sendEmailNotif("vacation_approved", { surgeon_name: req.surgeon_name, surgeon_id: req.surgeon_id, start_date: req.start_date, end_date: req.end_date, request_type: req.request_type, dates: typeof requestDates === "function" ? requestDates(req.start_date, req.end_date, fmt(new Date())) : undefined }, approveTargets, ep);
     } catch(e) { console.error("Approve error:", e); if (live()) showToast("Couldn't approve the request — check your connection and try again.", "error"); }
   }, [addNotification, sendEmailNotif, schedulerAdminIds, userProfile, surgeons, mySurgeon, vacations, noCallDays]);
 
@@ -3816,10 +3857,10 @@ function CallSchedule() {
       const denyTargets = [...new Set([req.surgeon_id, ...schedulerAdminIds].filter(Boolean))];
       // Its dates in words, as approve's (UX audit 2026-11-01).
       await addNotification("vacation_denied", isNoCall ? "No-Call Denied" : "Vacation Denied",
-        typeof requestNoticeText === "function" ? requestNoticeText("denied", req, { note }) : `${req.surgeon_name}'s ${kindLabel} ${req.start_date} to ${req.end_date} was denied${note ? ": " + note : ""}`,
+        typeof requestNoticeText === "function" ? requestNoticeText("denied", req, { note, today: fmt(new Date()) }) : `${req.surgeon_name}'s ${kindLabel} ${req.start_date} to ${req.end_date} was denied${note ? ": " + note : ""}`,
         { surgeon_id: req.surgeon_id }, denyTargets, ep);
       if (!live()) return; // (review r5 fix-1) another session now: no e-mail sent from it
-      sendEmailNotif("vacation_denied", { surgeon_name: req.surgeon_name, surgeon_id: req.surgeon_id, start_date: req.start_date, end_date: req.end_date, note, request_type: req.request_type, dates: typeof requestDates === "function" ? requestDates(req.start_date, req.end_date) : undefined }, denyTargets, ep);
+      sendEmailNotif("vacation_denied", { surgeon_name: req.surgeon_name, surgeon_id: req.surgeon_id, start_date: req.start_date, end_date: req.end_date, note, request_type: req.request_type, dates: typeof requestDates === "function" ? requestDates(req.start_date, req.end_date, fmt(new Date())) : undefined }, denyTargets, ep);
     } catch(e) { console.error("Deny error:", e); if (live()) showToast("Couldn't deny the request — check your connection and try again.", "error"); }
   }, [addNotification, sendEmailNotif, schedulerAdminIds, userProfile, surgeons, mySurgeon]);
 
@@ -4538,8 +4579,9 @@ function CallSchedule() {
       // Before the time off and the notice (as approve's) — so it claims only the revoke: the time off's removal can
       // still fail after it, and its own toast says so (review fix 2026-10-19: it read "…, is off the schedule.").
       showToast(`Revoked — ${req.surgeon_name}'s ${kindLabel}, ${typeof mineRangeLabel === "function" ? mineRangeLabel(req.start_date, req.end_date, fmt(new Date())) : `${req.start_date} to ${req.end_date}`}.`, "success");
-      // Remove from the bucket it landed in
-      toRemove(req.surgeon_id, isNoCall ? "nocall" : "vacation", req.start_date, req.end_date);
+      // Remove from the bucket it landed in — whatever overlaps the request's days, since its time off may have been
+      // changed since the approval (toRemoveRequested, 2026-11-02); not waited for: the notice goes out at once
+      toRemoveRequested(req.surgeon_id, isNoCall ? "nocall" : "vacation", req.start_date, req.end_date, req.surgeon_name);
       const revokeTargets = [...new Set([req.surgeon_id, ...schedulerAdminIds].filter(Boolean))];
       // The notice carries surgeon_id like approve's and deny's: the bell shows
       // a member only notices whose data names them, so with {} the person
@@ -4558,13 +4600,13 @@ function CallSchedule() {
       // before. A cached helpers.js from before "revoked" (it answers without
       // the verb) gets the old words, as one with no requestNoticeText at all.
       const revokedBy = userProfile?.display_name || surgeons.find(s => s.id === mySurgeon)?.name || "";
-      const said = typeof requestNoticeText === "function" ? requestNoticeText("revoked", req, { by: revokedBy }) : "";
+      const said = typeof requestNoticeText === "function" ? requestNoticeText("revoked", req, { by: revokedBy, today: fmt(new Date()) }) : "";
       const revokeMsg = /\brevoked\b/.test(said) ? said : `${req.surgeon_name}'s ${kindLabel} ${req.start_date} → ${req.end_date} was revoked`;
       await addNotification("vacation_revoked", isNoCall ? "No-Call Revoked" : "Vacation Revoked",
         revokeMsg,
         { surgeon_id: req.surgeon_id }, revokeTargets, ep);
       if (!live()) return; // another session now: no e-mail sent from it (as approve's and deny's)
-      sendEmailNotif("vacation_revoked", { surgeon_name: req.surgeon_name, surgeon_id: req.surgeon_id, start_date: req.start_date, end_date: req.end_date, request_type: req.request_type, dates: typeof requestDates === "function" ? requestDates(req.start_date, req.end_date) : undefined, revoked_by: revokedBy || undefined, detail: revokeMsg, message: revokeMsg }, revokeTargets, ep);
+      sendEmailNotif("vacation_revoked", { surgeon_name: req.surgeon_name, surgeon_id: req.surgeon_id, start_date: req.start_date, end_date: req.end_date, request_type: req.request_type, dates: typeof requestDates === "function" ? requestDates(req.start_date, req.end_date, fmt(new Date())) : undefined, revoked_by: revokedBy || undefined, detail: revokeMsg, message: revokeMsg }, revokeTargets, ep);
     } catch(e) { console.error("Revoke error:", e); if (live()) showToast("Couldn't revoke the vacation — check your connection and try again.", "error"); }
   }, [addNotification, sendEmailNotif, schedulerAdminIds, userProfile, surgeons, mySurgeon]);
 
